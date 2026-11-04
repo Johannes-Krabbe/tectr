@@ -1,0 +1,1636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tectr · devices, workspaces, topics and tabs (v4)</title>
+<link rel="stylesheet" href="../v2/tokens.css">
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  .app { display: grid; grid-template-columns: 256px minmax(0, 1fr); height: 100vh; min-width: 960px; }
+  .app.noside:not(.hinting) { grid-template-columns: 0 minmax(0, 1fr); }
+  .app.noside:not(.hinting) .side { visibility: hidden; }
+  .app.noside:not(.hinting) .main { margin-left: 8px; }
+
+  /* Shortcut badges appear only while the modifier is held */
+  .hk { display: none; position: absolute; z-index: 3; align-items: center; height: 17px; padding: 0 4px; border-radius: 4px; background: var(--accent); color: #fff; font: 500 10.5px/1 var(--ui); }
+  .reveal .hk { display: inline-flex; }
+  .srow .hk { right: 28px; top: 6px; }
+  .tab .hk { left: 50%; bottom: -9px; transform: translateX(-50%); }
+
+  /* Sidebar */
+  .side { display: flex; flex-direction: column; min-height: 0; padding: 12px 8px 8px; overflow: hidden; }
+  .brand { display: flex; align-items: center; gap: 8px; padding: 2px 8px; font-weight: 600; }
+  .logo { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; }
+  .search { display: flex; align-items: center; justify-content: space-between; width: 100%; height: 30px; padding: 0 8px; margin: 10px 0 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink-3); text-align: left; }
+  .search kbd { background: none; color: var(--ink-3); padding: 0; }
+  .tree { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+  .srow { position: relative; display: flex; align-items: center; gap: 9px; width: 100%; height: 29px; padding: 0 8px; border-radius: 6px; text-align: left; color: var(--ink-2); font-weight: 500; }
+  .srow:hover { background: var(--surface); }
+  .srow .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .srow .meta { flex: none; font-size: 12px; font-weight: 450; color: var(--ink-3); }
+  .srow .meta.alert { color: var(--waiting); font-weight: 500; }
+  .srow .meta.bad { color: var(--failed); font-weight: 500; }
+  .glyph { width: 14px; text-align: center; flex: none; color: var(--ink-3); }
+
+  .chev { width: 10px; flex: none; text-align: center; font-size: 8px; color: var(--ink-3); }
+  .devrow { margin-top: 14px; height: 27px; gap: 7px; color: var(--ink); font-weight: 600; font-size: 12.5px; cursor: default; }
+  .devrow.off .name { color: var(--ink-3); }
+  .devrow .dot { margin: 0 2px; }
+  .wsrow { margin-top: 2px; height: 27px; gap: 7px; font-size: 12.5px; }
+  .wsrow .name { color: var(--ink-2); font-weight: 500; }
+  .rowadd { display: none; flex: none; align-items: center; gap: 3px; height: 20px; margin-right: -4px; padding: 0 2px 0 5px; border-radius: 5px; font-size: 13px; font-weight: 450; color: var(--ink-2); }
+  .rowadd kbd { min-width: 16px; height: 16px; font-size: 10.5px; }
+  .rowadd:hover { background: var(--line-strong); color: var(--ink); }
+  .srow:hover .rowadd { display: inline-flex; }
+  .hinting .rowadd { display: none !important; }
+  .emptyrow { justify-content: space-between; color: var(--ink-3); font-weight: 450; font-size: 12.5px; padding-left: 25px; }
+  .emptyrow kbd { background: none; color: var(--ink-3); padding: 0; }
+
+  .topic { padding-left: 25px; font-weight: 450; color: var(--ink); }
+  .topic.done .name, .topic.stale .name { color: var(--ink-3); }
+  .topic.waiting { background: rgba(240, 182, 77, 0.07); }
+  .topic.waiting:hover { background: rgba(240, 182, 77, 0.11); }
+
+  /* The selected row: purple when the sidebar owns the keyboard, neutral otherwise */
+  .srow.current { background: var(--surface-2); }
+  .srow.current.waiting { background: rgba(240, 182, 77, 0.15); }
+  .sidefocus .srow.current { background: var(--accent-tint); box-shadow: inset 0 0 0 1px rgba(124, 92, 240, 0.5); }
+  @keyframes lamp-off { from { background-color: rgba(240, 182, 77, 0.3); } }
+  .fade-off { animation: lamp-off 320ms ease-out; }
+
+  .hint { display: none; flex: none; place-items: center; width: 18px; height: 18px; border-radius: 4px; background: var(--accent); color: #fff; font: 600 11px/1 var(--ui); text-transform: uppercase; }
+  .hinting .hint { display: grid; }
+  .hinting .topic .meta { display: none; }
+  .hinting .srow:not(.topic) { opacity: 0.45; }
+
+  .sidefoot { flex: none; display: flex; gap: 2px; padding-top: 6px; margin-top: 6px; border-top: 1px solid var(--line); }
+  .sidefoot button { position: relative; height: 26px; padding: 0 8px; border-radius: 6px; color: var(--ink-3); font-size: 12.5px; font-weight: 500; }
+  .sidefoot button:hover { background: var(--surface); color: var(--ink-2); }
+  .sidefoot .hk { left: 4px; top: -19px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--live); flex: none; }
+  .dot.off { background: none; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+
+  /* Main panel */
+  .main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; margin: 8px 8px 8px 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .head { flex: none; display: flex; align-items: center; gap: 12px; height: 42px; padding: 0 16px; }
+  .crumb { display: flex; align-items: center; gap: 7px; min-width: 0; font-weight: 600; font-size: 13.5px; white-space: nowrap; }
+  .crumb span { color: var(--ink-3); font-weight: 450; }
+  .head .info { margin-left: auto; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; }
+  .head .code { font: 400 11.5px/1 var(--code); }
+  .ghost { flex: none; height: 26px; padding: 0 10px; border-radius: 6px; background: var(--surface-2); font-weight: 500; font-size: 12.5px; }
+
+  /* Tabs: agents, diffs and terminals in one strip */
+  .tabs { flex: none; display: flex; align-items: stretch; gap: 2px; height: 34px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+  .tab { position: relative; display: flex; align-items: center; gap: 7px; padding: 0 9px; color: var(--ink-3); font-weight: 500; font-size: 12.5px; white-space: nowrap; }
+  .tab:hover { color: var(--ink-2); }
+  .tab .tk { flex: none; width: 14px; text-align: center; font: 500 11px/1 var(--code); }
+  .tab.waiting { color: var(--waiting); }
+  .tab.failed { color: var(--failed); }
+  .tab.shown { color: var(--ink); }
+  .tab.shown::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: -1px; height: 1.5px; background: var(--ink-3); }
+  .tab.active::after { background: var(--accent-ink); }
+  .tab .sub { color: var(--ink-3); font-weight: 450; font-size: 12px; }
+  .addtab { position: relative; align-self: center; width: 24px; height: 24px; border-radius: 6px; color: var(--ink-3); font-size: 15px; line-height: 1; }
+  .addtab:hover { background: var(--surface); color: var(--ink-2); }
+
+  .picker { position: absolute; z-index: 5; width: 212px; padding: 4px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); }
+  .picker div { display: flex; align-items: center; gap: 9px; height: 28px; padding: 0 7px; border-radius: 5px; color: var(--ink); }
+  .picker kbd { margin-left: auto; }
+  .picker p { padding: 6px 7px 4px; margin-top: 2px; border-top: 1px solid var(--line-strong); font-size: 12px; color: var(--ink-3); }
+
+  /* Panes */
+  .panes { flex: 1; min-height: 0; display: flex; }
+  .pane { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .pane + .pane { border-left: 1px solid var(--line); }
+
+  /* Agent pane */
+  .tracebar { flex: none; width: 100%; max-width: 800px; align-self: center; padding: 12px 20px 2px; }
+  .tracebar .trace { height: 14px; }
+  .axis { display: flex; justify-content: space-between; margin-top: 3px; font-size: 11px; color: var(--ink-3); }
+  .log { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+  .log-in { display: flex; flex-direction: column; gap: 12px; min-height: 100%; max-width: 800px; margin: 0 auto; padding: 12px 20px 14px; }
+  .log-in > :first-child { margin-top: auto; }
+  .you { padding: 10px 12px; background: var(--surface); border-radius: 8px; line-height: 1.5; }
+  .agent-msg { font-size: 13.5px; line-height: 1.55; }
+  .tools { display: flex; flex-direction: column; gap: 5px; }
+  .tool { display: flex; gap: 8px; font-size: 12.5px; color: var(--ink-3); }
+  .tool .k { flex: none; width: 30px; }
+  .tool .p { flex: 1; min-width: 0; font: 400 11.5px/18px var(--code); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tool .note { font-size: 12.5px; color: var(--ink-3); }
+  .tool .m { flex: none; font-size: 12px; }
+  .tool .m.bad { color: var(--failed); }
+  .empty { margin: auto; color: var(--ink-3); text-align: center; }
+
+  .diff { border: 1px solid var(--line); border-radius: 7px; overflow: hidden; font: 400 11.5px/18px var(--code); background: var(--base); }
+  .diff div { padding-left: 10px; white-space: pre; color: var(--ink-2); }
+  .diff .a { background: var(--add-bg); color: var(--add-ink); }
+  .diff .d { background: var(--del-bg); color: var(--del-ink); }
+  .diff .h { color: var(--ink-3); padding-top: 3px; padding-bottom: 3px; border-bottom: 1px solid var(--line); }
+
+  .dock { flex: none; width: 100%; max-width: 800px; align-self: center; padding: 0 20px; }
+  .decide { margin-bottom: 10px; padding: 12px; border-radius: 9px; background: rgba(240, 182, 77, 0.07); border: 1px solid rgba(240, 182, 77, 0.28); }
+  .decide-top { display: flex; align-items: center; gap: 7px; font-weight: 500; color: var(--waiting); font-size: 12.5px; }
+  .decide-top .pos { margin-left: auto; color: var(--ink-3); font-weight: 450; }
+  .decide pre { margin-top: 8px; font: 400 12px/1.5 var(--code); white-space: pre-wrap; word-break: break-word; }
+  .decide .q { margin-top: 7px; font-weight: 500; font-size: 13.5px; }
+  .decide .why { margin-top: 4px; font-size: 12.5px; color: var(--ink-2); }
+  .actions { display: flex; align-items: center; gap: 6px; margin-top: 11px; }
+  .btn { position: relative; overflow: hidden; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 6px 0 10px; border-radius: 6px; background: var(--surface-2); font-weight: 500; font-size: 12.5px; }
+  .btn:hover { background: var(--line-strong); }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn > * { position: relative; }
+  .btn.primary::before { content: ""; position: absolute; inset: 0; background: rgba(255, 255, 255, 0.28); transform: scaleX(0); transform-origin: left; }
+  .btn.primary.holding::before { transform: scaleX(1); transition: transform 500ms linear; }
+  .opts { display: flex; flex-direction: column; gap: 4px; margin-top: 9px; }
+  .opt { display: flex; align-items: center; gap: 9px; width: 100%; height: 30px; padding: 0 8px 0 6px; border-radius: 6px; background: var(--surface-2); text-align: left; }
+  .opt:hover { background: var(--line-strong); }
+
+  .composer { display: flex; align-items: center; height: 38px; margin-bottom: 14px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); }
+  .composer:focus-within { border-color: var(--accent-ink); }
+  .composer input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; color: var(--ink); font: 450 13px/1 var(--ui); }
+  .composer input::placeholder { color: var(--ink-3); opacity: 1; }
+
+  /* Diff pane */
+  .changes { flex: 1; min-height: 0; display: grid; grid-template-columns: 216px minmax(0, 1fr); }
+  .split .changes { grid-template-columns: minmax(0, 1fr); }
+  .split .files { display: none; }
+  .files { padding: 10px 8px; border-right: 1px solid var(--line); overflow: hidden; }
+  .file { display: flex; gap: 8px; align-items: center; height: 26px; padding: 0 8px; border-radius: 5px; color: var(--ink-2); font: 400 11.5px/1 var(--code); }
+  .file span:first-child { flex: 1; min-width: 0; direction: rtl; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file .n { flex: none; color: var(--ink-3); font-size: 11px; }
+  .file.on { background: var(--surface-2); color: var(--ink); }
+  .hunks { min-height: 0; overflow-y: auto; padding: 12px 16px 16px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+  .fname { margin: 12px 0 6px; font: 400 11.5px/1.3 var(--code); color: var(--ink-3); }
+  .fname:first-child { margin-top: 0; }
+  .hunk { margin-bottom: 8px; }
+  .hunk.on { outline: 1.5px solid var(--ink-3); outline-offset: -1px; }
+  .pane.focused .hunk.on { outline-color: var(--accent-ink); }
+  .pane > .dock.comment { padding-top: 10px; max-width: none; }
+
+  /* Terminal pane */
+  .term { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; background: var(--base); font: 400 12.5px/1.55 var(--code); color: var(--ink-2); scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+  .term div { white-space: pre-wrap; word-break: break-word; min-height: 1.55em; }
+  .term .ok { color: var(--live); }
+  .term .no { color: var(--failed); }
+  .term .pr { color: var(--accent-ink); }
+  .term .cmd { color: var(--ink); }
+  .caret { display: inline-block; width: 0.6em; height: 1.15em; margin-left: 1px; vertical-align: text-bottom; box-shadow: inset 0 0 0 1px var(--ink-3); }
+  .caret.live { background: var(--ink); box-shadow: none; }
+
+  /* Inbox */
+  .inbox { flex: 1; overflow-y: auto; padding: 8px 6px; }
+  .inrow { display: grid; grid-template-columns: 14px minmax(180px, 320px) minmax(0, 1fr) auto; align-items: center; column-gap: 10px; width: 100%; height: 40px; padding: 0 10px; border-radius: 6px; text-align: left; }
+  .inrow.on { background: rgba(240, 182, 77, 0.13); }
+  .inrow .where { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+  .inrow .where span { color: var(--ink-3); font-weight: 450; }
+  .inrow .what { font: 400 12px/1 var(--code); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .inrow .age { color: var(--waiting); font-size: 12px; }
+
+  /* Status line: who owns the keyboard, and what works right now */
+  .foot { flex: none; display: flex; align-items: center; gap: 14px; height: 28px; padding: 0 14px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 12px; white-space: nowrap; overflow: hidden; }
+  .foot .mode { font-weight: 600; color: var(--ink-2); }
+  .foot .mode.typing { color: var(--accent-ink); }
+  .foot span { display: inline-flex; align-items: center; gap: 4px; }
+  .foot kbd { height: 16px; min-width: 16px; font-size: 10.5px; background: var(--surface-2); color: var(--ink-2); }
+  .foot .flash { color: var(--ink); }
+  .foot .right { margin-left: auto; }
+
+  /* Overlays */
+  .scrim { position: fixed; inset: 0; z-index: 10; display: flex; justify-content: center; align-items: flex-start; padding-top: 14vh; background: rgba(5, 4, 8, 0.55); }
+  .palette { width: 580px; overflow: hidden; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 11px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6); }
+  .palette input { width: 100%; height: 44px; padding: 0 16px; background: none; border: 0; border-bottom: 1px solid var(--line-strong); outline: 0; color: var(--ink); font: 450 14.5px/1 var(--ui); }
+  .palette input::placeholder { color: var(--ink-3); opacity: 1; }
+  .pal-list { padding: 5px; max-height: 360px; overflow: hidden; }
+  .pal { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 6px; }
+  .pal .sub { color: var(--ink-3); }
+  .pal .kind { margin-left: auto; color: var(--ink-3); font-size: 12px; }
+  .pal.on { background: var(--accent-tint); }
+  /* Creation sheets */
+  .sheet { width: 620px; overflow: hidden; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 11px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6); }
+  .sheet-head { display: flex; justify-content: space-between; padding: 12px 16px 0; font-size: 12.5px; font-weight: 500; color: var(--ink-2); }
+  .sheet-head span { color: var(--ink-3); font-weight: 450; }
+  .sheet input.big, .sheet input.small { display: block; width: 100%; padding: 0 16px; background: none; border: 0; outline: 0; color: var(--ink); }
+  .sheet input.big { height: 40px; margin-top: 2px; font: 500 17px/1 var(--ui); letter-spacing: -0.012em; }
+  .sheet input.small { height: 30px; font: 450 13.5px/1 var(--ui); }
+  .sheet input::placeholder { color: var(--ink-3); opacity: 1; }
+  .sheet input.small:focus::placeholder { color: var(--ink-2); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px 14px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; border-radius: 6px; background: var(--surface-2); font: 500 12.5px/1 var(--ui); color: var(--ink); }
+  .chip span { color: var(--ink-3); font-weight: 450; }
+  .chip i { font-style: normal; font-size: 9px; color: var(--accent-ink); }
+  .chip.on { box-shadow: inset 0 0 0 1px var(--accent-ink); outline: 0; }
+  .chip:focus { outline: 0; }
+  .chip input { background: none; border: 0; outline: 0; min-width: 4ch; max-width: 280px; color: var(--ink); font: 400 12px/1 var(--code); }
+  .sheet-list { padding: 4px 5px; max-height: 230px; overflow: hidden; border-top: 1px solid var(--line-strong); }
+  .sheet-list .pal { cursor: pointer; }
+  .sheet-list .glyph { color: var(--ink-3); }
+  .sheet-list + .chips { border-top: 1px solid var(--line-strong); padding-top: 10px; }
+  .sheet-foot { display: flex; align-items: center; gap: 6px; padding: 9px 10px 9px 16px; border-top: 1px solid var(--line-strong); background: rgba(0, 0, 0, 0.18); }
+  .what { flex: 1; min-width: 0; font-size: 12.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sbtn { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 6px 0 10px; border-radius: 6px; background: var(--surface-2); font-weight: 500; font-size: 12.5px; }
+  .sbtn:hover { background: var(--line-strong); }
+  .sbtn.primary { background: var(--accent); color: #fff; }
+  .sbtn kbd { min-width: 18px; }
+  .pairing { padding: 12px 16px 16px; color: var(--ink-2); line-height: 1.5; }
+  .pairing b { color: var(--ink); font-weight: 500; }
+  .pairing pre { margin: 10px 0; padding: 10px 12px; border-radius: 7px; background: var(--base); font: 400 13px/1.4 var(--code); color: var(--ink); }
+  .pairing .wait { color: var(--ink-3); }
+
+  .help { width: 760px; padding: 20px 22px 18px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 11px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6); }
+  .help h3 { font: 600 15px/1.2 var(--ui); }
+  .help > p { margin: 4px 0 14px; color: var(--ink-2); }
+  .help-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 28px; }
+  .help h4 { margin-bottom: 6px; font: 600 12px/1.3 var(--ui); color: var(--ink-3); }
+  .help li { display: flex; justify-content: space-between; align-items: center; height: 24px; list-style: none; color: var(--ink-2); }
+  .help li span { display: flex; gap: 3px; }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="side" id="side"></aside>
+  <main class="main" id="main"></main>
+</div>
+<div id="overlay"></div>
+
+<script>
+// Prototype only: all data is fake and nothing talks to a daemon.
+// Browsers reserve shortcuts like ⌘T and ⌘W, so ⌥ also triggers every ⌘ shortcut here.
+
+const ICON = {
+  idle: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="#7c7a89" stroke-width="1.5"/></svg>`,
+  working: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="#b9a6ff" stroke-width="1.5"/><path d="M7 3.5a3.5 3.5 0 0 1 0 7z" fill="#b9a6ff"/></svg>`,
+  waiting: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#f0b64d"/><rect x="4.6" y="4" width="1.7" height="6" rx=".6" fill="#0e0d12"/><rect x="7.7" y="4" width="1.7" height="6" rx=".6" fill="#0e0d12"/></svg>`,
+  failed: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#f0766e"/><path d="M4.8 4.8l4.4 4.4M9.2 4.8L4.8 9.2" stroke="#0e0d12" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+  done: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#7c7a89"/><path d="M4.2 7.2l2 2 3.6-4" fill="none" stroke="#0e0d12" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  stale: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="#7c7a89" stroke-width="1.5" stroke-dasharray="2 2.2"/></svg>`,
+};
+
+let uid = 0;
+function seed(str) { let h = 7; for (const c of str) h = (h * 31 + c.charCodeAt(0)) >>> 0; return () => (h = (h * 1664525 + 1013904223) >>> 0) / 2 ** 32; }
+
+function genTicks(id, tr) {
+  const r = seed(id), { from, to = 0, d, waits = [], errs = [] } = tr, out = [];
+  for (let t = from; t > to; t -= (0.3 + r() * 1.4) / d) {
+    if (waits.some(([a, b]) => t <= a && t >= b)) continue;
+    const v = r();
+    out.push({ t, k: v < 0.5 ? 'r' : v < 0.8 ? 'b' : 'e' });
+  }
+  errs.forEach(t => out.push({ t, k: 'x' }));
+  return out;
+}
+
+function agent(title, engine, state, secs, now, tr, extra = {}) {
+  const id = `t${++uid}`;
+  return { id, kind: 'agent', title, engine, state, secs, now, tr, ticks: tr ? genTicks(id + title, tr) : [], ...extra };
+}
+const changes = (files) => ({ id: `t${++uid}`, kind: 'diff', title: 'Changes', files, hunk: 0 });
+const terminal = (title, lines, extra = {}) => ({ id: `t${++uid}`, kind: 'term', title, lines, input: '', ...extra });
+
+const genericDiff = (path, add, del) => [{ path, add, del, hunks: [[
+  ['h', '@@ 12,5 @@'], ['', '  pub fn run(&self) -> Result<()> {'],
+  ['d', '-     self.legacy_path()'], ['a', '+     let state = self.load_state()?;'], ['a', '+     self.apply(state)'], ['', '  }'],
+]] }];
+
+const reconnectFiles = [
+  { path: 'crates/tectr-client/src/connection.rs', add: 31, del: 9, hunks: [
+    [['h', '@@ fn reconnect 84,9 @@'], ['', '  let mut attempt = 0u32;'], ['', '  loop {'], ['d', '-     sleep(Duration::from_secs(2)).await;'], ['a', '+     let delay = backoff(attempt, MAX_BACKOFF);'], ['a', '+     sleep(delay).await;'], ['', '      match self.connect(last_seq).await {'], ['d', '-         Ok(stream) => return Ok(stream),'], ['a', '+         Ok(stream) => {'], ['a', '+             self.flush_queue().await?;'], ['a', '+             return Ok(stream);'], ['a', '+         }']],
+    [['h', '@@ fn backoff 142,0 @@'], ['a', '+ fn backoff(attempt: u32, max: Duration) -> Duration {'], ['a', '+     let base = Duration::from_millis(250) * 2u32.pow(attempt.min(8));'], ['a', '+     base.min(max) + jitter()'], ['a', '+ }']],
+  ] },
+  { path: 'crates/tectr-client/src/queue.rs', add: 6, del: 2, hunks: [
+    [['h', '@@ impl ActionQueue 31,4 @@'], ['d', '-     self.items.clear();'], ['a', '+     // Keep queued actions across reconnect attempts'], ['a', '+     self.retry_count += 1;'], ['', '  }']],
+  ] },
+  { path: 'crates/tectr-client/tests/reconnect.rs', add: 1, del: 0, hunks: [
+    [['h', '@@ 8,0 @@'], ['a', '+ const FIXTURE: &str = "fixtures/stale_session.json";']],
+  ] },
+];
+
+const reconnectTerm = [
+  ['pr', '~/wt/reconnect-backoff $ ', 'cargo test -p tectr-client reconnect'],
+  ['', '   Compiling tectr-client v0.3.1'],
+  ['', '    Finished test profile in 2.41s'],
+  ['', '     Running tests/reconnect.rs'],
+  ['ok', 'test backoff_caps_at_max ... ok'],
+  ['ok', 'test resumes_from_last_seq ... ok'],
+  ['no', 'test flushes_queue_after_connect ... FAILED'],
+  ['', ''],
+  ['no', 'test result: FAILED. 14 passed; 1 failed'],
+];
+const watchTerm = [
+  ['pr', '~/wt/acp-spawn $ ', 'cargo watch -x "check -p tectr-daemon"'],
+  ['', '[Running cargo check -p tectr-daemon]'],
+  ['', '    Checking tectr-daemon v0.3.1'],
+  ['ok', '    Finished dev profile in 1.18s'],
+  ['', '[Finished running. Exit status: 0]'],
+];
+
+const LOG_RECONNECT = [
+  ['you', 'Add exponential backoff to daemon reconnects in tectr-client. Resume from the last sequence number and don’t lose queued actions.'],
+  ['agent', 'The reconnect loop in connection.rs retries on a fixed 2s timer. I’ll add capped backoff with jitter and keep the action queue across attempts.'],
+  ['tool', 'Read', 'crates/tectr-client/src/connection.rs', '412 lines'],
+  ['tool', 'Read', 'crates/tectr-client/src/queue.rs', '96 lines'],
+  ['tool', 'Edit', 'crates/tectr-client/src/connection.rs', '+31 −9'],
+  ['tool', 'Run', 'cargo test -p tectr-client reconnect', '1 failed', true],
+  ['agent', 'One test fails on a stale fixture left by an earlier build. I want to clear the incremental cache and run it again.'],
+];
+
+// Every workspace lives on exactly one device. The same repo on two devices is two workspaces.
+const DEVICES = [
+  { id: 'laptop', name: 'Laptop', via: 'This device', online: true, root: '~/Developer' },
+  { id: 'desktop', name: 'Desktop', via: '18 ms', online: true, root: '~/src' },
+  { id: 'vps', name: 'VPS', via: 'Seen 12m ago', online: false, root: '~/code' },
+];
+
+const WS = [
+  { id: 'tectr-laptop', name: 'tectr', device: 'laptop', path: '~/Developer/tectr', open: true, topics: [
+    { key: 'r', name: 'Reconnect backoff', branch: 'tectr/reconnect-backoff', delta: '+38 −11', tabs: [
+      agent('Claude', 'Claude', 'waiting', 252, 'rm -rf target/debug/incremental', { from: 9, to: 4, d: 2, waits: [[4, 0]] }, {
+        log: LOG_RECONNECT,
+        req: { kind: 'Run command', risky: true, cmd: 'rm -rf target/debug/incremental && cargo test -p tectr-client reconnect', why: 'Deletes files outside version control', next: 'Running cargo test -p tectr-client reconnect' },
+      }),
+      changes(reconnectFiles),
+      terminal('zsh', reconnectTerm),
+    ] },
+    { key: 'd', name: 'Daemon ACP spawn', branch: 'tectr/acp-spawn', delta: '+212 −40', tabs: [
+      agent('Plan', 'Claude', 'done', 2640, 'Plan written to PLAN.md', { from: 58, to: 44, d: 1.2 }),
+      agent('Build', 'Codex', 'working', 1084, 'Editing crates/daemon/src/spawn.rs', { from: 34, d: 1.3, waits: [[19, 16]] }),
+      changes(genericDiff('crates/daemon/src/spawn.rs', 212, 40)),
+      terminal('cargo watch', watchTerm),
+    ] },
+    { key: 'p', name: 'Protocol handshake', branch: 'tectr/version-handshake', delta: '+96 −12', tabs: [
+      agent('Codex', 'Codex', 'done', 1860, '4 files ready to merge', { from: 58, to: 31, d: 0.9 }),
+      changes(genericDiff('crates/protocol/src/handshake.rs', 96, 12)),
+    ] },
+  ] },
+  { id: 'ios-laptop', name: 'tectr-ios', device: 'laptop', path: '~/Developer/tectr-ios', open: true, topics: [
+    { key: 'u', name: 'UniFFI bindings', branch: 'ios/uniffi', delta: '+54 −3', tabs: [
+      agent('Claude', 'Claude', 'working', 436, 'Running cargo build --target aarch64-apple-ios', { from: 8, d: 1.5 }),
+      terminal('xcodebuild', [['pr', '~/wt/uniffi $ ', 'xcodebuild -scheme Tectr build'], ['', 'Build target Tectr of project Tectr'], ['ok', '** BUILD SUCCEEDED **']]),
+    ] },
+    { key: 's', name: 'Session list screen', branch: 'ios/session-list', delta: '+120 −0', tabs: [
+      agent('Claude', 'Claude', 'working', 188, 'Reading Sources/SessionList.swift', { from: 3, d: 2 }),
+    ] },
+  ] },
+  { id: 'tectr-desktop', name: 'tectr', device: 'desktop', path: '~/src/tectr', open: true, topics: [
+    { key: 'w', name: 'Diff worker', branch: 'tectr/diff-worker', delta: '+67 −9', tabs: [
+      agent('Claude', 'Claude', 'waiting', 71, 'Question: which diff crate?', { from: 15, to: 1, d: 1.4, waits: [[1, 0]] }, {
+        log: [
+          ['you', 'Move syntax diffing off the UI thread into a worker. Results should arrive per hunk.'],
+          ['tool', 'Read', 'ui/src/diff/render.ts', '233 lines'],
+          ['tool', 'Edit', 'ui/src/workers/diff.worker.ts', '+67 −9'],
+          ['agent', 'The worker protocol is in place. The remaining choice is the diff crate, and it affects memory use on large files.'],
+        ],
+        req: { kind: 'Question', q: 'Which diff crate should the worker use?', opts: ['imara-diff, faster on large files', 'similar, simpler API and already in the tree'], next: 'Editing ui/src/workers/diff.worker.ts' },
+      }),
+      changes(genericDiff('ui/src/workers/diff.worker.ts', 67, 9)),
+    ] },
+    { key: 'm', name: 'Incremental markdown', branch: 'tectr/incremental-md', delta: '+203 −45', tabs: [
+      agent('Codex', 'Codex', 'failed', 368, 'cargo test: 3 failed', { from: 46, to: 6, d: 1.1, errs: [14, 9, 6] }, {
+        log: [
+          ['you', 'Parse markdown incrementally as tokens stream in. Don’t reparse closed blocks.'],
+          ['agent', 'I’ll track the last closed block and only reparse from that offset on each frame.'],
+          ['tool', 'Run', 'cargo test -p tectr-markdown', '3 failed', true],
+          ['agent', 'Three tests fail on nested lists that close across a chunk boundary. The offset tracking is wrong for that case, so I stopped here.'],
+        ],
+      }),
+      changes(genericDiff('crates/tectr-markdown/src/stream.rs', 203, 45)),
+      terminal('zsh', [['pr', '~/wt/incremental-md $ ', 'cargo test -p tectr-markdown'], ['no', 'test result: FAILED. 41 passed; 3 failed']]),
+    ] },
+    { key: 'v', name: 'Virtualized transcript', branch: 'tectr/virtual-transcript', delta: '+388 −102', tabs: [
+      agent('Claude', 'Claude', 'working', 2471, 'Editing ui/src/transcript/viewport.ts', { from: 42, d: 1.6, waits: [[25, 21]], errs: [31] }),
+      changes(genericDiff('ui/src/transcript/viewport.ts', 388, 102)),
+    ] },
+  ] },
+  { id: 'twig-desktop', name: 'twig', device: 'desktop', path: '~/src/twig', open: false, topics: [
+    { key: 'c', name: 'Worktree cleanup', branch: 'twig/cleanup', delta: '+31 −44', tabs: [
+      agent('Codex', 'Codex', 'done', 3480, '2 files ready to merge', { from: 60, to: 58, d: 1 }),
+    ] },
+    { key: 'g', name: 'Go to Rust port', branch: 'twig/rust-port', delta: '+640 −0', tabs: [
+      agent('Claude', 'Claude', 'working', 742, 'Editing src/worktree.rs', { from: 13, d: 1.1 }),
+      changes(genericDiff('src/worktree.rs', 640, 0)),
+    ] },
+  ] },
+  { id: 'relay-vps', name: 'push-relay', device: 'vps', path: '~/code/push-relay', open: true, topics: [
+    { key: 'e', name: 'Encrypted payloads', branch: 'relay/encrypted', delta: '+156 −8', tabs: [
+      agent('Claude', 'Claude', 'stale', 0, 'Last known: working', { from: 44, to: 12, d: 1 }),
+    ] },
+    { key: 'a', name: 'APNs token rotation', branch: 'relay/apns-rotation', delta: '+22 −4', tabs: [
+      agent('Codex', 'Codex', 'stale', 0, 'Last known: working', { from: 20, to: 12, d: 1.4 }),
+    ] },
+  ] },
+];
+
+// What each daemon could turn into a workspace, found by scanning for git repos
+const REPOS = {
+  laptop: ['~/Developer/zed-fork', '~/Developer/dotfiles', '~/Developer/blog'],
+  desktop: ['~/src/infra', '~/src/tectr-ios', '~/src/ml-experiments'],
+};
+// Found through the Tailscale peer list
+const PEERS = [
+  { name: 'mac-mini', addr: '100.84.12.7', daemon: true },
+  { name: 'build-box', addr: '100.91.3.40', daemon: true },
+  { name: 'nas', addr: '100.71.9.2', daemon: false },
+];
+
+const allTopics = () => WS.flatMap(w => w.topics);
+for (const w of WS) for (const t of w.topics) {
+  t.id = t.key; t.ws = w.id; t.panes = [t.tabs[0].id]; t.focusPane = 0; t.prev = null;
+}
+const wsById = id => WS.find(w => w.id === id);
+const deviceById = id => DEVICES.find(d => d.id === id);
+const deviceOf = t => deviceById(wsById(t.ws).device);
+const wsLabel = w => `${w.name} · ${deviceById(w.device).name}`;
+const wsOn = d => WS.filter(w => w.device === d.id);
+const slugify = text => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+const S = {
+  view: 'topic', topic: 'r',
+  focus: 'main',      // sidebar | main | composer | terminal
+  cur: { type: 'topic', id: 'r' },
+  hint: false, palette: null, picker: false, help: false, sheet: null,
+  hover: null,        // the parent under the pointer, which A adds into
+  inboxCur: 0, flash: '', fade: null,
+};
+const scrolls = {};
+
+const topicById = id => allTopics().find(t => t.id === id);
+const tabById = (t, id) => t.tabs.find(x => x.id === id);
+const curTopic = () => topicById(S.topic);
+const curTab = () => { const t = curTopic(); return tabById(t, t.panes[t.focusPane]); };
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const ORDER = ['waiting', 'failed', 'working', 'idle', 'done', 'stale'];
+function rollupTab(t) {
+  const agents = t.tabs.filter(x => x.kind === 'agent');
+  return agents.slice().sort((a, b) => ORDER.indexOf(a.state) - ORDER.indexOf(b.state))[0];
+}
+const rollup = t => rollupTab(t)?.state || 'idle';
+
+function fmt(tab) {
+  if (tab.state === 'stale' || tab.state === 'idle') return '';
+  if (tab.state === 'done' || tab.state === 'failed') return tab.secs >= 3600 ? `${Math.floor(tab.secs / 3600)}h` : `${Math.floor(tab.secs / 60)}m`;
+  return `${Math.floor(tab.secs / 60)}:${String(tab.secs % 60).padStart(2, '0')}`;
+}
+
+const waitingTabs = () => allTopics().flatMap(t => t.tabs.filter(x => x.kind === 'agent' && x.state === 'waiting').map(tab => ({ t, tab })));
+
+// ------------------------------------------------------------- sidebar
+
+function visibleRows() {
+  const rows = [{ type: 'inbox' }];
+  for (const d of DEVICES) {
+    rows.push({ type: 'device', id: d.id });
+    for (const w of wsOn(d)) {
+      rows.push({ type: 'ws', id: w.id });
+      if (w.open) for (const t of w.topics) rows.push({ type: 'topic', id: t.id });
+    }
+  }
+  return rows;
+}
+const isCur = r => S.focus === 'sidebar'
+  ? S.cur.type === r.type && S.cur.id === r.id
+  : (S.view === 'inbox' ? r.type === 'inbox' : r.type === 'topic' && r.id === S.topic);
+
+// Shown on the row under the pointer: click it, or press A
+const addBadge = (kind, id, title) => `<span class="rowadd" data-add-${kind}="${id}" title="${esc(title)}">+<kbd>A</kbd></span>`;
+
+// A folded row still says what needs you inside it
+function foldedMeta(topics, count) {
+  const wait = topics.filter(t => rollup(t) === 'waiting').length;
+  const fail = topics.filter(t => rollup(t) === 'failed').length;
+  if (wait) return `<span class="meta alert">${wait} waiting</span>`;
+  if (fail) return `<span class="meta bad">${fail} failed</span>`;
+  return `<span class="meta">${count}</span>`;
+}
+
+function renderSide() {
+  const wc = waitingTabs().length;
+  let tree = `<button class="srow ${isCur({ type: 'inbox' }) ? 'current' : ''}" data-inbox><span class="glyph">◎</span><span class="name">Inbox</span><span class="meta ${wc ? 'alert' : ''}">${wc}</span><span class="hk">⌘I</span></button>`;
+  for (const d of DEVICES) {
+    const add = d.online ? addBadge('ws', d.id, `New workspace on ${d.name}`) : '';
+    tree += `<button class="srow devrow ${d.online ? '' : 'off'} ${isCur({ type: 'device', id: d.id }) ? 'current' : ''}" data-device="${d.id}"><i class="dot ${d.online ? '' : 'off'}"></i><span class="name">${d.name}</span><span class="meta">${d.via}</span>${add}</button>`;
+    if (!wsOn(d).length) tree += `<button class="srow emptyrow" data-add-ws="${d.id}">No workspaces yet<kbd>⌘⇧N</kbd></button>`;
+    for (const w of wsOn(d)) {
+      const wshown = w.open || S.hint;
+      const wmeta = w.open ? '' : foldedMeta(w.topics, w.topics.length);
+      const wadd = d.online ? addBadge('topic', w.id, `New topic in ${w.name}`) : '';
+      tree += `<button class="srow wsrow ${isCur({ type: 'ws', id: w.id }) ? 'current' : ''}" data-ws="${w.id}"><span class="chev">${w.open ? '▼' : '▶'}</span><span class="name">${w.name}</span>${wmeta}${wadd}</button>`;
+      if (!wshown) continue;
+      if (!w.topics.length) tree += `<button class="srow emptyrow" data-add-topic="${w.id}">No topics yet<kbd>⌘N</kbd></button>`;
+      for (const t of w.topics) {
+        const st = rollup(t), r = rollupTab(t);
+        const age = st === 'waiting' ? `<span class="meta alert">${fmt(r)}</span>` : st === 'failed' ? `<span class="meta bad">${fmt(r)}</span>` : '';
+        tree += `<button class="srow topic ${st} ${isCur({ type: 'topic', id: t.id }) ? 'current' : ''} ${S.fade === t.id ? 'fade-off' : ''}" data-topic="${t.id}">${ICON[st]}<span class="name">${esc(t.name)}</span><span data-age="${t.id}">${age}</span>${t.key ? `<span class="hint">${t.key}</span>` : ''}${wadd}</button>`;
+      }
+    }
+  }
+  document.getElementById('side').innerHTML = `
+    <div class="brand"><span class="logo">t</span>tectr</div>
+    <button class="search" data-palette>Jump or run… <kbd>⌘K</kbd></button>
+    <div class="tree">${tree}</div>
+    <div class="sidefoot"><button data-add-ws>+ Workspace<span class="hk">⌘⇧N</span></button><button data-add-device>+ Device</button></div>`;
+  document.getElementById('app').classList.toggle('sidefocus', S.focus === 'sidebar');
+  document.getElementById('app').classList.toggle('hinting', S.hint);
+}
+
+// ------------------------------------------------------------- panes
+
+const pct = (t, span) => `${((span - Math.min(t, span)) / span * 100).toFixed(2)}%`;
+function traceHTML(tab) {
+  const span = tab.tr.from;
+  const waits = (tab.tr.waits || []).map(([a, b]) => `<u style="left:${pct(a, span)};width:${((a - b) / span * 100).toFixed(2)}%"></u>`).join('');
+  return waits + tab.ticks.map(({ t, k }) => `<i class="${k}" style="left:${pct(t, span)}"></i>`).join('');
+}
+
+function logFor(tab, topic) {
+  if (tab.log) return tab.log;
+  const last = /^(Editing|Reading|Running) (.*)$/.exec(tab.now || '');
+  tab.log = !tab.tr ? [] : [
+    ['you', topic.name + '.'],
+    ['agent', tab.state === 'stale' ? 'Last known output before this machine went offline.' : 'Working through this in the topic’s worktree.'],
+    last ? ['tool', { Editing: 'Edit', Reading: 'Read', Running: 'Run' }[last[1]], last[2], ''] : ['agent', tab.now + '.'],
+  ];
+  return tab.log;
+}
+
+function logHTML(log) {
+  let html = '', tools = '';
+  const flush = () => { if (tools) { html += `<div class="tools">${tools}</div>`; tools = ''; } };
+  for (const e of log) {
+    if (e[0] === 'tool') tools += `<div class="tool"><span class="k">${e[1]}</span><span class="p">${esc(e[2])}</span><span class="m${e[4] ? ' bad' : ''}">${e[3]}</span></div>`;
+    else if (e[0] === 'note') tools += `<div class="tool"><span class="note">${esc(e[1])}</span></div>`;
+    else {
+      flush();
+      if (e[0] === 'you') html += `<div class="you">${esc(e[1])}</div>`;
+      if (e[0] === 'agent') html += `<div class="agent-msg">${esc(e[1])}</div>`;
+    }
+  }
+  flush();
+  return html || `<div class="empty">New agent in this topic’s worktree.<br>Type a prompt to start it.</div>`;
+}
+
+function decideHTML(tab) {
+  if (tab.state !== 'waiting' || !tab.req) return '';
+  const q = waitingTabs(), r = tab.req, pos = q.findIndex(x => x.tab === tab) + 1;
+  const top = `<div class="decide-top">${ICON.waiting}${r.kind}<span class="pos">${pos} of ${q.length} waiting</span></div>`;
+  if (r.opts) return `<div class="decide">${top}<div class="q">${r.q}</div><div class="opts">${r.opts.map((o, i) => `<button class="opt" data-opt="${i + 1}" data-tab="${tab.id}"><kbd>${i + 1}</kbd>${o}</button>`).join('')}</div></div>`;
+  return `<div class="decide">${top}<pre>${esc(r.cmd)}</pre>${r.why ? `<div class="why">${r.why}</div>` : ''}
+    <div class="actions">
+      <button class="btn primary" data-approve="${tab.id}"><span>${r.risky ? 'Hold to approve' : 'Approve'}</span><kbd>Y</kbd></button>
+      <button class="btn" data-always="${tab.id}"><span>Always</span><kbd>A</kbd></button>
+      <button class="btn" data-deny="${tab.id}"><span>Deny</span><kbd>N</kbd></button>
+    </div></div>`;
+}
+
+function agentPane(tab, topic) {
+  const trace = tab.tr ? `<div class="tracebar"><div class="trace">${traceHTML(tab)}</div><div class="axis"><span>Started ${tab.tr.from}m ago</span><span>Now</span></div></div>` : '';
+  return `${trace}
+    <div class="log" data-scroll="${tab.id}"><div class="log-in">${logHTML(logFor(tab, topic))}</div></div>
+    <div class="dock">${decideHTML(tab)}
+      <div class="composer"><input data-composer="${tab.id}" value="${esc(tab.draft || '')}" placeholder="Message ${tab.engine}…" spellcheck="false" autocomplete="off"></div>
+    </div>`;
+}
+
+function diffPane(tab) {
+  let n = 0, flat = 0, activeFile = 0;
+  tab.files.forEach((f, i) => f.hunks.forEach(() => { if (flat++ === tab.hunk) activeFile = i; }));
+  const files = tab.files.map((f, i) => `<div class="file ${i === activeFile ? 'on' : ''}"><span>${esc(f.path)}</span><span class="n">+${f.add} −${f.del}</span></div>`).join('');
+  const hunks = tab.files.map(f => `<div class="fname">${esc(f.path)}</div>` + f.hunks.map(h => {
+    const idx = n++;
+    return `<div class="diff hunk ${idx === tab.hunk ? 'on' : ''}" data-hunk="${idx}">${h.map(([c, t]) => `<div class="${c}">${esc(t)}</div>`).join('')}</div>`;
+  }).join('')).join('');
+  const comment = tab.commenting ? `<div class="dock comment"><div class="composer"><input data-composer="${tab.id}" value="${esc(tab.draft || '')}" placeholder="Comment on this hunk, sent to the agent…" spellcheck="false" autocomplete="off"></div></div>` : '';
+  return `<div class="changes"><div class="files">${files}</div><div class="hunks" data-scroll="${tab.id}">${hunks}</div></div>${comment}`;
+}
+
+function termPane(tab, live) {
+  const lines = tab.lines.map(l => l[0] === 'pr'
+    ? `<div><span class="pr">${esc(l[1])}</span><span class="cmd">${esc(l[2])}</span></div>`
+    : `<div class="${l[0]}">${esc(l[1])}</div>`).join('');
+  const dir = tab.lines[0]?.[1] || '$ ';
+  return `<div class="term" data-scroll="${tab.id}">${lines}<div><span class="pr">${esc(dir)}</span><span class="cmd">${esc(tab.input)}</span><span class="caret ${live ? 'live' : ''}"></span></div></div>`;
+}
+
+function tabHTML(tab, i, topic) {
+  const shown = topic.panes.includes(tab.id);
+  const active = shown && topic.panes[topic.focusPane] === tab.id && S.focus !== 'sidebar';
+  const state = tab.kind === 'agent' ? tab.state : '';
+  const lead = tab.kind === 'agent' ? ICON[tab.state] : `<span class="tk">${tab.kind === 'diff' ? '±' : '›_'}</span>`;
+  const sub = tab.kind === 'diff' ? `<span class="sub">${esc(topic.delta)}</span>` : (tab.kind === 'agent' && tab.title !== tab.engine ? `<span class="sub">${tab.engine}</span>` : '');
+  return `<button class="tab ${state} ${shown ? 'shown' : ''} ${active ? 'active' : ''}" data-gotab="${tab.id}">${lead}${esc(tab.title)}${sub}<span class="hk">⌘${i + 1}</span></button>`;
+}
+
+function renderInbox() {
+  const q = waitingTabs();
+  S.inboxCur = Math.max(0, Math.min(S.inboxCur, q.length - 1));
+  const rows = q.map(({ t, tab }, i) => `<button class="inrow ${i === S.inboxCur && S.focus !== 'sidebar' ? 'on' : ''}" data-open="${t.id}" data-tabid="${tab.id}">${ICON.waiting}<span class="where">${esc(t.name)} <span>${wsLabel(wsById(t.ws))}</span></span><span class="what">${esc(tab.req?.cmd || tab.req?.q || tab.now)}</span><span class="age" data-tabage="${tab.id}">${fmt(tab)}</span></button>`).join('');
+  return `<div class="head"><div class="crumb">Inbox</div><div class="info">Everything waiting on you, across all workspaces</div></div>
+    <div class="tabs" style="height:1px;padding:0"></div>
+    <div class="inbox">${rows || '<div class="empty" style="padding-top:80px">Nothing is waiting on you.</div>'}</div>`;
+}
+
+function footerHTML() {
+  const k = (keys, label) => `<span>${keys.map(x => `<kbd>${x}</kbd>`).join('')} ${label}</span>`;
+  let mode = 'Navigate', cls = '', hints = [];
+  const tab = S.view === 'topic' ? curTab() : null;
+  if (S.focus === 'sidebar') {
+    mode = 'Sidebar';
+    const parent = parentOf(S.cur);
+    hints = [k(['J', 'K'], 'move and open'), k(['A'], parent ? addLabel(parent) : 'new topic')];
+    if (S.cur.type === 'ws') hints.push(k(['↵'], 'fold'));
+    if (S.cur.type === 'topic') hints.push(k(['↵'], 'go in'));
+  }
+  else if (S.focus === 'composer') { mode = 'Typing'; cls = 'typing'; hints = [k(['↵'], 'send'), k(['Esc'], 'stop typing')]; }
+  else if (S.focus === 'terminal') { mode = 'Terminal'; cls = 'typing'; hints = [k(['⌘Esc'], 'stop typing'), '<span>Keys go to the shell. ⌘ shortcuts still work.</span>']; }
+  else if (S.view === 'inbox') hints = [k(['J', 'K'], 'move'), k(['↵'], 'open'), k(['Esc'], 'sidebar')];
+  else if (tab.kind === 'agent' && tab.state === 'waiting' && tab.req?.opts) hints = [k(['1', '2'], 'answer'), k(['⇥'], 'next waiting'), k(['/'], 'reply'), k(['Esc'], 'sidebar')];
+  else if (tab.kind === 'agent' && tab.state === 'waiting') hints = [k(['Y'], tab.req?.risky ? 'hold to approve' : 'approve'), k(['A'], 'always'), k(['N'], 'deny'), k(['⇥'], 'next waiting'), k(['Esc'], 'sidebar')];
+  else if (tab.kind === 'agent') hints = [k(['/'], 'message'), k(['J', 'K'], 'scroll'), k(['⇥'], 'next waiting'), k(['Esc'], 'sidebar')];
+  else if (tab.kind === 'diff') hints = [k(['J', 'K'], 'next hunk'), k(['C'], 'comment to agent'), k(['⌘\\'], 'split'), k(['Esc'], 'sidebar')];
+  else hints = [k(['↵'], 'type in terminal'), k(['J', 'K'], 'scroll'), k(['Esc'], 'sidebar')];
+  if (S.hover && S.focus !== 'composer' && S.focus !== 'terminal') {
+    // The pointer takes over A, so don't also offer "always". The other keys still work.
+    const add = parentDevice(S.hover).online ? k(['A'], addLabel(S.hover)) : `<span>${addLabel(S.hover)}</span>`;
+    hints = [add, ...hints.filter(h => !h.includes('</kbd> always'))];
+  }
+  return `<div class="foot"><span class="mode ${cls}">${mode}</span>${S.flash ? `<span class="flash">${esc(S.flash)}</span>` : hints.join('')}<span class="right">Hold ⌘ for shortcuts · ${'<kbd>?</kbd>'} all · in this mock, ⌥ stands in for ⌘</span></div>`;
+}
+
+function renderMain() {
+  const main = document.getElementById('main');
+  main.querySelectorAll('[data-scroll]').forEach(el => {
+    scrolls[el.dataset.scroll] = { top: el.scrollTop, bottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 4 };
+  });
+  if (S.view === 'inbox') {
+    main.innerHTML = renderInbox() + footerHTML();
+    return;
+  }
+  const t = curTopic(), w = wsById(t.ws);
+  const panes = t.panes.map((id, i) => {
+    const tab = tabById(t, id), focused = i === t.focusPane;
+    const live = focused && S.focus === 'terminal';
+    const body = tab.kind === 'agent' ? agentPane(tab, t) : tab.kind === 'diff' ? diffPane(tab) : termPane(tab, live);
+    return `<section class="pane ${focused ? 'focused' : ''}" data-pane="${i}">${body}</section>`;
+  }).join('');
+  main.innerHTML = `
+    <div class="head">
+      <div class="crumb"><span>${deviceOf(t).name}</span><span>/</span><span>${w.name}</span><span>/</span>${esc(t.name)}</div>
+      <div class="info"><span class="code">${esc(t.branch)}</span></div>
+      <button class="ghost">Merge</button>
+    </div>
+    <div class="tabs">${t.tabs.map((x, i) => tabHTML(x, i, t)).join('')}<button class="addtab" id="addtab" data-picker>+<span class="hk" style="left:24px;top:3px">⌘T</span></button>${S.picker ? pickerHTML() : ''}</div>
+    <div class="panes ${t.panes.length > 1 ? 'split' : ''}">${panes}</div>
+    ${footerHTML()}`;
+
+  main.querySelectorAll('[data-scroll]').forEach(el => {
+    const saved = scrolls[el.dataset.scroll];
+    const toBottom = el.classList.contains('log') || el.classList.contains('term');
+    el.scrollTop = !saved ? (toBottom ? el.scrollHeight : 0) : saved.bottom && toBottom ? el.scrollHeight : saved.top;
+  });
+  if (S.focus === 'composer') {
+    const input = main.querySelector('.pane.focused [data-composer]');
+    if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  } else if (document.activeElement?.dataset?.composer) {
+    document.activeElement.blur();
+  }
+}
+
+const pickerHTML = () => {
+  const a = document.getElementById('addtab');
+  const left = a ? a.offsetLeft : 200;
+  return `<div class="picker" style="left:${left}px;top:78px">
+    <div>${ICON.idle}Claude<kbd>A</kbd></div>
+    <div>${ICON.idle}Codex<kbd>C</kbd></div>
+    <div>${ICON.idle}Gemini<kbd>G</kbd></div>
+    <div><span class="glyph">›_</span>Terminal<kbd>T</kbd></div>
+    <div><span class="glyph">±</span>Changes<kbd>D</kbd></div>
+    <p>Hold ⇧ to open beside this tab</p>
+  </div>`;
+};
+
+const render = () => {
+  renderSide();
+  renderMain();
+};
+
+let flashTimer;
+function flash(msg) {
+  S.flash = msg;
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { S.flash = ''; renderMain(); }, 2400);
+  renderMain();
+}
+
+// ------------------------------------------------------------- moving around
+
+const arrival = tab => (tab.kind === 'term' ? 'terminal' : 'main');
+
+function openTopic(id, { keepSidebar = false, tabId = null } = {}) {
+  const t = topicById(id);
+  const w = wsById(t.ws);
+  w.open = true;
+  w.lastTopic = id;
+  S.view = 'topic';
+  S.topic = id;
+  S.cur = { type: 'topic', id };
+  if (tabId) gotoTabId(t, tabId, false);
+  S.focus = keepSidebar ? 'sidebar' : arrival(curTab());
+  render();
+}
+
+function gotoTabId(t, id, doRender = true) {
+  const other = t.panes.indexOf(id);
+  if (other >= 0) t.focusPane = other;
+  else {
+    t.prev = t.panes[t.focusPane];
+    t.panes[t.focusPane] = id;
+  }
+  if (doRender) {
+    S.focus = arrival(tabById(t, id));
+    render();
+  }
+}
+
+function gotoTabN(n) {
+  if (S.view !== 'topic') return;
+  const t = curTopic(), tab = t.tabs[n];
+  if (tab) gotoTabId(t, tab.id);
+}
+function cycleTab(dir) {
+  if (S.view !== 'topic') return;
+  const t = curTopic(), i = t.tabs.findIndex(x => x.id === t.panes[t.focusPane]);
+  gotoTabId(t, t.tabs[(i + dir + t.tabs.length) % t.tabs.length].id);
+}
+
+function moveTopic(dir) {
+  const list = WS.filter(w => w.open).flatMap(w => w.topics);
+  const i = list.findIndex(t => t.id === S.topic);
+  const t = list[(i + dir + list.length) % list.length] || list[0];
+  if (t) openTopic(t.id);
+}
+function moveWorkspace(dir) {
+  const list = WS.filter(w => w.topics.length);
+  const i = list.findIndex(w => w.id === curTopic().ws);
+  const w = list[(i + dir + list.length) % list.length];
+  openTopic(w.lastTopic || w.topics[0].id);
+}
+
+function nextWaiting() {
+  const q = waitingTabs();
+  if (!q.length) return flash('Nothing is waiting on you');
+  const cur = S.view === 'topic' ? q.findIndex(x => x.tab === curTab()) : -1;
+  const { t, tab } = q[(cur + 1) % q.length];
+  openTopic(t.id, { tabId: tab.id });
+}
+
+function up() {
+  if (S.focus === 'composer' || S.focus === 'terminal') S.focus = 'main';
+  else if (S.focus === 'main') {
+    S.focus = 'sidebar';
+    S.cur = S.view === 'inbox' ? { type: 'inbox' } : { type: 'topic', id: S.topic };
+    document.getElementById('app').classList.remove('noside');
+  }
+  const tab = S.view === 'topic' ? curTab() : null;
+  if (tab?.commenting) tab.commenting = false;
+  render();
+}
+
+function moveSidebar(dir) {
+  const rows = visibleRows();
+  let i = rows.findIndex(r => r.type === S.cur.type && r.id === S.cur.id);
+  i = Math.max(0, Math.min(rows.length - 1, i + dir));
+  S.cur = rows[i];
+  if (S.cur.type === 'topic') { S.topic = S.cur.id; S.view = 'topic'; }
+  if (S.cur.type === 'inbox') S.view = 'inbox';
+  render();
+}
+
+function openInbox() {
+  S.view = 'inbox';
+  S.focus = 'main';
+  S.inboxCur = 0;
+  S.cur = { type: 'inbox' };
+  render();
+}
+
+// ------------------------------------------------------------- tabs
+
+function openPicker() {
+  if (S.view !== 'topic') return flash('Open a topic first');
+  if (!deviceOf(curTopic()).online) return flash(`${deviceOf(curTopic()).name} is offline, so nothing can start there`);
+  S.picker = true;
+  renderMain();
+}
+
+function pick(code, beside = false) {
+  S.picker = false;
+  const t = curTopic();
+  if (code === 'KeyD') return openChanges();
+  const engine = { KeyA: 'Claude', KeyC: 'Codex', KeyG: 'Gemini' }[code];
+  let tab = null;
+  if (engine) tab = agent(engine, engine, 'idle', 0, '', null);
+  else if (code === 'KeyT') {
+    const dir = '~/wt/' + t.branch.split('/').pop() + ' $ ';
+    tab = terminal('zsh', [['pr', dir, 'echo ready'], ['', 'ready']]);
+  }
+  if (!tab) return render();
+  t.tabs.push(tab);
+  if (beside) {
+    t.panes = [t.panes[t.focusPane], tab.id];
+    t.focusPane = 1;
+  } else {
+    t.prev = t.panes[t.focusPane];
+    t.panes[t.focusPane] = tab.id;
+  }
+  S.focus = tab.kind === 'term' ? 'terminal' : 'composer';
+  render();
+}
+
+function openChanges() {
+  if (S.view !== 'topic') return flash('Open a topic first');
+  const t = curTopic();
+  let tab = t.tabs.find(x => x.kind === 'diff');
+  if (!tab) {
+    tab = changes(genericDiff(t.branch.split('/').pop() + '.rs', 12, 3));
+    t.tabs.push(tab);
+  }
+  gotoTabId(t, tab.id);
+}
+
+function closeTab() {
+  if (S.view !== 'topic') return;
+  const t = curTopic(), tab = curTab();
+  if (tab.kind === 'agent' && (tab.state === 'working' || tab.state === 'waiting')) return flash('This agent is still running, so its tab stays open');
+  if (t.tabs.length === 1) return flash('A topic always keeps one tab');
+  const i = t.tabs.indexOf(tab);
+  t.tabs.splice(i, 1);
+  if (t.panes.length > 1) { t.panes.splice(t.focusPane, 1); t.focusPane = 0; }
+  else t.panes[0] = (tabById(t, t.prev) || t.tabs[Math.max(0, i - 1)]).id;
+  S.focus = arrival(curTab());
+  render();
+}
+
+function toggleSplit() {
+  if (S.view !== 'topic') return;
+  const t = curTopic();
+  if (t.panes.length > 1) {
+    t.panes = [t.panes[t.focusPane]];
+    t.focusPane = 0;
+  } else {
+    const other = (t.prev && tabById(t, t.prev) && t.prev !== t.panes[0] ? t.prev : t.tabs.find(x => x.id !== t.panes[0])?.id);
+    if (!other) return flash('Open another tab to split');
+    t.panes = [t.panes[0], other];
+    t.focusPane = 0;
+  }
+  S.focus = arrival(curTab());
+  render();
+}
+
+function otherPane() {
+  if (S.view !== 'topic') return;
+  const t = curTopic();
+  if (t.panes.length < 2) return;
+  t.focusPane = 1 - t.focusPane;
+  S.focus = arrival(curTab());
+  render();
+}
+
+// The worktree is made in the background, so you can start typing straight away
+function createTopic({ wsId, name, branch, from, start, prompt }) {
+  const w = wsById(wsId);
+  const used = new Set(allTopics().map(t => t.key));
+  const key = [...name.toLowerCase().replace(/[^a-z]/g, ''), ...'bfhijklnoqtxyz'].find(c => !used.has(c)) || null;
+  const dir = `~/wt/${branch.split('/').pop()}`;
+  let tab;
+  if (start === 'Terminal') {
+    tab = terminal('zsh', [['pr', `${dir} $ `, `git worktree add ${dir} -b ${branch} ${from}`], ['', 'Preparing worktree…']]);
+  } else {
+    tab = agent(start, start, 'idle', 0, '', null, { log: [['note', `Creating ${dir} from ${from}`]] });
+    if (prompt) {
+      tab.log.push(['you', prompt]);
+      tab.state = 'working';
+      tab.now = 'Reading the worktree';
+      tab.tr = { from: 2, d: 2 };
+    }
+  }
+  const t = { id: `n${++uid}`, key, ws: w.id, name, branch, delta: '+0 −0', tabs: [tab], panes: [tab.id], focusPane: 0, prev: null };
+  w.topics.push(t);
+  w.open = true;
+  setTimeout(() => {
+    if (tab.kind === 'term') tab.lines.push(['ok', 'Worktree ready']);
+    else tab.log.push(['note', 'Worktree ready']);
+    if (S.view === 'topic' && S.topic === t.id && !holdTimer) renderMain();
+  }, 900);
+  return t;
+}
+
+function goToNewTopic(t, hasPrompt) {
+  wsById(t.ws).lastTopic = t.id;
+  S.view = 'topic';
+  S.topic = t.id;
+  S.cur = { type: 'topic', id: t.id };
+  const tab = t.tabs[0];
+  S.focus = tab.kind === 'term' ? 'terminal' : hasPrompt ? 'main' : 'composer';
+}
+
+// ------------------------------------------------------------- creation sheets
+//
+// One pattern for everything: type a name, press ↵, and defaults fill in the rest.
+// ⇥ reaches the other fields only if you want to change them.
+
+const onlineWs = () => WS.filter(w => deviceById(w.device).online);
+const onlineDevices = () => DEVICES.filter(d => d.online);
+const FIELDS = { topic: ['name', 'prompt', 'ws', 'branch', 'from', 'start'], workspace: ['q', 'device', 'name'], device: ['q'] };
+const STARTS = ['Claude', 'Codex', 'Gemini', 'Terminal'];
+
+function openTopicSheet(wsId) {
+  const current = S.view === 'topic' ? wsById(curTopic().ws) : null;
+  const w = (wsId && wsById(wsId)) || (current && deviceById(current.device).online ? current : onlineWs()[0]);
+  S.sheet = { type: 'topic', ws: w.id, name: '', prompt: '', branch: '', branchEdited: false, from: 'main', start: S.lastStart || 'Claude', f: 0, note: '' };
+  S.picker = false;
+  renderOverlay();
+}
+function openWorkspaceSheet(deviceId) {
+  const current = S.view === 'topic' ? deviceOf(curTopic()) : null;
+  const d = (deviceId && deviceById(deviceId)) || (current?.online ? current : onlineDevices()[0]);
+  S.sheet = { type: 'workspace', device: d.id, q: '', name: '', nameEdited: false, i: 0, f: 0 };
+  S.picker = false;
+  renderOverlay();
+}
+function openDeviceSheet() {
+  S.sheet = { type: 'device', q: '', i: 0, f: 0, phase: 'pick', peer: null };
+  S.picker = false;
+  renderOverlay();
+}
+function closeSheet() {
+  S.sheet = null;
+  renderOverlay();
+  render();
+}
+
+// Moving through a list of options with ← and →
+const cycle = (list, value, dir) => list[(list.indexOf(value) + dir + list.length) % list.length];
+function cycleField(s, field, dir) {
+  if (field === 'ws') { s.ws = cycle(onlineWs().map(w => w.id), s.ws, dir); syncBranch(s); }
+  if (field === 'start') s.start = cycle(STARTS, s.start, dir);
+  if (field === 'from') s.from = cycle(fromOptions(), s.from, dir);
+  if (field === 'device') { s.device = cycle(onlineDevices().map(d => d.id), s.device, dir); s.i = 0; }
+}
+const fromOptions = () => {
+  const here = S.view === 'topic' ? curTopic().branch : null;
+  return here ? ['main', 'develop', here] : ['main', 'develop'];
+};
+function syncBranch(s) {
+  if (!s.branchEdited) s.branch = s.name.trim() ? `${wsById(s.ws).name}/${slugify(s.name)}` : '';
+}
+
+function workspaceRows(s) {
+  const q = s.q.trim(), d = deviceById(s.device);
+  if (/^(https?:\/\/|git@)/.test(q)) {
+    const name = q.split('/').pop().replace(/\.git$/, '') || 'repo';
+    return [{ glyph: '↓', label: `Clone ${q}`, sub: `Into ${d.root}/${name}`, name, path: `${d.root}/${name}` }];
+  }
+  const found = (REPOS[d.id] || [`${d.root}/app`, `${d.root}/tools`])
+    .filter(path => !WS.some(w => w.path === path) && path.toLowerCase().includes(q.toLowerCase()))
+    .map(path => ({ glyph: '#', label: path.split('/').pop(), sub: path, name: path.split('/').pop(), path }));
+  if (q && !found.some(r => r.name === q)) {
+    const name = slugify(q);
+    found.push({ glyph: '+', label: `Create new repo “${q}”`, sub: `${d.root}/${name}`, name, path: `${d.root}/${name}` });
+  }
+  return found;
+}
+
+function deviceRows(s) {
+  const q = s.q.trim().toLowerCase();
+  const peers = PEERS.filter(p => !DEVICES.some(d => d.name === p.name) && (p.name.includes(q) || p.addr.includes(q)));
+  const rows = peers.map(p => ({ glyph: p.daemon ? '●' : '○', label: p.name, sub: p.addr, peer: p, right: p.daemon ? 'Daemon running' : 'Not installed' }));
+  if (q && !peers.length) rows.push({ glyph: '+', label: `Connect to ${s.q.trim()}`, sub: 'By name or address', peer: { name: s.q.trim(), addr: s.q.trim(), daemon: true } });
+  return rows;
+}
+
+const chip = (s, field, label, value, kind = 'cycle') => {
+  const on = FIELDS[s.type][s.f] === field;
+  if (kind === 'text') return `<label class="chip ${on ? 'on' : ''}"><span>${label}</span><input data-f="${field}" data-sf="${field}" value="${esc(value)}" placeholder="auto" spellcheck="false" autocomplete="off" style="width:${Math.max(4, value.length + 1)}ch"></label>`;
+  return `<button class="chip ${on ? 'on' : ''}" data-f="${field}" data-chip="${field}"><span>${label}</span>${on ? '<i>◂</i>' : ''}${esc(value)}${on ? '<i>▸</i>' : ''}</button>`;
+};
+
+function sheetHTML(s) {
+  if (s.type === 'topic') {
+    const w = wsById(s.ws), d = deviceById(w.device);
+    const dir = s.branch ? `~/wt/${s.branch.split('/').pop()}` : 'a new worktree';
+    return `<div class="sheet-head">New topic<span>${esc(s.note)}</span></div>
+      <input class="big" data-f="name" data-sf="name" value="${esc(s.name)}" placeholder="Topic name" spellcheck="false" autocomplete="off">
+      <input class="small" data-f="prompt" data-sf="prompt" value="${esc(s.prompt)}" placeholder="First prompt for the agent (optional)" spellcheck="false" autocomplete="off">
+      <div class="chips">
+        ${chip(s, 'ws', 'In', wsLabel(w))}
+        ${chip(s, 'branch', 'Branch', s.branch, 'text')}
+        ${chip(s, 'from', 'From', s.from)}
+        ${chip(s, 'start', 'Start with', s.start)}
+      </div>
+      <div class="sheet-foot"><span class="what">Creates ${esc(dir)} on ${d.name}</span>
+        <button class="sbtn" data-submit="bg"><span>Create and add another</span><kbd>⌘↵</kbd></button>
+        <button class="sbtn primary" data-submit="go"><span>Create and open</span><kbd>↵</kbd></button></div>`;
+  }
+  if (s.type === 'workspace') {
+    const d = deviceById(s.device), rows = workspaceRows(s);
+    s.i = Math.max(0, Math.min(s.i, rows.length - 1));
+    const name = s.nameEdited ? s.name : (rows[s.i]?.name || '');
+    return `<div class="sheet-head">New workspace<span>Lives on one device, and stays there</span></div>
+      <input class="big" data-f="q" data-sf="q" value="${esc(s.q)}" placeholder="Find a repo, paste a git URL, or name a new one" spellcheck="false" autocomplete="off">
+      <div class="sheet-list">${rows.map((r, i) => `<div class="pal ${i === s.i ? 'on' : ''}" data-row="${i}"><span class="glyph">${r.glyph}</span>${esc(r.label)}<span class="sub">${esc(r.sub)}</span></div>`).join('') || '<div class="pal"><span class="sub">Type to name a new repo</span></div>'}</div>
+      <div class="chips">
+        ${chip(s, 'device', 'On', d.name)}
+        ${chip(s, 'name', 'Name', name, 'text')}
+      </div>
+      <div class="sheet-foot"><span class="what">Each topic gets its own worktree in ~/wt on ${d.name}</span>
+        <button class="sbtn" data-submit="bg"><span>Create only</span><kbd>⌘↵</kbd></button>
+        <button class="sbtn primary" data-submit="go"><span>Create, then add a topic</span><kbd>↵</kbd></button></div>`;
+  }
+  if (s.phase === 'pairing') {
+    return `<div class="sheet-head">Add device</div>
+      <div class="pairing"><p>Approve this client on <b>${esc(s.peer.name)}</b> by running:</p><pre>tectr pair 4F7-K2Q</pre><p class="wait">Waiting for ${esc(s.peer.name)}…</p></div>
+      <div class="sheet-foot"><span class="what">Adds this client to the daemon’s allowed keys</span><button class="sbtn" data-cancel><span>Back</span><kbd>Esc</kbd></button></div>`;
+  }
+  if (s.phase === 'install') {
+    return `<div class="sheet-head">Add device</div>
+      <div class="pairing"><p><b>${esc(s.peer.name)}</b> isn’t running the tectr daemon yet. Install it there, then add the device again:</p><pre>curl -fsSL tectr.dev/install | sh</pre></div>
+      <div class="sheet-foot"><span class="what">The command is a placeholder in this mock</span><button class="sbtn" data-cancel><span>Back</span><kbd>Esc</kbd></button></div>`;
+  }
+  const rows = deviceRows(s);
+  s.i = Math.max(0, Math.min(s.i, rows.length - 1));
+  return `<div class="sheet-head">Add device<span>Found on your tailnet</span></div>
+    <input class="big" data-f="q" data-sf="q" value="${esc(s.q)}" placeholder="Search, or enter a name or address" spellcheck="false" autocomplete="off">
+    <div class="sheet-list">${rows.map((r, i) => `<div class="pal ${i === s.i ? 'on' : ''}" data-row="${i}"><span class="glyph">${r.glyph}</span>${esc(r.label)}<span class="sub">${esc(r.sub)}</span>${r.right ? `<span class="kind">${r.right}</span>` : ''}</div>`).join('') || '<div class="pal"><span class="sub">Nothing found. Type a name or address.</span></div>'}</div>
+    <div class="sheet-foot"><span class="what">Connects directly, with no server in between</span><button class="sbtn primary" data-submit="go"><span>Connect</span><kbd>↵</kbd></button></div>`;
+}
+
+function renderSheet(root) {
+  const s = S.sheet, active = document.activeElement;
+  const caret = active?.dataset?.sf ? active.selectionStart : null;
+  root.innerHTML = `<div class="scrim" data-close><div class="sheet">${sheetHTML(s)}</div></div>`;
+  const el = root.querySelector(`[data-f="${FIELDS[s.type][s.f]}"]`);
+  if (!el) return;
+  el.focus();
+  if (el.tagName === 'INPUT') {
+    const at = caret === null ? el.value.length : Math.min(caret, el.value.length);
+    el.setSelectionRange(at, at);
+  }
+}
+
+function submitSheet(background) {
+  const s = S.sheet;
+  if (s.type === 'topic') {
+    const name = s.name.trim() || s.prompt.trim().split(/\s+/).slice(0, 5).join(' ');
+    if (!name) { s.note = 'Give it a name or a first prompt'; s.f = 0; return renderOverlay(); }
+    const branch = s.branch.trim() || `${wsById(s.ws).name}/${slugify(name)}`;
+    const t = createTopic({ wsId: s.ws, name, branch, from: s.from, start: s.start, prompt: s.prompt.trim() });
+    S.lastStart = s.start;
+    if (background) {
+      Object.assign(s, { name: '', prompt: '', branch: '', branchEdited: false, f: 0, note: `Created “${name}”` });
+      renderSide();
+      renderOverlay();
+      return;
+    }
+    const hasPrompt = !!s.prompt.trim();
+    S.sheet = null;
+    goToNewTopic(t, hasPrompt);
+    renderOverlay();
+    render();
+    return;
+  }
+  if (s.type === 'workspace') {
+    const rows = workspaceRows(s), row = rows[s.i];
+    const name = (s.nameEdited ? s.name.trim() : row?.name) || '';
+    if (!name) return;
+    const w = { id: `w${++uid}`, name, device: s.device, path: row?.path || `${deviceById(s.device).root}/${name}`, open: true, topics: [] };
+    let at = -1;
+    WS.forEach((x, i) => { if (x.device === s.device) at = i; });
+    WS.splice(at + 1, 0, w);
+    if (background) return closeSheet();
+    renderSide();
+    openTopicSheet(w.id); // An empty workspace does nothing, so go straight to its first topic
+    return;
+  }
+  // Device
+  const row = deviceRows(s)[s.i];
+  if (!row) return;
+  s.peer = row.peer;
+  s.phase = row.peer.daemon ? 'pairing' : 'install';
+  renderOverlay();
+  if (!row.peer.daemon) return;
+  const peer = row.peer;
+  setTimeout(() => {
+    // The mock approves by itself. Leaving the sheet cancels pairing.
+    if (S.sheet !== s || s.phase !== 'pairing') return;
+    const d = { id: `d${++uid}`, name: peer.name, via: '24 ms', online: true, root: '~/code' };
+    DEVICES.push(d);
+    renderSide();
+    openWorkspaceSheet(d.id); // Same reason: a device with no workspaces does nothing yet
+  }, 2400);
+}
+
+function onSheetKey(e) {
+  const s = S.sheet, field = FIELDS[s.type][s.f], cmd = e.metaKey || e.altKey;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    if (s.type === 'device' && s.phase !== 'pick') { s.phase = 'pick'; renderOverlay(); return; }
+    closeSheet();
+  } else if (e.key === 'Tab') {
+    e.preventDefault();
+    const n = FIELDS[s.type].length;
+    s.f = (s.f + (e.shiftKey ? -1 : 1) + n) % n;
+    renderOverlay();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (s.type === 'device' && s.phase !== 'pick') return;
+    submitSheet(cmd);
+  } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && ['ws', 'start', 'from', 'device'].includes(field)) {
+    e.preventDefault();
+    cycleField(s, field, e.key === 'ArrowLeft' ? -1 : 1);
+    renderOverlay();
+  } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && s.type !== 'topic' && (s.type !== 'device' || s.phase === 'pick')) {
+    e.preventDefault();
+    s.i += e.key === 'ArrowDown' ? 1 : -1;
+    renderOverlay();
+  }
+}
+
+// ------------------------------------------------------------- decisions
+
+function settle(topic, tab, note) {
+  tab.state = 'working';
+  tab.secs = 0;
+  tab.now = tab.req.next;
+  tab.log.push(['note', note]);
+  delete tab.req;
+  S.fade = topic.id;
+  render();
+  setTimeout(() => { S.fade = null; }, 340);
+}
+
+let holdTimer = null;
+function startApprove(tab) {
+  if (!tab || tab.state !== 'waiting' || !tab.req || tab.req.opts) return;
+  const t = curTopic();
+  if (!tab.req.risky) return settle(t, tab, 'You approved this');
+  if (holdTimer) return;
+  document.querySelector(`[data-approve="${tab.id}"]`)?.classList.add('holding');
+  holdTimer = setTimeout(() => { holdTimer = null; settle(t, tab, 'You approved this'); }, 500);
+}
+function cancelHold() {
+  if (!holdTimer) return;
+  clearTimeout(holdTimer);
+  holdTimer = null;
+  document.querySelector('.holding')?.classList.remove('holding');
+}
+
+// ------------------------------------------------------------- palette
+
+function paletteItems() {
+  const items = [];
+  for (const w of WS) for (const t of w.topics) items.push({ label: t.name, sub: wsLabel(w), kind: 'Topic', run: () => openTopic(t.id) });
+  if (S.view === 'topic') curTopic().tabs.forEach(tab => items.push({ label: tab.title, sub: curTopic().name, kind: tab.kind === 'agent' ? 'Agent' : tab.kind === 'diff' ? 'Diff' : 'Terminal', run: () => gotoTabId(curTopic(), tab.id) }));
+  const cmd = (label, run) => items.push({ label, sub: '', kind: 'Command', run });
+  cmd('New topic', () => openTopicSheet());
+  cmd('New workspace', () => openWorkspaceSheet());
+  cmd('Add device', openDeviceSheet);
+  const inTopic = code => () => { if (S.view === 'topic' && deviceOf(curTopic()).online) pick(code); else flash('Open a topic on an online device first'); };
+  cmd('New terminal in this topic', inTopic('KeyT'));
+  cmd('New Claude agent in this topic', inTopic('KeyA'));
+  cmd('New Codex agent in this topic', inTopic('KeyC'));
+  cmd('New Gemini agent in this topic', inTopic('KeyG'));
+  cmd('Open changes', openChanges);
+  cmd('Open inbox', openInbox);
+  cmd('Split or unsplit', toggleSplit);
+  cmd('Show or hide sidebar', toggleSide);
+  return items;
+}
+function paletteFilter() {
+  const q = S.palette.q.toLowerCase();
+  const fuzzy = s => { let i = 0; for (const c of s.toLowerCase()) if (c === q[i]) i++; return i === q.length; };
+  return paletteItems().filter(x => fuzzy(x.label) || fuzzy(`${x.sub} ${x.label}`)).sort((a, b) => a.label.toLowerCase().includes(q) === b.label.toLowerCase().includes(q) ? 0 : a.label.toLowerCase().includes(q) ? -1 : 1).slice(0, 9);
+}
+function renderOverlay() {
+  const root = document.getElementById('overlay');
+  if (S.palette) {
+    if (!root.querySelector('.palette')) {
+      root.innerHTML = `<div class="scrim" data-close><div class="palette"><input id="pal-in" placeholder="Jump to a topic or tab, or run a command…" spellcheck="false" autocomplete="off"><div class="pal-list" id="pal-list"></div></div></div>`;
+      document.getElementById('pal-in').focus();
+    }
+    const list = paletteFilter();
+    S.palette.i = Math.max(0, Math.min(S.palette.i, list.length - 1));
+    document.getElementById('pal-list').innerHTML = list.map((x, i) => `<div class="pal ${i === S.palette.i ? 'on' : ''}" data-pal="${i}">${esc(x.label)}<span class="sub">${esc(x.sub)}</span><span class="kind">${x.kind}</span></div>`).join('') || '<div class="pal"><span class="sub">No matches</span></div>';
+  } else if (S.help) {
+    const li = (label, ...keys) => `<li>${label}<span>${keys.map(x => `<kbd>${x}</kbd>`).join('')}</span></li>`;
+    root.innerHTML = `<div class="scrim" style="padding-top:8vh" data-close><div class="help">
+      <h3>Keyboard</h3><p>⌘ shortcuts work everywhere, even inside a terminal. Single keys only work when you aren’t typing. In this browser mock, press ⌥ wherever you see ⌘.</p>
+      <div class="help-cols">
+        <div><h4>Get anywhere</h4><ul>${li('Jump to a topic by its letter', '⌘G', 'letter')}${li('Jump or run anything', '⌘K')}${li('Next thing waiting on you', '⌘J')}${li('Inbox', '⌘I')}${li('Previous or next topic', '⌥↑', '⌥↓')}${li('Previous or next workspace', '⌥⇧↑', '⌥⇧↓')}</ul></div>
+        <div><h4>Create</h4><ul>${li('New topic', '⌘N')}${li('New workspace', '⌘⇧N')}${li('New tab, then A, C, G, T or D', '⌘T')}${li('Open it beside this tab', '⇧', 'letter')}${li('Add inside the row you point at', 'A')}${li('Add a device', '⌘K', 'add')}</ul></div>
+        <div><h4>Tabs</h4><ul>${li('Go to tab', '⌘1', '…', '⌘9')}${li('Previous or next tab', '⌘[', '⌘]')}${li('Open changes', '⌘D')}${li('Close tab', '⌘W')}${li('Split, switch pane', '⌘\\', '⌘;')}${li('Show or hide sidebar', '⌘B')}</ul></div>
+        <div><h4>Focus</h4><ul>${li('Go up a level', 'Esc')}${li('Go up from a terminal', '⌘Esc')}${li('Go in a level', '↵')}${li('Message the agent', '/')}</ul></div>
+        <div><h4>Decide and review (when not typing)</h4><ul>${li('Approve, hold if risky', 'Y')}${li('Always, deny', 'A', 'N')}${li('Answer a question', '1', '2')}${li('Next waiting', '⇥')}${li('Move, by hunk in a diff', 'J', 'K')}${li('Comment on a hunk', 'C')}</ul></div>
+        <div><h4>In a creation sheet</h4><ul>${li('Create and open', '↵')}${li('Create without opening it', '⌘↵')}${li('Next or previous field', '⇥', '⇧⇥')}${li('Change an option', '←', '→')}</ul></div>
+      </div></div></div>`;
+  } else if (S.sheet) renderSheet(root);
+  else root.innerHTML = '';
+}
+
+function toggleSide() {
+  const app = document.getElementById('app');
+  app.classList.toggle('noside');
+  if (app.classList.contains('noside') && S.focus === 'sidebar') S.focus = S.view === 'topic' ? arrival(curTab()) : 'main';
+  render();
+}
+
+// ------------------------------------------------------------- keyboard
+
+// Holding the modifier reveals shortcuts on the surface
+let revealTimer = null;
+const stopReveal = () => { clearTimeout(revealTimer); revealTimer = null; document.body.classList.remove('reveal'); };
+
+function chord(code, shift) {
+  if (code === 'ArrowUp' || code === 'ArrowDown') {
+    const dir = code === 'ArrowUp' ? -1 : 1;
+    if (S.view !== 'topic') openTopic(S.topic);
+    else if (shift) moveWorkspace(dir);
+    else moveTopic(dir);
+    return true;
+  }
+  const digit = /^Digit([1-9])$/.exec(code);
+  if (digit) { gotoTabN(+digit[1] - 1); return true; }
+  const map = {
+    KeyK: () => { S.palette = { q: '', i: 0 }; renderOverlay(); },
+    KeyJ: nextWaiting,
+    KeyG: () => { S.hint = true; render(); },
+    KeyI: openInbox,
+    KeyT: openPicker,
+    KeyW: closeTab,
+    KeyN: () => (shift ? openWorkspaceSheet() : openTopicSheet()),
+    KeyD: openChanges,
+    KeyB: toggleSide,
+    Backslash: toggleSplit,
+    Semicolon: otherPane,
+    BracketLeft: () => cycleTab(-1),
+    BracketRight: () => cycleTab(1),
+    Escape: up,
+  };
+  if (!map[code]) return false;
+  map[code]();
+  return true;
+}
+
+function onMainKey(e, k) {
+  if (S.view === 'inbox') {
+    const q = waitingTabs();
+    if (k === 'j' || k === 'arrowdown') { S.inboxCur++; renderMain(); }
+    else if (k === 'k' || k === 'arrowup') { S.inboxCur--; renderMain(); }
+    else if (k === 'enter' && q[S.inboxCur]) openTopic(q[S.inboxCur].t.id, { tabId: q[S.inboxCur].tab.id });
+    else if (k === 'escape') up();
+    else if (e.key === 'Tab') { e.preventDefault(); nextWaiting(); }
+    else return;
+    e.preventDefault();
+    return;
+  }
+  const t = curTopic(), tab = curTab();
+  const scrollBox = document.querySelector('.pane.focused [data-scroll]');
+  if (k === 'escape') up();
+  else if (e.key === 'Tab') { e.preventDefault(); nextWaiting(); }
+  else if (k === 'j' || k === 'arrowdown' || k === 'k' || k === 'arrowup') {
+    e.preventDefault();
+    const dir = k === 'j' || k === 'arrowdown' ? 1 : -1;
+    if (tab.kind === 'diff') {
+      const count = tab.files.reduce((n, f) => n + f.hunks.length, 0);
+      tab.hunk = Math.max(0, Math.min(count - 1, tab.hunk + dir));
+      renderMain();
+      document.querySelector('.pane.focused .hunk.on')?.scrollIntoView({ block: 'nearest' });
+    } else if (scrollBox) scrollBox.scrollTop += dir * 90;
+  }
+  else if (tab.kind === 'term' && (k === 'enter' || k === '/')) { e.preventDefault(); S.focus = 'terminal'; renderMain(); }
+  else if (tab.kind === 'agent' && (k === 'enter' || k === '/')) { e.preventDefault(); S.focus = 'composer'; renderMain(); }
+  else if (tab.kind === 'diff' && k === 'c') { e.preventDefault(); tab.commenting = true; S.focus = 'composer'; renderMain(); }
+  else if (tab.kind === 'agent' && k === 'y' && !e.repeat) startApprove(tab);
+  else if (tab.kind === 'agent' && k === 'a' && tab.state === 'waiting' && tab.req?.cmd) settle(t, tab, 'You approved always for this topic');
+  else if (tab.kind === 'agent' && k === 'n' && tab.state === 'waiting' && tab.req?.cmd) settle(t, tab, 'You denied this');
+  else if (tab.kind === 'agent' && (k === '1' || k === '2') && tab.req?.opts) settle(t, tab, `You answered: ${tab.req.opts[+k - 1].split(',')[0]}`);
+}
+
+// The parent a new item would go into: a device takes workspaces, and a workspace
+// or any of its topics takes topics.
+function parentOf(row) {
+  if (row.type === 'device') return { type: 'device', id: row.id };
+  if (row.type === 'ws') return { type: 'ws', id: row.id };
+  if (row.type === 'topic') return { type: 'ws', id: topicById(row.id).ws };
+  return null;
+}
+const parentDevice = parent => deviceById(parent.type === 'device' ? parent.id : wsById(parent.id).device);
+
+function addInto(parent) {
+  const d = parentDevice(parent);
+  if (!d.online) return flash(`${d.name} is offline, so nothing can be created there`);
+  if (parent.type === 'device') openWorkspaceSheet(parent.id);
+  else openTopicSheet(parent.id);
+}
+const addLabel = parent => {
+  const d = parentDevice(parent);
+  if (!d.online) return `${d.name} is offline`;
+  return parent.type === 'device' ? `new workspace on ${d.name}` : `new topic in ${wsById(parent.id).name}`;
+};
+
+function rowFromElement(el) {
+  const r = el.closest?.('#side .srow');
+  if (!r) return null;
+  if (r.dataset.device) return { type: 'device', id: r.dataset.device };
+  if (r.dataset.ws) return { type: 'ws', id: r.dataset.ws };
+  if (r.dataset.topic) return { type: 'topic', id: r.dataset.topic };
+  if (r.dataset.addTopic) return { type: 'ws', id: r.dataset.addTopic };
+  if (r.dataset.addWs) return { type: 'device', id: r.dataset.addWs };
+  return null;
+}
+
+function onSidebarKey(e, k) {
+  const fold = (item, open) => { item.open = open; render(); };
+  if (k === 'j' || k === 'arrowdown') { e.preventDefault(); moveSidebar(1); }
+  else if (k === 'k' || k === 'arrowup') { e.preventDefault(); moveSidebar(-1); }
+  else if (k === 'a') {
+    e.preventDefault();
+    const parent = parentOf(S.cur);
+    if (parent) addInto(parent);
+    else openTopicSheet();
+  }
+  else if (k === 'arrowleft') {
+    e.preventDefault();
+    if (S.cur.type === 'ws') {
+      const w = wsById(S.cur.id);
+      if (w.open) fold(w, false);
+      else { S.cur = { type: 'device', id: w.device }; render(); }
+    }
+    else if (S.cur.type === 'topic') { S.cur = { type: 'ws', id: topicById(S.cur.id).ws }; render(); }
+  }
+  else if (k === 'arrowright' || k === 'enter') {
+    e.preventDefault();
+    if (S.cur.type === 'device') return;
+    if (S.cur.type === 'ws') { const w = wsById(S.cur.id); fold(w, k === 'enter' ? !w.open : true); }
+    else { S.focus = S.view === 'topic' ? arrival(curTab()) : 'main'; render(); }
+  }
+}
+
+function onTerminalKey(e) {
+  const tab = curTab();
+  e.preventDefault();
+  if (e.key === 'Enter') {
+    const dir = tab.lines[0]?.[1] || '$ ';
+    tab.lines.push(['pr', dir, tab.input]);
+    if (tab.input.trim()) tab.lines.push(['', `(mock terminal) ${tab.input.trim().split(' ')[0]}: not really running`]);
+    tab.input = '';
+    scrolls[tab.id] = null;
+  } else if (e.key === 'Backspace') tab.input = tab.input.slice(0, -1);
+  else if (e.key.length === 1) tab.input += e.key;
+  else return;
+  renderMain();
+}
+
+function onComposerKey(e) {
+  const tab = curTab(), t = curTopic();
+  if (e.key === 'Escape') { e.preventDefault(); up(); return; }
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const text = (tab.draft || '').trim();
+  if (!text) { up(); return; }
+  tab.draft = '';
+  if (tab.kind === 'diff') {
+    const target = t.tabs.find(x => x.kind === 'agent');
+    logFor(target, t).push(['you', `On this hunk: ${text}`]);
+    tab.commenting = false;
+    S.focus = 'main';
+    flash(`Sent to ${target.engine}`);
+    render();
+    return;
+  }
+  logFor(tab, t).push(['you', text]);
+  if (tab.state === 'idle') {
+    tab.state = 'working';
+    tab.secs = 0;
+    tab.now = 'Reading the worktree';
+    tab.tr = { from: 2, d: 2 };
+    tab.ticks = [];
+  }
+  scrolls[tab.id] = null;
+  S.focus = 'main';
+  render();
+}
+
+addEventListener('keydown', e => {
+  const { code, key } = e;
+  const cmd = e.metaKey || e.altKey, k = key.toLowerCase();
+
+  if (key === 'Alt' || key === 'Meta') {
+    if (!revealTimer) revealTimer = setTimeout(() => document.body.classList.add('reveal'), 300);
+    return;
+  }
+  stopReveal();
+
+  if (S.hint) {
+    e.preventDefault();
+    S.hint = false;
+    const m = /^Key([A-Z])$/.exec(code);
+    const target = m && allTopics().find(t => t.key === m[1].toLowerCase());
+    if (target) openTopic(target.id); else render();
+    return;
+  }
+  if (S.help) {
+    if (key === 'Escape' || key === '?') { e.preventDefault(); S.help = false; renderOverlay(); }
+    return;
+  }
+  if (S.palette) {
+    if (key === 'Escape' || (cmd && code === 'KeyK')) { e.preventDefault(); S.palette = null; renderOverlay(); }
+    else if (key === 'ArrowDown' || (e.ctrlKey && code === 'KeyN')) { e.preventDefault(); S.palette.i++; renderOverlay(); }
+    else if (key === 'ArrowUp' || (e.ctrlKey && code === 'KeyP')) { e.preventDefault(); S.palette.i--; renderOverlay(); }
+    else if (key === 'Enter') {
+      e.preventDefault();
+      const item = paletteFilter()[S.palette.i];
+      S.palette = null;
+      renderOverlay();
+      item?.run();
+    }
+    return;
+  }
+  if (S.sheet) return onSheetKey(e);
+  if (S.picker) {
+    e.preventDefault();
+    if (key === 'Shift') return;
+    if (key === 'Escape') { S.picker = false; renderMain(); } else pick(code, e.shiftKey);
+    return;
+  }
+
+  if (cmd && chord(code, e.shiftKey)) { e.preventDefault(); return; }
+  if (cmd || e.ctrlKey) return;
+
+  if (S.focus === 'composer') return onComposerKey(e);
+  if (S.focus === 'terminal') return onTerminalKey(e);
+  if (key === '?') { e.preventDefault(); S.help = true; renderOverlay(); return; }
+  // Letters go to whatever you're typing in first, so this can't fire mid-sentence
+  if (k === 'a' && S.hover) { e.preventDefault(); addInto(S.hover); return; }
+  if (S.focus === 'sidebar') return onSidebarKey(e, k);
+  onMainKey(e, k);
+});
+
+addEventListener('keyup', e => {
+  if (e.key === 'Alt' || e.key === 'Meta') stopReveal();
+  if (e.code === 'KeyY') cancelHold();
+});
+
+// ------------------------------------------------------------- pointer
+
+document.addEventListener('mouseover', e => {
+  const row = rowFromElement(e.target);
+  const next = row ? parentOf(row) : null;
+  if (next?.type === S.hover?.type && next?.id === S.hover?.id) return;
+  S.hover = next;
+  const foot = document.querySelector('.foot');
+  if (foot) foot.outerHTML = footerHTML();
+});
+
+document.addEventListener('input', e => {
+  if (e.target.id === 'pal-in') { S.palette.q = e.target.value; S.palette.i = 0; renderOverlay(); return; }
+  const sf = e.target.dataset?.sf;
+  if (sf && S.sheet) {
+    const s = S.sheet;
+    s[sf] = e.target.value;
+    if (sf === 'branch') s.branchEdited = !!s.branch;
+    if (sf === 'name' && s.type === 'topic') syncBranch(s);
+    if (sf === 'name' && s.type === 'workspace') s.nameEdited = !!s.name;
+    if (sf === 'q') s.i = 0;
+    s.note = s.type === 'topic' ? '' : s.note;
+    renderOverlay();
+    return;
+  }
+  const id = e.target.dataset?.composer;
+  if (id && S.view === 'topic') { const tab = tabById(curTopic(), id); if (tab) tab.draft = e.target.value; }
+});
+
+document.addEventListener('focusin', e => {
+  if (e.target.dataset?.composer && S.focus !== 'composer') {
+    const pane = e.target.closest('[data-pane]');
+    if (pane) curTopic().focusPane = +pane.dataset.pane;
+    S.focus = 'composer';
+    renderSide();
+  }
+});
+
+document.addEventListener('click', e => {
+  const el = e.target;
+  const close = el.closest('[data-close]');
+  if (close && el === close) {
+    if (S.sheet) return closeSheet();
+    S.palette = null; S.help = false; renderOverlay(); return;
+  }
+  if (S.sheet) {
+    const s = S.sheet;
+    const submit = el.closest('[data-submit]');
+    if (submit) return submitSheet(submit.dataset.submit === 'bg');
+    if (el.closest('[data-cancel]')) { s.phase = 'pick'; return renderOverlay(); }
+    const row = el.closest('[data-row]');
+    if (row) { s.i = +row.dataset.row; return submitSheet(false); }
+    const chipEl = el.closest('[data-chip]');
+    if (chipEl) {
+      const field = chipEl.dataset.chip, at = FIELDS[s.type].indexOf(field);
+      if (s.f === at) cycleField(s, field, 1); else s.f = at;
+      return renderOverlay();
+    }
+    const input = el.closest('[data-f]');
+    if (input) s.f = FIELDS[s.type].indexOf(input.dataset.f);
+    return;
+  }
+  const addWs = el.closest('[data-add-ws]');
+  if (addWs) return openWorkspaceSheet(addWs.dataset.addWs || undefined);
+  const addTopic = el.closest('[data-add-topic]');
+  if (addTopic) return openTopicSheet(addTopic.dataset.addTopic);
+  if (el.closest('[data-add-device]')) return openDeviceSheet();
+  const pal = el.closest('[data-pal]');
+  if (pal) { const item = paletteFilter()[+pal.dataset.pal]; S.palette = null; renderOverlay(); item?.run(); return; }
+  if (el.closest('[data-palette]')) { S.palette = { q: '', i: 0 }; renderOverlay(); return; }
+  if (el.closest('[data-inbox]')) return openInbox();
+  const dev = el.closest('[data-device]');
+  if (dev) { S.cur = { type: 'device', id: dev.dataset.device }; S.focus = 'sidebar'; render(); return; }
+  const ws = el.closest('[data-ws]');
+  if (ws) { const w = wsById(ws.dataset.ws); w.open = !w.open; S.cur = { type: 'ws', id: w.id }; render(); return; }
+  const top = el.closest('[data-topic]');
+  if (top) return openTopic(top.dataset.topic);
+  const gotab = el.closest('[data-gotab]');
+  if (gotab) return gotoTabId(curTopic(), gotab.dataset.gotab);
+  if (el.closest('[data-picker]')) return openPicker();
+  const open = el.closest('[data-open]');
+  if (open) return openTopic(open.dataset.open, { tabId: open.dataset.tabid });
+  const opt = el.closest('[data-opt]');
+  if (opt) { const tab = tabById(curTopic(), opt.dataset.tab); return settle(curTopic(), tab, `You answered: ${tab.req.opts[+opt.dataset.opt - 1].split(',')[0]}`); }
+  const always = el.closest('[data-always]');
+  if (always) return settle(curTopic(), tabById(curTopic(), always.dataset.always), 'You approved always for this topic');
+  const deny = el.closest('[data-deny]');
+  if (deny) return settle(curTopic(), tabById(curTopic(), deny.dataset.deny), 'You denied this');
+  const pane = el.closest('[data-pane]');
+  if (pane && !el.closest('input')) {
+    const t = curTopic();
+    t.focusPane = +pane.dataset.pane;
+    S.focus = arrival(curTab());
+    render();
+  }
+});
+
+document.addEventListener('pointerdown', e => {
+  const b = e.target.closest('[data-approve]');
+  if (b) startApprove(tabById(curTopic(), b.dataset.approve));
+});
+document.addEventListener('pointerup', cancelHold);
+
+// ------------------------------------------------------------- scripted life
+
+setInterval(() => {
+  for (const t of allTopics()) for (const tab of t.tabs) {
+    if (tab.kind === 'agent' && (tab.state === 'working' || tab.state === 'waiting')) tab.secs++;
+  }
+  for (const t of allTopics()) {
+    const el = document.querySelector(`[data-age="${t.id}"] .meta`);
+    if (el) el.textContent = fmt(rollupTab(t));
+  }
+  document.querySelectorAll('[data-tabage]').forEach(el => {
+    for (const t of allTopics()) { const tab = tabById(t, el.dataset.tabage); if (tab) el.textContent = fmt(tab); }
+  });
+}, 1000);
+
+const TARGETS = {
+  Read: ['crates/daemon/src/acp.rs', 'ui/src/transcript/viewport.ts', 'crates/tectr-client/src/merge.rs'],
+  Edit: ['crates/daemon/src/spawn.rs', 'ui/src/transcript/viewport.ts', 'crates/tectr-client/src/merge.rs'],
+  Run: ['cargo check --workspace', 'cargo test --workspace', 'pnpm test'],
+};
+const TICK = { Read: 'r', Edit: 'e', Run: 'b' };
+setInterval(() => {
+  const live = allTopics().flatMap(t => t.tabs.filter(x => x.kind === 'agent' && x.state === 'working').map(tab => ({ t, tab })));
+  if (!live.length) return;
+  const { t, tab } = live[Math.floor(Math.random() * live.length)];
+  const kind = Object.keys(TARGETS)[Math.floor(Math.random() * 3)];
+  const path = TARGETS[kind][Math.floor(Math.random() * 3)];
+  tab.ticks.push({ t: 0.02, k: TICK[kind] });
+  logFor(tab, t).push(['tool', kind, path, '']);
+  const visible = S.view === 'topic' && t.id === S.topic && t.panes.includes(tab.id);
+  // Repainting would restart the fill on a button being held
+  if (visible && !holdTimer) renderMain();
+}, 1400);
+
+// After 12 seconds an agent in the folded twig workspace blocks.
+// Its workspace row shows the count, and ⌘J reaches it without unfolding anything by hand.
+setTimeout(() => {
+  const t = topicById('g'), tab = t.tabs[0];
+  tab.state = 'waiting';
+  tab.secs = 0;
+  tab.now = 'Edit src/lib.rs';
+  logFor(tab, t);
+  tab.req = { kind: 'Edit file', cmd: 'src/lib.rs  +2 −0  add mod worktree;', next: 'Editing src/worktree.rs' };
+  renderSide();
+  if (S.view === 'inbox' || (S.view === 'topic' && curTab().state === 'waiting')) renderMain();
+}, 12000);
+
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tectr · board mockup</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  .app { display: grid; grid-template-rows: 34px 1fr auto; height: 100vh; min-width: 1180px; }
+
+  /* Top bar */
+  .top { display: flex; align-items: stretch; border-bottom: 1px solid var(--rule-strong); background: var(--recess); }
+  .mark { display: flex; align-items: center; padding: 0 16px; font: 700 17px/1 var(--board); letter-spacing: 0.01em; border-right: 1px solid var(--rule); }
+  .tally { display: flex; align-items: center; gap: 6px; padding: 0 13px; font: 600 13px/1 var(--board); letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-2); border-right: 1px solid var(--rule); }
+  .tally b { font-weight: 700; color: var(--ink); font-size: 15px; }
+  .tally.waiting { background: var(--waiting); color: var(--on-waiting); border-color: var(--waiting); }
+  .tally.waiting b { color: var(--on-waiting); }
+  .tally.failed { color: var(--failed); }
+  .tally.failed b { color: var(--failed); }
+  .spacer { flex: 1; }
+  .mach { display: flex; align-items: center; gap: 7px; padding: 0 13px; font: 500 13px/1 var(--board); color: var(--ink-2); border-left: 1px solid var(--rule); }
+  .mach strong { color: var(--ink); font-weight: 700; }
+  .mach.off { background: var(--hatch); color: var(--ink-3); }
+  .clock { display: flex; align-items: center; padding: 0 14px; font: 500 12.5px/1 var(--machine); color: var(--ink-2); border-left: 1px solid var(--rule); }
+
+  .main { display: grid; grid-template-columns: minmax(0, 1fr) 530px; min-height: 0; }
+
+  /* Board */
+  .board { overflow: hidden; border-right: 1px solid var(--rule-strong); }
+  .cols, .row { display: grid; grid-template-columns: 44px 106px 192px minmax(200px, 1fr) 58px 180px 82px; align-items: center; }
+  .cols { height: 27px; color: var(--ink-3); border-bottom: 1px solid var(--rule); }
+  .cols > * { padding: 0 8px; }
+  .cols > :first-child { padding-left: 14px; }
+  .axis { display: flex; justify-content: space-between; }
+  .num { text-align: right; }
+
+  .machine { display: flex; align-items: center; gap: 10px; height: 25px; padding: 0 14px; background: var(--recess); color: var(--ink-3); border-bottom: 1px solid var(--rule); }
+  .machine strong { color: var(--ink-2); }
+  .machine .right { margin-left: auto; }
+  .machine.off { background-color: var(--recess); background-image: var(--hatch); }
+
+  .row { height: 33px; border-bottom: 1px solid var(--rule); font: 500 15px/1 var(--board); cursor: default; }
+  .row > * { padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row > :first-child { padding-left: 14px; }
+  .addr { font: 700 12.5px/1 var(--machine); }
+  .state { display: flex; align-items: center; justify-content: space-between; height: 100%; font: 600 11.5px/1 var(--board); letter-spacing: 0.06em; text-transform: uppercase; }
+  .state time { font: 500 11.5px/1 var(--machine); letter-spacing: 0; }
+  .now { color: var(--ink-2); font-weight: 400; }
+  .agent-name { color: var(--ink-3); font-weight: 400; font-size: 14px; }
+  .delta { font: 400 11.5px/1 var(--machine); color: var(--ink-3); text-align: right; padding-right: 14px !important; }
+  .row .trace { padding: 0; margin: 0 8px; overflow: visible; }
+
+  .row.selected { background-color: var(--raised); box-shadow: inset 3px 0 0 var(--ink); }
+  .row.working .state { color: var(--ink-2); }
+
+  /* Waiting: the only large bright thing on screen */
+  .row.waiting, .row.waiting .now, .row.waiting .agent-name, .row.waiting .delta, .row.waiting .state { background-color: var(--waiting); color: var(--on-waiting); }
+  .row.waiting { font-weight: 700; }
+  .row.waiting .now { font-weight: 600; }
+  .row.waiting.selected { box-shadow: inset 4px 0 0 var(--on-waiting); }
+  .row.waiting .trace u { background: repeating-linear-gradient(135deg, var(--on-waiting) 0 2px, transparent 2px 4px); }
+
+  /* Failed: a lit cell, not a lit row */
+  .row.failed .state { background: var(--failed); color: var(--on-failed); font-weight: 700; }
+  .row.failed .now { color: var(--failed); }
+
+  /* Done recedes */
+  .row.done, .row.done .now, .row.done .state, .row.done .agent-name, .row.done .delta { color: var(--ink-done); }
+
+  /* Stale: last known, not live */
+  .row.stale { background-image: var(--hatch); color: var(--ink-3); }
+  .row.stale .now, .row.stale .state, .row.stale .agent-name, .row.stale .delta { color: var(--ink-3); }
+
+  /* Instant on, slow off */
+  .decay, .decay * { transition: background-color 320ms linear, color 320ms linear; }
+
+  /* Session pane */
+  .pane { display: flex; flex-direction: column; min-height: 0; background: var(--ground); }
+  .pane-head { padding: 12px 18px 0; border-bottom: 1px solid var(--rule-strong); }
+  .pane-title { display: flex; align-items: baseline; gap: 10px; }
+  .pane-title .addr { font-size: 15px; }
+  .pane-title h1 { font: 700 21px/1.1 var(--board); }
+  .pane-meta { margin-top: 5px; font: 400 12px/1.4 var(--machine); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tabs { display: flex; gap: 18px; margin-top: 11px; }
+  .tab { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; color: var(--ink-3); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab.on { color: var(--ink); border-bottom-color: var(--ink); }
+  .tab kbd { border: 0; padding: 0; min-width: 0; font-size: 10.5px; opacity: 0.75; }
+
+  .log { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0 14px; scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; }
+  .entry { display: grid; grid-template-columns: 48px 46px minmax(0, 1fr); padding: 7px 18px 7px 18px; column-gap: 0; }
+  .entry time { font: 400 11px/19px var(--machine); color: var(--ink-3); }
+  .entry .who { color: var(--ink-3); line-height: 19px; }
+  .entry.you { background: var(--raised); margin: 6px 0; }
+  .entry.you .who { color: var(--ink); }
+  .entry.you .text { font: 600 15.5px/1.3 var(--board); }
+  .entry.agent .text { font: 400 14px/1.5 var(--agent); color: var(--ink); }
+  .entry.tool { padding-top: 2px; padding-bottom: 2px; }
+  .entry.tool .text { display: flex; gap: 10px; justify-content: space-between; font: 400 12.5px/19px var(--machine); color: var(--ink-2); }
+  .entry.tool .text span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .entry.tool .meta { flex: none; color: var(--ink-3); }
+  .entry.tool .meta.bad { color: var(--failed); }
+  .entry.resolved .text { color: var(--ink-3); }
+
+  .diff { grid-column: 3; margin-top: 5px; font: 400 12px/18px var(--machine); border: 1px solid var(--rule); overflow: hidden; }
+  .diff div { white-space: pre; padding-left: 6px; color: var(--ink-2); }
+  .diff .a { background: var(--add-bg); color: var(--add-ink); }
+  .diff .d { background: var(--del-bg); color: var(--del-ink); }
+  .diff .h { color: var(--ink-3); background: var(--recess); }
+
+  /* Decision dock: lit in place at the end of the transcript */
+  .dock { background: var(--waiting); color: var(--on-waiting); padding: 11px 18px 12px; }
+  .dock-top { display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
+  .dock-cmd { margin-top: 8px; font: 500 14px/1.4 var(--machine); word-break: break-word; }
+  .dock-q { margin-top: 8px; font: 500 15px/1.4 var(--agent); }
+  .dock-why { margin-top: 4px; font: 500 14px/1.3 var(--board); }
+  .dock-keys { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 11px; font: 600 14px/1 var(--board); }
+  .act { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; }
+  .act.primary { position: relative; }
+  .act.primary kbd { position: relative; background: var(--on-waiting); color: var(--waiting); border-color: var(--on-waiting); }
+  .act.primary .hold-key { overflow: hidden; padding: 2px 7px 1px; }
+  .hold-key::before { content: ""; position: absolute; inset: 0; background: #7a6410; transform: scaleX(0); transform-origin: left; }
+  .hold-key span { position: relative; }
+  .act.holding .hold-key::before { transform: scaleX(1); transition: transform 500ms linear; }
+  .dock-keys .gap { margin-left: auto; }
+
+  /* Command line */
+  .cmd { border-top: 1px solid var(--rule-strong); background: var(--recess); }
+  .cmd-line { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 14px; }
+  .cmd-line .prompt { font: 700 13px/1 var(--machine); }
+  .cmd-line input { flex: 1; background: none; border: 0; outline: 0; color: var(--ink); font: 400 13px/1 var(--machine); caret-color: var(--ink); caret-shape: block; }
+  .cmd-line input::placeholder { color: var(--ink-3); opacity: 1; }
+  .hints { display: flex; gap: 16px; align-items: center; height: 26px; padding: 0 14px; border-top: 1px solid var(--rule); color: var(--ink-3); font: 500 13px/1 var(--board); }
+  .hints span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .hints kbd { border-color: var(--rule-strong); color: var(--ink-2); padding: 1px 3px 0; font-size: 10px; min-width: 15px; }
+  .hints .sep { width: 1px; height: 12px; background: var(--rule-strong); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="mark">tectr</div>
+    <div class="tally waiting"><b id="n-waiting">2</b> waiting</div>
+    <div class="tally failed"><b id="n-failed">1</b> failed</div>
+    <div class="tally"><b id="n-working">6</b> working</div>
+    <div class="tally"><b id="n-done">3</b> done</div>
+    <div class="spacer"></div>
+    <div class="mach"><strong>L</strong> laptop · live</div>
+    <div class="mach"><strong>D</strong> desktop · 18 ms</div>
+    <div class="mach off"><strong>V</strong> vps · seen 12m ago</div>
+    <div class="clock">14:11</div>
+  </header>
+
+  <div class="main">
+    <section class="board" id="board">
+      <div class="cols label">
+        <span>Addr</span><span>State</span><span>Task</span><span>Now</span><span>Agent</span>
+        <span class="axis"><span>−60m</span><span>−30m</span><span>now</span></span>
+        <span class="num" style="padding-right:14px">Delta</span>
+      </div>
+    </section>
+    <section class="pane" id="pane"></section>
+  </div>
+
+  <footer class="cmd">
+    <div class="cmd-line">
+      <span class="prompt" id="prompt">L3 ▸</span>
+      <input id="cmd" spellcheck="false" autocomplete="off" placeholder="prompt the agent, or : for a command">
+    </div>
+    <div class="hints">
+      <span><kbd>J</kbd><kbd>K</kbd> move</span>
+      <span><kbd>⇥</kbd> next waiting</span>
+      <i class="sep"></i>
+      <span><kbd>Y</kbd> approve</span>
+      <span><kbd>A</kbd> always</span>
+      <span><kbd>N</kbd> deny</span>
+      <i class="sep"></i>
+      <span><kbd>/</kbd> prompt</span>
+      <span><kbd>:</kbd> command</span>
+      <span><kbd>C</kbd> new session</span>
+      <span><kbd>M</kbd> merge</span>
+      <span><kbd>.</kbd> interrupt</span>
+    </div>
+  </footer>
+</div>
+
+<script>
+// Scripted fake data. Only J/K, arrows, Tab, Y/A/N, 1/2, / and : do anything.
+const MACHINES = {
+  L: { name: 'Laptop', via: 'loopback', status: 'Live' },
+  D: { name: 'Desktop', via: 'tailscale · 18 ms', status: 'Live' },
+  V: { name: 'VPS', via: 'tailscale', status: 'Offline · seen 12m ago', off: true },
+};
+
+const S = (addr, task, agent, state, secs, now, delta, tr, extra = {}) =>
+  ({ addr, task, agent, state, secs, now, delta, tr, ...extra });
+
+const sessions = [
+  S('L1', 'daemon: spawn via ACP', 'claude', 'working', 1084, 'edit crates/daemon/src/spawn.rs', '+212 −40', { from: 34, d: 1.3, waits: [[19, 16]] }),
+  S('L2', 'protocol: version handshake', 'codex', 'done', 1860, '4 files · ready to merge', '+96 −12', { from: 58, to: 31, d: 0.9 }),
+  S('L3', 'client: reconnect backoff', 'claude', 'waiting', 252, 'bash: rm -rf target/debug/incremental', '+38 −11', { from: 9, to: 4, d: 2, waits: [[4, 0]] }, {
+    branch: 'tectr/reconnect-backoff',
+    req: { kind: 'bash', risky: true, cmd: 'rm -rf target/debug/incremental && cargo test -p tectr-client reconnect', why: 'Deletes files outside version control', next: 'bash: cargo test -p tectr-client reconnect' },
+    log: [
+      ['you', '14:02', 'Add exponential backoff to daemon reconnects in tectr-client. Resume from the last sequence number and don’t lose queued actions.'],
+      ['agent', '14:02', 'The reconnect loop in connection.rs retries on a fixed 2s timer. I’ll add capped backoff with jitter and keep the action queue across attempts.'],
+      ['tool', '14:03', 'read', 'crates/tectr-client/src/connection.rs', '412 lines'],
+      ['tool', '14:03', 'read', 'crates/tectr-client/src/queue.rs', '96 lines'],
+      ['tool', '14:05', 'edit', 'crates/tectr-client/src/connection.rs', '+38 −11'],
+      ['diff', [
+        ['h', '@@ fn reconnect 84,9 @@'],
+        ['', '  let mut attempt = 0u32;'],
+        ['', '  loop {'],
+        ['d', '-     sleep(Duration::from_secs(2)).await;'],
+        ['a', '+     let delay = backoff(attempt, MAX_BACKOFF);'],
+        ['a', '+     sleep(delay).await;'],
+        ['', '      match self.connect(last_seq).await {'],
+        ['d', '-         Ok(stream) => return Ok(stream),'],
+        ['a', '+         Ok(stream) => {'],
+        ['a', '+             self.flush_queue().await?;'],
+        ['a', '+             return Ok(stream);'],
+        ['a', '+         }'],
+      ]],
+      ['tool', '14:07', 'bash', 'cargo test -p tectr-client reconnect', '14 passed · 1 failed', true],
+      ['agent', '14:07', 'One test fails on a stale fixture left by an earlier build. I want to clear the incremental cache and run it again.'],
+    ],
+  }),
+  S('L4', 'ios: UniFFI bindings', 'claude', 'working', 436, 'bash: cargo build --target aarch64-apple-ios', '+54 −3', { from: 8, d: 1.5 }),
+  S('L5', 'engine: merged session list', 'codex', 'working', 1572, 'read crates/tectr-client/src/merge.rs', '+141 −27', { from: 27, d: 0.8 }),
+  S('L6', 'docs: pairing flow notes', 'claude', 'done', 3120, '3 files · ready to merge', '+88 −0', { from: 60, to: 52, d: 1.2 }),
+
+  S('D1', 'ui: virtualized transcript', 'claude', 'working', 2471, 'edit ui/src/transcript/viewport.ts', '+388 −102', { from: 42, d: 1.6, waits: [[25, 21]], errs: [31] }),
+  S('D2', 'ui: incremental markdown', 'codex', 'failed', 368, 'cargo test: 3 failed', '+203 −45', { from: 46, to: 6, d: 1.1, errs: [14, 9, 6] }, {
+    branch: 'tectr/incremental-md',
+    log: [
+      ['you', '13:25', 'Parse markdown incrementally as tokens stream in. Don’t reparse closed blocks.'],
+      ['agent', '13:26', 'I’ll track the last closed block and only reparse from that offset on each frame.'],
+      ['tool', '14:05', 'bash', 'cargo test -p tectr-markdown', '3 failed', true],
+      ['agent', '14:05', 'Three tests fail on nested lists that close across a chunk boundary. The offset tracking is wrong for that case and I stopped here.'],
+    ],
+  }),
+  S('D3', 'worker: diff off UI thread', 'claude', 'waiting', 71, 'question: which diff crate?', '+67 −9', { from: 15, to: 1, d: 1.4, waits: [[1, 0]] }, {
+    branch: 'tectr/diff-worker',
+    req: { kind: 'question', q: 'Which diff crate should the worker use?', opts: ['imara-diff, faster on large files', 'similar, simpler API and already in the tree'], next: 'edit ui/src/workers/diff.worker.ts' },
+    log: [
+      ['you', '13:56', 'Move syntax diffing off the UI thread into a worker. Results should arrive per hunk.'],
+      ['tool', '13:58', 'read', 'ui/src/diff/render.ts', '233 lines'],
+      ['tool', '14:04', 'edit', 'ui/src/workers/diff.worker.ts', '+67 −9'],
+      ['agent', '14:10', 'The worker protocol is in place. The remaining choice is the diff crate, and it affects memory use on large files.'],
+    ],
+  }),
+  S('D4', 'inbox: stable ordering', 'gemini', 'working', 742, 'bash: pnpm test inbox', '+73 −18', { from: 13, d: 1.1 }),
+  S('D5', 'ui: syntax highlight worker', 'claude', 'working', 188, 'read ui/src/workers/highlight.ts', '+0 −0', { from: 3, d: 2 }),
+  S('D6', 'twig: worktree cleanup', 'codex', 'done', 3480, '2 files · ready to merge', '+31 −44', { from: 60, to: 58, d: 1 }),
+
+  S('V1', 'relay: encrypted payloads', 'claude', 'stale', 0, 'last known: working', '+156 −8', { from: 44, to: 12, d: 1 }),
+  S('V2', 'relay: APNs token rotation', 'codex', 'stale', 0, 'last known: working', '+22 −4', { from: 20, to: 12, d: 1.4 }),
+  S('V3', 'nightly: dependency audit', 'claude', 'stale', 0, 'last known: done', '+0 −0', { from: 60, to: 50, d: 0.7 }),
+];
+
+// Deterministic tick layout per session
+function seed(str) { let h = 7; for (const c of str) h = (h * 31 + c.charCodeAt(0)) >>> 0; return () => (h = (h * 1664525 + 1013904223) >>> 0) / 2 ** 32; }
+for (const s of sessions) {
+  const r = seed(s.addr), { from, to = 0, d, waits = [], errs = [] } = s.tr;
+  s.ticks = [];
+  for (let t = from; t > to; t -= (0.3 + r() * 1.4) / d) {
+    if (waits.some(([a, b]) => t <= a && t >= b)) continue;
+    const v = r();
+    s.ticks.push({ t, k: v < 0.5 ? 'r' : v < 0.8 ? 'b' : 'e' });
+  }
+  errs.forEach(t => s.ticks.push({ t, k: 'x' }));
+}
+
+const pct = t => `${((60 - Math.min(t, 60)) / 60 * 100).toFixed(2)}%`;
+function traceHTML(s) {
+  const waits = (s.tr.waits || []).map(([a, b]) => `<u style="left:${pct(a)};width:${((a - b) / 60 * 100).toFixed(2)}%"></u>`).join('');
+  return waits + s.ticks.map(({ t, k }) => `<i class="${k}" style="left:${pct(t)}"></i>`).join('');
+}
+
+function fmt(s) {
+  if (s.state === 'stale') return '';
+  if (s.state === 'done' || s.state === 'failed') return s.secs >= 3600 ? `${Math.floor(s.secs / 3600)}h` : `${Math.floor(s.secs / 60)}m`;
+  const m = Math.floor(s.secs / 60), sec = String(s.secs % 60).padStart(2, '0');
+  return `${m}:${sec}`;
+}
+const LABEL = { working: 'Working', waiting: 'Waiting', failed: 'Failed', done: 'Done', stale: 'Stale' };
+
+let selected = 'L3';
+const get = addr => sessions.find(s => s.addr === addr);
+const board = document.getElementById('board');
+const rows = {};
+
+let lastMachine = null;
+for (const s of sessions) {
+  const m = s.addr[0];
+  if (m !== lastMachine) {
+    lastMachine = m;
+    const count = sessions.filter(x => x.addr[0] === m).length, info = MACHINES[m];
+    board.insertAdjacentHTML('beforeend', `<div class="machine label ${info.off ? 'off' : ''}"><strong>${m} · ${info.name}</strong><span>${info.via}</span><span>${count} sessions</span><span class="right">${info.status}</span></div>`);
+  }
+  const el = document.createElement('div');
+  el.onclick = () => select(s.addr);
+  el.innerHTML = `<span class="addr">${s.addr}</span>
+    <span class="state"><span class="st"></span><time></time></span>
+    <span class="task">${s.task}</span>
+    <span class="now"></span>
+    <span class="agent-name">${s.agent}</span>
+    <div class="trace"></div>
+    <span class="delta">${s.delta}</span>`;
+  rows[s.addr] = el;
+  board.appendChild(el);
+  paintRow(s);
+}
+
+function paintRow(s) {
+  const el = rows[s.addr];
+  el.className = `row ${s.state}${s.addr === selected ? ' selected' : ''}${el.classList.contains('decay') ? ' decay' : ''}`;
+  el.querySelector('.st').textContent = LABEL[s.state];
+  el.querySelector('time').textContent = fmt(s);
+  el.querySelector('.now').textContent = s.now;
+  el.querySelector('.trace').innerHTML = traceHTML(s);
+}
+
+function paintTally() {
+  for (const st of ['waiting', 'failed', 'working', 'done'])
+    document.getElementById(`n-${st}`).textContent = sessions.filter(s => s.state === st).length;
+}
+
+// Session pane: navigation is a cut, never a transition
+const pane = document.getElementById('pane');
+function logFor(s) {
+  if (s.log) return s.log;
+  const [kind, ...rest] = s.now.split(/[: ]/);
+  s.log = [
+    ['you', '13:40', s.task.replace(/^[^:]+: /, '').replace(/^./, c => c.toUpperCase()) + '.'],
+    ['agent', '13:41', s.state === 'stale' ? 'Last known output before this machine went offline.' : 'Working through this in its own worktree.'],
+    ['read', 'edit', 'bash'].includes(kind) ? ['tool', '14:10', kind, rest.join(' ').trim(), ''] : ['agent', '14:10', s.now[0].toUpperCase() + s.now.slice(1) + '.'],
+  ];
+  return s.log;
+}
+
+function entryHTML(e) {
+  if (e[0] === 'diff') {
+    return `<div class="entry tool" style="padding-top:0"><div class="diff">${e[1].map(([c, t]) => `<div class="${c}">${esc(t)}</div>`).join('')}</div></div>`;
+  }
+  if (e[0] === 'tool') {
+    const [, time, kind, path, meta, bad] = e;
+    return `<div class="entry tool"><time>${time}</time><span class="who label">${kind}</span><div class="text"><span>${esc(path)}</span><span class="meta${bad ? ' bad' : ''}">${meta}</span></div></div>`;
+  }
+  const [cls, time, text] = e;
+  const who = cls === 'you' ? 'You' : cls === 'agent' ? 'Agent' : 'Note';
+  return `<div class="entry ${cls}"><time>${time}</time><span class="who label">${who}</span><div class="text">${esc(text)}</div></div>`;
+}
+const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function waitingList() { return sessions.filter(s => s.state === 'waiting'); }
+
+function dockHTML(s) {
+  if (s.state !== 'waiting' || !s.req) return '';
+  const q = waitingList(), pos = q.indexOf(s) + 1, r = s.req;
+  const head = `<div class="dock-top label"><span>Waiting <span id="dock-age">${fmt(s)}</span> · ${s.addr} · ${r.kind}</span><span>${pos} of ${q.length} waiting</span></div>`;
+  if (r.kind === 'question') {
+    return `<div class="dock">${head}<div class="dock-q">${r.q}</div>
+      <div class="dock-keys" style="flex-direction:column;align-items:flex-start">
+        ${r.opts.map((o, i) => `<button class="act" data-opt="${i + 1}"><kbd>${i + 1}</kbd> ${o}</button>`).join('')}
+      </div>
+      <div class="dock-keys"><span class="act"><kbd>/</kbd> answer in your own words</span><span class="act gap"><kbd>⇥</kbd> next</span></div></div>`;
+  }
+  const approve = r.risky
+    ? `<button class="act primary" id="approve"><kbd class="hold-key"><span>HOLD Y</span></kbd> Approve</button>`
+    : `<button class="act primary" id="approve"><kbd>Y</kbd> Approve</button>`;
+  return `<div class="dock">${head}<div class="dock-cmd">${esc(r.cmd)}</div>
+    ${r.why ? `<div class="dock-why">${r.why}</div>` : ''}
+    <div class="dock-keys">${approve}
+      <button class="act" id="always"><kbd>A</kbd> Always for ${s.addr}</button>
+      <button class="act" id="deny"><kbd>N</kbd> Deny</button>
+      <span class="act gap"><kbd>⇥</kbd> next</span></div></div>`;
+}
+
+function paintPane() {
+  const s = get(selected), m = MACHINES[s.addr[0]];
+  const branch = s.branch || 'tectr/' + s.task.replace(/^[^:]+: /, '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  pane.innerHTML = `
+    <div class="pane-head">
+      <div class="pane-title"><span class="addr">${s.addr}</span><h1>${s.task}</h1></div>
+      <div class="pane-meta">${branch} · ${s.agent} · ${m.name.toLowerCase()} · ${s.delta}</div>
+      <div class="tabs label">
+        <span class="tab on">Transcript <kbd>T</kbd></span>
+        <span class="tab">Diff <kbd>D</kbd></span>
+        <span class="tab">Files <kbd>F</kbd></span>
+        <span class="tab">Worktree <kbd>W</kbd></span>
+      </div>
+    </div>
+    <div class="log" id="log">${logFor(s).map(entryHTML).join('')}</div>
+    ${dockHTML(s)}`;
+  const log = document.getElementById('log');
+  log.scrollTop = log.scrollHeight;
+  document.getElementById('prompt').textContent = `${s.addr} ▸`;
+  const approve = document.getElementById('approve');
+  if (approve) {
+    approve.onpointerdown = startApprove;
+    approve.onpointerup = approve.onpointerleave = cancelHold;
+  }
+  const always = document.getElementById('always'), deny = document.getElementById('deny');
+  if (always) always.onclick = () => resolve(s, 'Approved always for this session');
+  if (deny) deny.onclick = () => resolve(s, 'Denied');
+  pane.querySelectorAll('[data-opt]').forEach(b => b.onclick = () => answer(s, +b.dataset.opt));
+}
+
+function select(addr) {
+  const prev = selected;
+  selected = addr;
+  paintRow(get(prev));
+  paintRow(get(addr));
+  paintPane();
+}
+
+// Instant on, slow off: the lamp fades after a decision is made
+function resolve(s, note) {
+  const el = rows[s.addr];
+  el.classList.add('decay');
+  s.state = 'working';
+  s.secs = 0;
+  s.now = s.req.next;
+  s.log.push(['tool', '14:11', 'you', note, '']);
+  delete s.req;
+  paintRow(s);
+  paintPane();
+  paintTally();
+  setTimeout(() => el.classList.remove('decay'), 340);
+}
+
+function answer(s, n) {
+  resolve(s, `Answered: ${s.req.opts[n - 1].split(',')[0]}`);
+}
+
+let holdTimer = null;
+function startApprove() {
+  const s = get(selected);
+  if (s.state !== 'waiting' || !s.req || s.req.kind === 'question') return;
+  if (!s.req.risky) return resolve(s, 'Approved');
+  if (holdTimer) return;
+  document.getElementById('approve').classList.add('holding');
+  holdTimer = setTimeout(() => { holdTimer = null; resolve(s, 'Approved, held'); }, 500);
+}
+function cancelHold() {
+  clearTimeout(holdTimer);
+  holdTimer = null;
+  document.getElementById('approve')?.classList.remove('holding');
+}
+
+// Keyboard: everything responds on key-down
+const input = document.getElementById('cmd');
+addEventListener('keydown', e => {
+  if (document.activeElement === input) {
+    if (e.key === 'Escape') input.blur();
+    if (e.key === 'Enter' && input.value.trim()) {
+      if (!input.value.startsWith(':')) {
+        logFor(get(selected)).push(['you', '14:11', input.value.trim()]);
+        paintPane();
+      }
+      input.value = ''; input.blur();
+    }
+    return;
+  }
+  const order = sessions.map(s => s.addr), i = order.indexOf(selected), s = get(selected);
+  const k = e.key.toLowerCase();
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (k === 'j' || k === 'arrowdown') { e.preventDefault(); select(order[Math.min(i + 1, order.length - 1)]); }
+  else if (k === 'k' || k === 'arrowup') { e.preventDefault(); select(order[Math.max(i - 1, 0)]); }
+  else if (e.key === 'Tab') {
+    e.preventDefault();
+    const q = waitingList();
+    if (q.length) select(q[(q.indexOf(s) + 1) % q.length].addr);
+  }
+  else if (k === 'y' && !e.repeat) startApprove();
+  else if (k === 'a' && s.state === 'waiting' && s.req?.cmd) resolve(s, 'Approved always for this session');
+  else if (k === 'n' && s.state === 'waiting' && s.req?.cmd) resolve(s, 'Denied');
+  else if ((k === '1' || k === '2') && s.req?.opts) answer(s, +k);
+  else if (k === '/' || e.key === ':') { e.preventDefault(); input.focus(); if (e.key === ':') input.value = ':'; }
+});
+addEventListener('keyup', e => { if (e.key.toLowerCase() === 'y') cancelHold(); });
+
+// Scripted life: timers tick, working agents add trace marks, one agent blocks
+const ACTIONS = ['read', 'edit', 'bash'];
+setInterval(() => {
+  for (const s of sessions) {
+    if (s.state === 'working' || s.state === 'waiting') s.secs++;
+    if (s.state === 'working' || s.state === 'waiting') {
+      rows[s.addr].querySelector('time').textContent = fmt(s);
+      if (s.addr === selected) { const a = document.getElementById('dock-age'); if (a) a.textContent = fmt(s); }
+    }
+  }
+}, 1000);
+
+const TARGETS = {
+  read: ['crates/daemon/src/acp.rs', 'ui/src/transcript/viewport.ts', 'crates/tectr-client/src/merge.rs'],
+  edit: ['crates/daemon/src/spawn.rs', 'ui/src/transcript/viewport.ts', 'crates/tectr-client/src/merge.rs'],
+  bash: ['cargo check --workspace', 'cargo test --workspace', 'pnpm test'],
+};
+setInterval(() => {
+  const live = sessions.filter(s => s.state === 'working');
+  if (!live.length) return;
+  const s = live[Math.floor(Math.random() * live.length)];
+  const kind = ACTIONS[Math.floor(Math.random() * 3)];
+  const path = TARGETS[kind][Math.floor(Math.random() * 3)];
+  s.ticks.push({ t: 0.15, k: kind[0] === 'r' ? 'r' : kind[0] === 'b' ? 'b' : 'e' });
+  s.now = `${kind}${kind === 'bash' ? ':' : ''} ${path}`;
+  paintRow(s);
+  if (s.addr === selected && s.log) {
+    logFor(s).push(['tool', '14:11', kind, path, '']);
+    const log = document.getElementById('log');
+    log.insertAdjacentHTML('beforeend', entryHTML(s.log[s.log.length - 1]));
+    log.scrollTop = log.scrollHeight;
+  }
+}, 1400);
+
+// After 12 seconds another agent blocks: the row lights instantly, nothing moves
+setTimeout(() => {
+  const s = get('L1');
+  s.state = 'waiting'; s.secs = 0;
+  s.now = 'edit: crates/daemon/Cargo.toml';
+  s.req = { kind: 'edit', cmd: 'crates/daemon/Cargo.toml  +2 −0  add tokio-util, nix', next: 'edit crates/daemon/src/spawn.rs' };
+  logFor(s);
+  paintRow(s); paintTally();
+  if (selected === 'L1' || get(selected).state === 'waiting') paintPane();
+}, 12000);
+
+paintTally();
+paintPane();
+</script>
+</body>
+</html>

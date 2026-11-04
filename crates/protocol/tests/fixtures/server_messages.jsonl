@@ -1,0 +1,20 @@
+{"type":"welcome","version":1,"machine":{"id":"m1","name":"laptop"},"daemon_version":"0.1.0"}
+{"type":"version_rejected","min_version":1,"max_version":1}
+{"type":"snapshot","state":{"machine":{"id":"m1","name":"laptop"},"workspaces":[{"id":"w1","name":"repo","path":"/repo","topics":[{"id":"t1","name":"Fix login","worktrees":[{"id":"wt1","path":"/wt","branch":"tectr/fix-login-ab12"}],"sessions":[{"id":"s1","worktree_id":"wt1","agent":"claude","mode":"auto","model":null,"status":"working","title":null}]}]}],"approvals":[]}}
+{"type":"state_changed","change":{"change":"approval_resolved","approval_id":"a1"}}
+{"type":"state_changed","change":{"change":"session_changed","session":{"id":"s1","worktree_id":"wt1","agent":"claude","mode":"yolo","model":"haiku","status":"done","title":"Fix login"}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":1,"at_ms":1000,"kind":{"event":"status_changed","status":"waiting_for_you"}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":2,"at_ms":1000,"kind":{"event":"agent_ready","name":"Claude Agent","version":"0.100.0","modes":["default"],"current_mode":"default"}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":3,"at_ms":1000,"kind":{"event":"user_prompt","text":"hi"}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":4,"at_ms":1000,"kind":{"event":"agent_message","text":"hello"}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":5,"at_ms":1000,"kind":{"event":"agent_thought","text":"hmm"}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":6,"at_ms":1000,"kind":{"event":"tool_call","id":"tc1","tool":{"title":"Write a.txt","kind":"edit","status":"pending","input":{"file_path":"a.txt"},"locations":["a.txt"],"content":[{"type":"diff","path":"a.txt","old_text":null,"new_text":"hi"}]}}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":7,"at_ms":1000,"kind":{"event":"tool_call_update","id":"tc1","tool":{"status":"completed","content":[{"type":"text","text":"ok"}]}}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":8,"at_ms":1000,"kind":{"event":"permission_requested","approval":{"id":"a1","session_id":"s1","tool_call":{"title":"Write a.txt"},"options":[{"id":"allow-once","name":"Yes","kind":"allow_once"},{"id":"reject","name":"No","kind":"reject_once"}]}}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":9,"at_ms":1000,"kind":{"event":"permission_resolved","approval_id":"a1","outcome":{"outcome":"selected","option_id":"allow-once"}}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":10,"at_ms":1000,"kind":{"event":"permission_resolved","approval_id":"a2","outcome":{"outcome":"cancelled"}}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":11,"at_ms":1000,"kind":{"event":"turn_ended","stop_reason":"end_turn"}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":12,"at_ms":1000,"kind":{"event":"error","message":"boom"}}}
+{"type":"response","id":1,"result":{"Ok":{"output":"done"}}}
+{"type":"response","id":2,"result":{"Err":{"code":"busy","message":"a turn is running"}}}
+{"type":"response","id":3,"result":{"Ok":{"output":"topic","workspace_id":"w1","topic":{"id":"t1","name":"Fix login","worktrees":[],"sessions":[]}}}}

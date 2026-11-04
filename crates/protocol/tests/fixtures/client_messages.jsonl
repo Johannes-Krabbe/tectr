@@ -1,0 +1,9 @@
+{"type":"hello","min_version":1,"max_version":1,"client":"tectr-cli"}
+{"type":"subscribe","session_id":"s1","after_seq":12}
+{"type":"unsubscribe","session_id":"s1"}
+{"type":"request","id":1,"command":{"command":"add_workspace","path":"/repo"}}
+{"type":"request","id":2,"command":{"command":"create_topic","workspace_id":"w1","name":"Fix login"}}
+{"type":"request","id":3,"command":{"command":"start_session","topic_id":"t1","worktree_id":"wt1","agent":"claude","mode":"auto","model":null}}
+{"type":"request","id":4,"command":{"command":"send_prompt","session_id":"s1","text":"hi"}}
+{"type":"request","id":5,"command":{"command":"cancel_turn","session_id":"s1"}}
+{"type":"request","id":6,"command":{"command":"answer_approval","approval_id":"a1","option_id":"allow-once"}}

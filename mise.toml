@@ -1,0 +1,38 @@
+[tools]
+# The Claude adapter needs Node 22+ on every machine that runs a daemon.
+node = "22"
+pnpm = "11.28.9"
+xcodegen = "2.46.0"
+
+[tasks.test]
+description = "Run all tests, including daemon and client end-to-end tests against the fake agent"
+run = "cargo test"
+
+[tasks.lint]
+run = ["cargo fmt --all --check", "cargo clippy --all-targets -- -D warnings"]
+
+[tasks.daemon]
+description = "Run the daemon on loopback"
+run = "cargo run -p daemon --"
+
+[tasks.dsk]
+description = "Run the desktop app in development"
+dir = "apps/dsk"
+run = "pnpm tauri dev"
+
+[tasks.ios]
+description = "Generate the Xcode project, then open apps/ios/Tectr.xcodeproj"
+dir = "apps/ios"
+run = "xcodegen generate"
+
+[tasks.tokens]
+description = "Regenerate design tokens and icons for both apps"
+run = "node design/tokens/build.mjs"
+
+[tasks."tokens:test"]
+description = "Check tokens, contrast, fixtures, and that app code has no raw colors"
+run = "node --test design/tokens/tokens.test.mjs"
+
+[tasks.tectr]
+description = "Run the CLI, for example: mise run tectr status"
+run = "cargo run -q -p cli --"

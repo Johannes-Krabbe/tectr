@@ -1,0 +1,9 @@
+/target
+.DS_Store
+node_modules/
+dist/
+.build/
+.swiftpm/
+/apps/dsk/src-tauri/gen/
+# Generated from apps/ios/project.yml by XcodeGen.
+/apps/ios/*.xcodeproj

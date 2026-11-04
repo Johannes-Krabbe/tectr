@@ -1,0 +1,63 @@
+{
+  "color": {
+    "$type": "color",
+    "surface": {
+      "base": { "$value": "#09080c" },
+      "panel": { "$value": "#0e0d12" },
+      "raised": { "$value": "#17151d" },
+      "overlay": { "$value": "#17151d" },
+      "control": { "$value": "#201d28" },
+      "control-hover": { "$value": "#2f2c3a" }
+    },
+    "line": {
+      "subtle": { "$value": "#1e1c25" },
+      "strong": { "$value": "#2f2c3a" }
+    },
+    "text": {
+      "primary": { "$value": "#edecf1" },
+      "secondary": { "$value": "#a8a6b3" },
+      "tertiary": { "$value": "#8a8896" },
+      "on-accent": { "$value": "#ffffff" }
+    },
+    "accent": {
+      "solid": { "$value": "#7c5cf0" },
+      "text": { "$value": "#b9a6ff" },
+      "tint": { "$value": "#7c5cf029" },
+      "ring": { "$value": "#7c5cf080" }
+    },
+    "status": {
+      "working": { "$value": "{color.accent.text}" },
+      "waiting": { "$value": "#f0b64d" },
+      "waiting-tint": { "$value": "#f0b64d12" },
+      "waiting-tint-strong": { "$value": "#f0b64d26" },
+      "waiting-border": { "$value": "#f0b64d47" },
+      "failed": { "$value": "#f0766e" },
+      "done": { "$value": "{color.text.tertiary}" },
+      "idle": { "$value": "{color.text.tertiary}" },
+      "stale": { "$value": "{color.text.tertiary}" },
+      "online": { "$value": "#5cc99a" }
+    },
+    "diff": {
+      "add-bg": { "$value": "#5cc99a21" },
+      "add-text": { "$value": "#c2ecd8" },
+      "del-bg": { "$value": "#f0766e21" },
+      "del-text": { "$value": "#f4cbc8" }
+    },
+    "syntax": {
+      "plain": { "$value": "{color.text.primary}" },
+      "keyword": { "$value": "#b9a6ff" },
+      "string": { "$value": "#8fd3b6" },
+      "constant": { "$value": "#d9a8e8" },
+      "function": { "$value": "#8fb8f0" },
+      "type": { "$value": "#7fcfd6" },
+      "comment": { "$value": "{color.text.tertiary}" },
+      "punctuation": { "$value": "{color.text.secondary}" }
+    },
+    "scrim": { "$value": "#0504088c" }
+  },
+  "shadow": {
+    "$type": "shadow",
+    "popover": { "$value": { "color": "#00000080", "offsetX": 0, "offsetY": 8, "blur": 24, "spread": 0 } },
+    "sheet": { "$value": { "color": "#00000099", "offsetX": 0, "offsetY": 16, "blur": 48, "spread": 0 } }
+  }
+}

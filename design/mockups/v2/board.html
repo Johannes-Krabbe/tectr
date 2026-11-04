@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tectr · board mockup v2</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  .app { display: grid; grid-template-columns: 208px minmax(0, 1fr); height: 100vh; min-width: 1180px; }
+
+  /* Sidebar */
+  .side { display: flex; flex-direction: column; gap: 18px; padding: 12px 8px; }
+  .brand { display: flex; align-items: center; gap: 8px; padding: 2px 8px; font-weight: 600; }
+  .logo { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; }
+  .search { display: flex; align-items: center; justify-content: space-between; height: 30px; padding: 0 8px; margin-top: 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink-3); }
+  .search kbd { background: none; color: var(--ink-3); padding: 0; }
+  .nav { display: flex; flex-direction: column; gap: 1px; }
+  .nav h6 { padding: 0 8px 5px; font: 500 12px/1.3 var(--ui); color: var(--ink-3); }
+  .nav a { display: flex; align-items: center; gap: 9px; height: 29px; padding: 0 8px; border-radius: 6px; color: var(--ink-2); font-weight: 500; }
+  .nav a.on { background: var(--accent-tint); color: var(--ink); }
+  .nav a.on .glyph { color: var(--accent-ink); }
+  .nav a .n { margin-left: auto; color: var(--ink-3); font-weight: 450; font-size: 12px; }
+  .nav a .n.alert { color: var(--waiting); font-weight: 600; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); margin: 0 3.5px; flex: none; }
+  .dot.off { background: none; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+  .glyph { width: 14px; text-align: center; flex: none; color: var(--ink-3); }
+
+  /* Main panel */
+  .panel { display: grid; grid-template-columns: minmax(0, 1fr) 500px; margin: 8px 8px 8px 0; min-height: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+
+  /* Session list */
+  .list { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+  .list-head { flex: none; display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+  .list-head h1 { font: 600 13.5px/1 var(--ui); }
+  .list-head .tally { color: var(--ink-3); font-size: 12.5px; }
+  .list-head .tally b { font-weight: 500; color: var(--waiting); }
+  .btn-ghost { margin-left: auto; display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: 6px; background: var(--accent); color: #fff; font-weight: 500; font-size: 12.5px; }
+  .rows { flex: 1; overflow: hidden; padding: 4px 0 12px; }
+
+  .group { display: flex; align-items: center; gap: 8px; height: 32px; margin-top: 8px; padding: 0 16px; font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
+  .group span { color: var(--ink-3); font-weight: 450; }
+  .group .right { margin-left: auto; }
+
+  .row { display: grid; grid-template-columns: 14px 26px 206px minmax(0, 1fr) 108px 46px; align-items: center; column-gap: 10px; height: 34px; margin: 0 6px; padding: 0 10px; border-radius: 6px; cursor: default; }
+  .row:hover { background: var(--surface); }
+  .row > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .row .addr { font: 400 11.5px/1 var(--code); color: var(--ink-3); }
+  .row .task { font-weight: 500; }
+  .row .now { color: var(--ink-3); }
+  .row .age { text-align: right; color: var(--ink-3); font-size: 12px; }
+  .row.selected { background: var(--accent-tint); }
+
+  .row.waiting { background: rgba(240, 182, 77, 0.075); }
+  .row.waiting:hover { background: rgba(240, 182, 77, 0.11); }
+  .row.waiting.selected { background: rgba(240, 182, 77, 0.15); }
+  .row.waiting .now, .row.waiting .age { color: var(--waiting); }
+  .row.failed .now, .row.failed .age { color: var(--failed); }
+  .row.done .task, .row.stale .task { color: var(--ink-2); font-weight: 450; }
+  .row.stale .trace { opacity: 0.5; }
+  .row.done .trace { opacity: 0.6; }
+
+  .decay, .decay * { transition: background-color 280ms ease-out, color 280ms ease-out; }
+
+  /* Session pane */
+  .pane { display: flex; flex-direction: column; min-height: 0; }
+  #pane-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .pane-head { flex: none; padding: 14px 20px 0; border-bottom: 1px solid var(--line); }
+  .pane-head h2 { font: 600 16px/1.25 var(--ui); letter-spacing: -0.012em; }
+  .meta { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 12.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; }
+  .meta .code { font: 400 11.5px/1 var(--code); }
+  .tabs { display: flex; gap: 16px; margin-top: 11px; font-weight: 500; color: var(--ink-3); }
+  .tabs span { padding-bottom: 8px; margin-bottom: -1px; border-bottom: 1.5px solid transparent; }
+  .tabs .on { color: var(--ink); border-color: var(--accent-ink); }
+
+  .log { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 12px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+  .log > :first-child { margin-top: auto; }
+  .you { padding: 10px 12px; background: var(--surface); border-radius: 8px; font-weight: 450; line-height: 1.5; }
+  .agent-msg { font-size: 13.5px; line-height: 1.55; color: var(--ink); }
+  .tools { display: flex; flex-direction: column; gap: 5px; }
+  .tool { display: flex; gap: 8px; font-size: 12.5px; color: var(--ink-3); }
+  .tool .k { flex: none; width: 30px; color: var(--ink-3); }
+  .tool .p { flex: 1; font: 400 11.5px/18px var(--code); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tool .m { flex: none; font-size: 12px; }
+  .tool .m.bad { color: var(--failed); }
+
+  .diff { border: 1px solid var(--line); border-radius: 7px; overflow: hidden; font: 400 11.5px/18px var(--code); background: var(--base); }
+  .diff div { padding-left: 10px; white-space: pre; color: var(--ink-2); }
+  .diff .a { background: var(--add-bg); color: var(--add-ink); }
+  .diff .d { background: var(--del-bg); color: var(--del-ink); }
+  .diff .h { color: var(--ink-3); padding-top: 3px; padding-bottom: 3px; border-bottom: 1px solid var(--line); }
+
+  /* Decision card */
+  .decide { flex: none; margin: 0 20px 10px; padding: 12px; border-radius: 9px; background: rgba(240, 182, 77, 0.07); border: 1px solid rgba(240, 182, 77, 0.28); }
+  .decide-top { display: flex; align-items: center; gap: 7px; font-weight: 500; color: var(--waiting); font-size: 12.5px; }
+  .decide-top .pos { margin-left: auto; color: var(--ink-3); font-weight: 450; }
+  .decide pre { margin-top: 8px; font: 400 12px/1.5 var(--code); color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+  .decide .q { margin-top: 7px; font-weight: 500; font-size: 13.5px; }
+  .decide .why { margin-top: 4px; font-size: 12.5px; color: var(--ink-2); }
+  .actions { display: flex; align-items: center; gap: 6px; margin-top: 11px; }
+  .btn { position: relative; overflow: hidden; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 6px 0 10px; border: 0; border-radius: 6px; background: var(--surface-2); color: var(--ink); font: 500 12.5px/1 var(--ui); cursor: pointer; }
+  .btn:hover { background: var(--line-strong); }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #8a6cf5; }
+  .btn > * { position: relative; }
+  .btn.primary::before { content: ""; position: absolute; inset: 0; background: rgba(255, 255, 255, 0.28); transform: scaleX(0); transform-origin: left; }
+  .btn.primary.holding::before { transform: scaleX(1); transition: transform 500ms linear; }
+  .opts { display: flex; flex-direction: column; gap: 4px; margin-top: 9px; }
+  .opt { display: flex; align-items: center; gap: 9px; width: 100%; height: 30px; padding: 0 8px 0 6px; border: 0; border-radius: 6px; background: var(--surface-2); color: var(--ink); font: 450 13px/1 var(--ui); text-align: left; cursor: pointer; }
+  .opt:hover { background: var(--line-strong); }
+
+  /* Composer */
+  .composer { flex: none; margin: 0 20px 16px; display: flex; align-items: center; height: 38px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); }
+  .composer:focus-within { border-color: var(--accent-ink); }
+  .composer input { flex: 1; background: none; border: 0; outline: 0; color: var(--ink); font: 450 13px/1 var(--ui); }
+  .composer input::placeholder { color: var(--ink-3); opacity: 1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div>
+      <div class="brand"><span class="logo">t</span>tectr</div>
+      <div class="search">Search or run… <kbd>⌘K</kbd></div>
+    </div>
+    <nav class="nav">
+      <a><span class="glyph">◎</span>Inbox<span class="n alert" id="inbox-n">2</span></a>
+      <a class="on"><span class="glyph">≡</span>All sessions<span class="n">15</span></a>
+      <a><span class="glyph">±</span>Ready to review<span class="n">3</span></a>
+    </nav>
+    <nav class="nav">
+      <h6>Machines</h6>
+      <a><span class="dot"></span>Laptop<span class="n">6</span></a>
+      <a><span class="dot"></span>Desktop<span class="n">6</span></a>
+      <a><span class="dot off"></span>VPS<span class="n">3</span></a>
+    </nav>
+    <nav class="nav">
+      <h6>Repositories</h6>
+      <a><span class="glyph">#</span>tectr<span class="n">13</span></a>
+      <a><span class="glyph">#</span>twig<span class="n">2</span></a>
+    </nav>
+  </aside>
+
+  <main class="panel">
+    <section class="list">
+      <div class="list-head">
+        <h1>All sessions</h1>
+        <span class="tally" id="tally"></span>
+        <span class="btn-ghost">New session</span>
+      </div>
+      <div class="rows" id="rows"></div>
+    </section>
+    <section class="pane">
+      <div id="pane-body"></div>
+      <div class="composer"><input id="cmd" spellcheck="false" autocomplete="off"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+// Scripted fake data. Only J/K, arrows, Tab, Y/A/N, 1/2 and / do anything.
+const MACHINES = {
+  L: { name: 'Laptop', via: 'Local' },
+  D: { name: 'Desktop', via: 'Tailscale · 18 ms' },
+  V: { name: 'VPS', via: 'Offline · seen 12m ago', off: true },
+};
+
+const ICON = {
+  working: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="#b9a6ff" stroke-width="1.5"/><path d="M7 3.5a3.5 3.5 0 0 1 0 7z" fill="#b9a6ff"/></svg>`,
+  waiting: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#f0b64d"/><rect x="4.6" y="4" width="1.7" height="6" rx=".6" fill="#0e0d12"/><rect x="7.7" y="4" width="1.7" height="6" rx=".6" fill="#0e0d12"/></svg>`,
+  failed: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#f0766e"/><path d="M4.8 4.8l4.4 4.4M9.2 4.8L4.8 9.2" stroke="#0e0d12" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+  done: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#7c7a89"/><path d="M4.2 7.2l2 2 3.6-4" fill="none" stroke="#0e0d12" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  stale: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="#7c7a89" stroke-width="1.5" stroke-dasharray="2 2.2"/></svg>`,
+};
+
+const S = (addr, task, agent, state, secs, now, delta, tr, extra = {}) =>
+  ({ addr, task, agent, state, secs, now, delta, tr, ...extra });
+
+const sessions = [
+  S('L1', 'Spawn daemon sessions via ACP', 'Claude', 'working', 1084, 'Editing crates/daemon/src/spawn.rs', '+212 −40', { from: 34, d: 1.3, waits: [[19, 16]] }),
+  S('L2', 'Protocol version handshake', 'Codex', 'done', 1860, '4 files ready to merge', '+96 −12', { from: 58, to: 31, d: 0.9 }),
+  S('L3', 'Client reconnect backoff', 'Claude', 'waiting', 252, 'rm -rf target/debug/incremental', '+38 −11', { from: 9, to: 4, d: 2, waits: [[4, 0]] }, {
+    branch: 'tectr/reconnect-backoff',
+    req: { kind: 'Run command', risky: true, cmd: 'rm -rf target/debug/incremental && cargo test -p tectr-client reconnect', why: 'Deletes files outside version control', next: 'Running cargo test -p tectr-client reconnect' },
+    log: [
+      ['you', 'Add exponential backoff to daemon reconnects in tectr-client. Resume from the last sequence number and don’t lose queued actions.'],
+      ['agent', 'The reconnect loop in connection.rs retries on a fixed 2s timer. I’ll add capped backoff with jitter and keep the action queue across attempts.'],
+      ['tool', 'Read', 'crates/tectr-client/src/connection.rs', '412 lines'],
+      ['tool', 'Read', 'crates/tectr-client/src/queue.rs', '96 lines'],
+      ['tool', 'Edit', 'crates/tectr-client/src/connection.rs', '+38 −11'],
+      ['diff', [
+        ['h', '@@ fn reconnect 84,9 @@'],
+        ['', '  let mut attempt = 0u32;'],
+        ['', '  loop {'],
+        ['d', '-     sleep(Duration::from_secs(2)).await;'],
+        ['a', '+     let delay = backoff(attempt, MAX_BACKOFF);'],
+        ['a', '+     sleep(delay).await;'],
+        ['', '      match self.connect(last_seq).await {'],
+        ['d', '-         Ok(stream) => return Ok(stream),'],
+        ['a', '+         Ok(stream) => {'],
+        ['a', '+             self.flush_queue().await?;'],
+        ['a', '+             return Ok(stream);'],
+        ['a', '+         }'],
+      ]],
+      ['tool', 'Run', 'cargo test -p tectr-client reconnect', '1 failed', true],
+      ['agent', 'One test fails on a stale fixture left by an earlier build. I want to clear the incremental cache and run it again.'],
+    ],
+  }),
+  S('L4', 'iOS UniFFI bindings', 'Claude', 'working', 436, 'Running cargo build --target aarch64-apple-ios', '+54 −3', { from: 8, d: 1.5 }),
+  S('L5', 'Merged session list in engine', 'Codex', 'working', 1572, 'Reading crates/tectr-client/src/merge.rs', '+141 −27', { from: 27, d: 0.8 }),
+  S('L6', 'Pairing flow notes', 'Claude', 'done', 3120, '3 files ready to merge', '+88 −0', { from: 60, to: 52, d: 1.2 }),
+
+  S('D1', 'Virtualized transcript', 'Claude', 'working', 2471, 'Editing ui/src/transcript/viewport.ts', '+388 −102', { from: 42, d: 1.6, waits: [[25, 21]], errs: [31] }),
+  S('D2', 'Incremental markdown parsing', 'Codex', 'failed', 368, 'cargo test: 3 failed', '+203 −45', { from: 46, to: 6, d: 1.1, errs: [14, 9, 6] }, {
+    branch: 'tectr/incremental-md',
+    log: [
+      ['you', 'Parse markdown incrementally as tokens stream in. Don’t reparse closed blocks.'],
+      ['agent', 'I’ll track the last closed block and only reparse from that offset on each frame.'],
+      ['tool', 'Run', 'cargo test -p tectr-markdown', '3 failed', true],
+      ['agent', 'Three tests fail on nested lists that close across a chunk boundary. The offset tracking is wrong for that case, so I stopped here.'],
+    ],
+  }),
+  S('D3', 'Move diffing off the UI thread', 'Claude', 'waiting', 71, 'Question: which diff crate?', '+67 −9', { from: 15, to: 1, d: 1.4, waits: [[1, 0]] }, {
+    branch: 'tectr/diff-worker',
+    req: { kind: 'Question', q: 'Which diff crate should the worker use?', opts: ['imara-diff, faster on large files', 'similar, simpler API and already in the tree'], next: 'Editing ui/src/workers/diff.worker.ts' },
+    log: [
+      ['you', 'Move syntax diffing off the UI thread into a worker. Results should arrive per hunk.'],
+      ['tool', 'Read', 'ui/src/diff/render.ts', '233 lines'],
+      ['tool', 'Edit', 'ui/src/workers/diff.worker.ts', '+67 −9'],
+      ['agent', 'The worker protocol is in place. The remaining choice is the diff crate, and it affects memory use on large files.'],
+    ],
+  }),
+  S('D4', 'Stable inbox ordering', 'Gemini', 'working', 742, 'Running pnpm test inbox', '+73 −18', { from: 13, d: 1.1 }),
+  S('D5', 'Syntax highlight worker', 'Claude', 'working', 188, 'Reading ui/src/workers/highlight.ts', '+0 −0', { from: 3, d: 2 }),
+  S('D6', 'Twig worktree cleanup', 'Codex', 'done', 3480, '2 files ready to merge', '+31 −44', { from: 60, to: 58, d: 1 }),
+
+  S('V1', 'Encrypted relay payloads', 'Claude', 'stale', 0, 'Last known: working', '+156 −8', { from: 44, to: 12, d: 1 }),
+  S('V2', 'APNs token rotation', 'Codex', 'stale', 0, 'Last known: working', '+22 −4', { from: 20, to: 12, d: 1.4 }),
+  S('V3', 'Nightly dependency audit', 'Claude', 'stale', 0, 'Last known: done', '+0 −0', { from: 60, to: 50, d: 0.7 }),
+];
+
+function seed(str) { let h = 7; for (const c of str) h = (h * 31 + c.charCodeAt(0)) >>> 0; return () => (h = (h * 1664525 + 1013904223) >>> 0) / 2 ** 32; }
+for (const s of sessions) {
+  const r = seed(s.addr), { from, to = 0, d, waits = [], errs = [] } = s.tr;
+  s.ticks = [];
+  for (let t = from; t > to; t -= (0.3 + r() * 1.4) / d) {
+    if (waits.some(([a, b]) => t <= a && t >= b)) continue;
+    const v = r();
+    s.ticks.push({ t, k: v < 0.5 ? 'r' : v < 0.8 ? 'b' : 'e' });
+  }
+  errs.forEach(t => s.ticks.push({ t, k: 'x' }));
+}
+
+const pct = t => `${((60 - Math.min(t, 60)) / 60 * 100).toFixed(2)}%`;
+function traceHTML(s) {
+  const waits = (s.tr.waits || []).map(([a, b]) => `<u style="left:${pct(a)};width:${((a - b) / 60 * 100).toFixed(2)}%"></u>`).join('');
+  return waits + s.ticks.map(({ t, k }) => `<i class="${k}" style="left:${pct(t)}"></i>`).join('');
+}
+
+function fmt(s) {
+  if (s.state === 'stale') return '';
+  if (s.state === 'done' || s.state === 'failed') return s.secs >= 3600 ? `${Math.floor(s.secs / 3600)}h` : `${Math.floor(s.secs / 60)}m`;
+  return `${Math.floor(s.secs / 60)}:${String(s.secs % 60).padStart(2, '0')}`;
+}
+
+let selected = 'L3';
+const get = addr => sessions.find(s => s.addr === addr);
+const list = document.getElementById('rows');
+const rows = {};
+
+let lastMachine = null;
+for (const s of sessions) {
+  const m = s.addr[0];
+  if (m !== lastMachine) {
+    lastMachine = m;
+    const info = MACHINES[m], n = sessions.filter(x => x.addr[0] === m).length;
+    list.insertAdjacentHTML('beforeend', `<div class="group"><i class="dot ${info.off ? 'off' : ''}"></i>${info.name}<span>${n}</span><span class="right">${info.via}</span></div>`);
+  }
+  const el = document.createElement('div');
+  el.onclick = () => select(s.addr);
+  el.innerHTML = `<span class="ic"></span><span class="addr">${s.addr}</span><span class="task">${s.task}</span><span class="now"></span><div class="trace"></div><span class="age"></span>`;
+  rows[s.addr] = el;
+  list.appendChild(el);
+  paintRow(s);
+}
+
+function paintRow(s) {
+  const el = rows[s.addr];
+  el.className = `row ${s.state}${s.addr === selected ? ' selected' : ''}${el.classList.contains('decay') ? ' decay' : ''}`;
+  el.querySelector('.ic').innerHTML = ICON[s.state];
+  el.querySelector('.now').textContent = s.now;
+  el.querySelector('.age').textContent = fmt(s);
+  el.querySelector('.trace').innerHTML = traceHTML(s);
+}
+
+function paintTally() {
+  const c = st => sessions.filter(s => s.state === st).length;
+  document.getElementById('tally').innerHTML = `<b>${c('waiting')} waiting</b> · ${c('working')} working · ${c('failed')} failed`;
+  document.getElementById('inbox-n').textContent = c('waiting');
+}
+
+const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function logFor(s) {
+  if (s.log) return s.log;
+  const last = /^(Editing|Reading|Running) (.*)$/.exec(s.now);
+  s.log = [
+    ['you', s.task + '.'],
+    ['agent', s.state === 'stale' ? 'Last known output before this machine went offline.' : 'Working through this in its own worktree.'],
+    last ? ['tool', { Editing: 'Edit', Reading: 'Read', Running: 'Run' }[last[1]], last[2], ''] : ['agent', s.now + '.'],
+  ];
+  return s.log;
+}
+
+function logHTML(log) {
+  let html = '', tools = '';
+  const flush = () => { if (tools) { html += `<div class="tools">${tools}</div>`; tools = ''; } };
+  for (const e of log) {
+    if (e[0] === 'tool') {
+      tools += `<div class="tool"><span class="k">${e[1]}</span><span class="p">${esc(e[2])}</span><span class="m${e[4] ? ' bad' : ''}">${e[3]}</span></div>`;
+    } else if (e[0] === 'note') {
+      tools += `<div class="tool"><span class="p" style="font-family:var(--ui);font-size:12.5px;color:var(--ink-3)">${esc(e[1])}</span></div>`;
+    } else {
+      flush();
+      if (e[0] === 'diff') html += `<div class="diff">${e[1].map(([c, t]) => `<div class="${c}">${esc(t)}</div>`).join('')}</div>`;
+      if (e[0] === 'you') html += `<div class="you">${esc(e[1])}</div>`;
+      if (e[0] === 'agent') html += `<div class="agent-msg">${esc(e[1])}</div>`;
+    }
+  }
+  flush();
+  return html;
+}
+
+const waitingList = () => sessions.filter(s => s.state === 'waiting');
+
+function decideHTML(s) {
+  if (s.state !== 'waiting' || !s.req) return '';
+  const q = waitingList(), r = s.req;
+  const top = `<div class="decide-top">${ICON.waiting}${r.kind}<span class="pos">${q.indexOf(s) + 1} of ${q.length} waiting</span></div>`;
+  if (r.opts) {
+    return `<div class="decide">${top}<div class="q">${r.q}</div>
+      <div class="opts">${r.opts.map((o, i) => `<button class="opt" data-opt="${i + 1}"><kbd>${i + 1}</kbd>${o}</button>`).join('')}</div></div>`;
+  }
+  return `<div class="decide">${top}<pre>${esc(r.cmd)}</pre>${r.why ? `<div class="why">${r.why}</div>` : ''}
+    <div class="actions">
+      <button class="btn primary" id="approve"><span>${r.risky ? 'Hold to approve' : 'Approve'}</span><kbd>Y</kbd></button>
+      <button class="btn" id="always"><span>Always</span><kbd>A</kbd></button>
+      <button class="btn" id="deny"><span>Deny</span><kbd>N</kbd></button>
+    </div></div>`;
+}
+
+const body = document.getElementById('pane-body');
+const input = document.getElementById('cmd');
+function paintPane() {
+  const s = get(selected), m = MACHINES[s.addr[0]];
+  const branch = s.branch || 'tectr/' + s.task.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  body.innerHTML = `
+    <div class="pane-head">
+      <h2>${s.task}</h2>
+      <div class="meta">${s.agent} · ${m.name} · <span class="code">${branch}</span> · ${s.delta}</div>
+      <div class="tabs"><span class="on">Transcript</span><span>Changes</span><span>Files</span></div>
+    </div>
+    <div class="log" id="log">${logHTML(logFor(s))}</div>
+    ${decideHTML(s)}`;
+  const log = document.getElementById('log');
+  log.scrollTop = log.scrollHeight;
+  input.placeholder = `Message ${s.agent} in ${s.addr}…`;
+  const approve = document.getElementById('approve');
+  if (approve) {
+    approve.onpointerdown = startApprove;
+    approve.onpointerup = approve.onpointerleave = cancelHold;
+  }
+  const always = document.getElementById('always'), deny = document.getElementById('deny');
+  if (always) always.onclick = () => resolve(s, 'You approved always for this session');
+  if (deny) deny.onclick = () => resolve(s, 'You denied this');
+  body.querySelectorAll('[data-opt]').forEach(b => b.onclick = () => answer(s, +b.dataset.opt));
+}
+
+function select(addr) {
+  const prev = selected;
+  selected = addr;
+  paintRow(get(prev));
+  paintRow(get(addr));
+  paintPane();
+}
+
+function resolve(s, note) {
+  const el = rows[s.addr];
+  el.classList.add('decay');
+  s.state = 'working';
+  s.secs = 0;
+  s.now = s.req.next;
+  s.log.push(['note', note]);
+  delete s.req;
+  paintRow(s);
+  paintPane();
+  paintTally();
+  setTimeout(() => el.classList.remove('decay'), 300);
+}
+
+function answer(s, n) {
+  resolve(s, `You answered: ${s.req.opts[n - 1].split(',')[0]}`);
+}
+
+let holdTimer = null;
+function startApprove() {
+  const s = get(selected);
+  if (s.state !== 'waiting' || !s.req || s.req.opts) return;
+  if (!s.req.risky) return resolve(s, 'You approved this');
+  if (holdTimer) return;
+  document.getElementById('approve').classList.add('holding');
+  holdTimer = setTimeout(() => { holdTimer = null; resolve(s, 'You approved this'); }, 500);
+}
+function cancelHold() {
+  clearTimeout(holdTimer);
+  holdTimer = null;
+  document.getElementById('approve')?.classList.remove('holding');
+}
+
+addEventListener('keydown', e => {
+  if (document.activeElement === input) {
+    if (e.key === 'Escape') input.blur();
+    if (e.key === 'Enter' && input.value.trim()) {
+      logFor(get(selected)).push(['you', input.value.trim()]);
+      paintPane();
+      input.value = ''; input.blur();
+    }
+    return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const order = sessions.map(s => s.addr), i = order.indexOf(selected), s = get(selected);
+  const k = e.key.toLowerCase();
+  if (k === 'j' || k === 'arrowdown') { e.preventDefault(); select(order[Math.min(i + 1, order.length - 1)]); }
+  else if (k === 'k' || k === 'arrowup') { e.preventDefault(); select(order[Math.max(i - 1, 0)]); }
+  else if (e.key === 'Tab') {
+    e.preventDefault();
+    const q = waitingList();
+    if (q.length) select(q[(q.indexOf(s) + 1) % q.length].addr);
+  }
+  else if (k === 'y' && !e.repeat) startApprove();
+  else if (k === 'a' && s.state === 'waiting' && s.req?.cmd) resolve(s, 'You approved always for this session');
+  else if (k === 'n' && s.state === 'waiting' && s.req?.cmd) resolve(s, 'You denied this');
+  else if ((k === '1' || k === '2') && s.req?.opts) answer(s, +k);
+  else if (k === '/') { e.preventDefault(); input.focus(); }
+});
+addEventListener('keyup', e => { if (e.key.toLowerCase() === 'y') cancelHold(); });
+
+// Scripted life: timers tick, working agents add trace marks, one agent blocks
+setInterval(() => {
+  for (const s of sessions) {
+    if (s.state === 'working' || s.state === 'waiting') {
+      s.secs++;
+      rows[s.addr].querySelector('.age').textContent = fmt(s);
+    }
+  }
+}, 1000);
+
+const TARGETS = {
+  Read: ['crates/daemon/src/acp.rs', 'ui/src/transcript/viewport.ts', 'crates/tectr-client/src/merge.rs'],
+  Edit: ['crates/daemon/src/spawn.rs', 'ui/src/transcript/viewport.ts', 'crates/tectr-client/src/merge.rs'],
+  Run: ['cargo check --workspace', 'cargo test --workspace', 'pnpm test'],
+};
+const VERB = { Read: 'Reading', Edit: 'Editing', Run: 'Running' };
+const TICK = { Read: 'r', Edit: 'e', Run: 'b' };
+setInterval(() => {
+  const live = sessions.filter(s => s.state === 'working');
+  if (!live.length) return;
+  const s = live[Math.floor(Math.random() * live.length)];
+  const kind = Object.keys(TARGETS)[Math.floor(Math.random() * 3)];
+  const path = TARGETS[kind][Math.floor(Math.random() * 3)];
+  s.ticks.push({ t: 0.15, k: TICK[kind] });
+  s.now = `${VERB[kind]} ${path}`;
+  paintRow(s);
+  if (s.addr === selected && s.log) {
+    s.log.push(['tool', kind, path, '']);
+    paintPane();
+  }
+}, 1400);
+
+// After 12 seconds another agent blocks
+setTimeout(() => {
+  const s = get('L1');
+  s.state = 'waiting'; s.secs = 0;
+  s.now = 'Edit crates/daemon/Cargo.toml';
+  s.req = { kind: 'Edit file', cmd: 'crates/daemon/Cargo.toml  +2 −0  add tokio-util, nix', next: 'Editing crates/daemon/src/spawn.rs' };
+  logFor(s);
+  paintRow(s); paintTally();
+  if (selected === 'L1' || get(selected).state === 'waiting') paintPane();
+}, 12000);
+
+paintTally();
+paintPane();
+</script>
+</body>
+</html>

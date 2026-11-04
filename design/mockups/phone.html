@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tectr · phone mockup</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { min-height: 100vh; display: flex; justify-content: center; align-items: center; gap: 56px; padding: 32px; background: var(--recess); }
+  figure { display: flex; flex-direction: column; gap: 14px; }
+  figcaption { color: var(--ink-3); text-align: center; }
+
+  /* The rounded frame is the device, not the design language */
+  .phone { position: relative; width: 390px; height: 844px; border-radius: 46px; overflow: hidden; display: flex; flex-direction: column; background: var(--ground); box-shadow: 0 0 0 9px #060e0c, 0 0 0 10px var(--rule); }
+  .status { flex: none; display: flex; justify-content: space-between; align-items: center; height: 50px; padding: 14px 30px 0; font: 600 16px/1 -apple-system, "SF Pro Text", sans-serif; }
+  .status .sig { font-size: 12px; letter-spacing: 0.02em; }
+  .home { position: absolute; left: 50%; bottom: 8px; width: 134px; height: 5px; margin-left: -67px; border-radius: 3px; background: var(--ink); }
+  .home.dark { background: var(--on-waiting); }
+
+  /* Board screen */
+  .title { flex: none; display: flex; align-items: baseline; justify-content: space-between; padding: 8px 16px 10px; }
+  .title h1 { font: 700 32px/1 var(--board); }
+  .title span { color: var(--ink-2); }
+  .list { flex: 1; overflow: hidden; border-top: 1px solid var(--rule-strong); }
+  .mach { display: flex; justify-content: space-between; align-items: center; height: 26px; padding: 0 16px; background: var(--recess); color: var(--ink-3); border-bottom: 1px solid var(--rule); }
+  .mach.off { background-image: var(--hatch); }
+  .item { padding: 9px 16px 8px; border-bottom: 1px solid var(--rule); }
+  .item .l1 { display: flex; align-items: baseline; gap: 8px; font: 600 17px/1.15 var(--board); }
+  .item .addr { font: 700 13px/1 var(--machine); width: 21px; flex: none; }
+  .item .task { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item time { font: 500 12px/1 var(--machine); color: var(--ink-2); }
+  .item .l2 { margin: 3px 0 7px 29px; font: 400 14.5px/1.2 var(--board); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .trace { margin-left: 29px; height: 12px; }
+  .item.waiting { background: var(--waiting); color: var(--on-waiting); border-color: var(--waiting); }
+  .item.waiting .l1 { font-weight: 700; }
+  .item.waiting time, .item.waiting .l2 { color: var(--on-waiting); font-weight: 600; }
+  .item.waiting .trace u { background: repeating-linear-gradient(135deg, var(--on-waiting) 0 2px, transparent 2px 4px); }
+  .item.failed .l2, .item.failed time { color: var(--failed); }
+  .item.done, .item.done .l2, .item.done time { color: var(--ink-done); }
+
+  .tabs { flex: none; display: grid; grid-template-columns: 1fr 1fr 1fr; height: 82px; padding-top: 12px; background: var(--recess); border-top: 1px solid var(--rule-strong); text-align: center; color: var(--ink-3); }
+  .tabs .on { color: var(--ink); }
+  .tabs b { display: inline-block; margin-left: 4px; padding: 2px 5px 1px; background: var(--waiting); color: var(--on-waiting); font-weight: 700; }
+
+  /* Decision screen */
+  .nav { flex: none; display: flex; justify-content: space-between; align-items: center; height: 40px; padding: 0 12px; font: 500 17px/1 var(--board); }
+  .nav .back { color: var(--ink-2); }
+  .nav .pos { color: var(--ink-3); }
+  .head { flex: none; padding: 4px 16px 12px; border-bottom: 1px solid var(--rule-strong); }
+  .head .row { display: flex; align-items: baseline; gap: 8px; }
+  .head .addr { font: 700 15px/1 var(--machine); }
+  .head h1 { font: 700 25px/1.1 var(--board); }
+  .head p { margin-top: 5px; font: 400 12px/1.3 var(--machine); color: var(--ink-3); }
+  .scroll { flex: 1; overflow: hidden; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; justify-content: flex-end; }
+  .who { color: var(--ink-3); margin-bottom: 4px; }
+  .agent { font: 400 15.5px/1.45 var(--agent); }
+  .you { font: 600 17px/1.25 var(--board); }
+  .tool { display: flex; justify-content: space-between; gap: 8px; font: 400 12px/1.4 var(--machine); color: var(--ink-2); }
+  .tool .bad { color: var(--failed); flex: none; }
+  .tool span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tools { display: flex; flex-direction: column; gap: 3px; }
+
+  .dock { flex: none; padding: 14px 16px 36px; background: var(--waiting); color: var(--on-waiting); }
+  .dock .top { display: flex; justify-content: space-between; }
+  .dock pre { margin-top: 10px; font: 500 14.5px/1.4 var(--machine); white-space: pre-wrap; word-break: break-word; }
+  .dock .why { margin-top: 5px; font: 500 15px/1.2 var(--board); }
+  .slider { position: relative; display: flex; align-items: center; justify-content: center; height: 56px; margin-top: 14px; border: 2px solid var(--on-waiting); font: 700 17px/1 var(--board); letter-spacing: 0.02em; }
+  .slider .thumb { position: absolute; left: 3px; top: 3px; bottom: 3px; width: 56px; display: flex; align-items: center; justify-content: center; background: var(--on-waiting); color: var(--waiting); font-size: 21px; }
+  .deny { display: flex; gap: 8px; margin-top: 8px; }
+  .deny span { flex: 1; display: flex; align-items: center; justify-content: center; height: 44px; border: 1px solid var(--on-waiting); font: 600 16px/1 var(--board); }
+</style>
+</head>
+<body>
+
+<figure>
+  <div class="phone">
+    <div class="status"><span>14:11</span><span class="sig">5G ▮▮▮</span></div>
+    <div class="title"><h1>Board</h1><span class="label">2 waiting · 1 failed</span></div>
+    <div class="list">
+      <div class="mach label"><span>L · Laptop</span><span>Live</span></div>
+      <div class="item waiting"><div class="l1"><span class="addr">L3</span><span class="task">client: reconnect backoff</span><time>4:12</time></div><div class="l2">bash: rm -rf target/debug/incremental</div><div class="trace" data-t="L3,9,4,2,4-0"></div></div>
+      <div class="item"><div class="l1"><span class="addr">L1</span><span class="task">daemon: spawn via ACP</span><time>18:04</time></div><div class="l2">edit crates/daemon/src/spawn.rs</div><div class="trace" data-t="L1,34,0,1.3,19-16"></div></div>
+      <div class="item"><div class="l1"><span class="addr">L4</span><span class="task">ios: UniFFI bindings</span><time>7:16</time></div><div class="l2">bash: cargo build --target aarch64-apple-ios</div><div class="trace" data-t="L4,8,0,1.5"></div></div>
+      <div class="mach label"><span>D · Desktop</span><span>18 ms</span></div>
+      <div class="item waiting"><div class="l1"><span class="addr">D3</span><span class="task">worker: diff off UI thread</span><time>1:11</time></div><div class="l2">question: which diff crate?</div><div class="trace" data-t="D3,15,1,1.4,1-0"></div></div>
+      <div class="item failed"><div class="l1"><span class="addr">D2</span><span class="task">ui: incremental markdown</span><time>6m</time></div><div class="l2">cargo test: 3 failed</div><div class="trace" data-t="D2,46,6,1.1"></div></div>
+      <div class="item"><div class="l1"><span class="addr">D1</span><span class="task">ui: virtualized transcript</span><time>41:11</time></div><div class="l2">edit ui/src/transcript/viewport.ts</div><div class="trace" data-t="D1,42,0,1.6,25-21"></div></div>
+      <div class="item done"><div class="l1"><span class="addr">D6</span><span class="task">twig: worktree cleanup</span><time>1h</time></div><div class="l2">2 files · ready to merge</div><div class="trace" data-t="D6,60,58,1"></div></div>
+    </div>
+    <div class="tabs label">
+      <span class="on">Board</span>
+      <span>Waiting<b>2</b></span>
+      <span>Machines</span>
+    </div>
+    <div class="home"></div>
+  </div>
+  <figcaption class="label">Board</figcaption>
+</figure>
+
+<figure>
+  <div class="phone">
+    <div class="status"><span>14:11</span><span class="sig">5G ▮▮▮</span></div>
+    <div class="nav"><span class="back">‹ Board</span><span class="pos label">1 of 2 waiting</span></div>
+    <div class="head">
+      <div class="row"><span class="addr">L3</span><h1>client: reconnect backoff</h1></div>
+      <p>tectr/reconnect-backoff · claude · +38 −11</p>
+    </div>
+    <div class="scroll">
+      <div>
+        <div class="who label">You · 14:02</div>
+        <div class="you">Add exponential backoff to daemon reconnects in tectr-client. Resume from the last sequence number and don’t lose queued actions.</div>
+      </div>
+      <div>
+        <div class="who label">Agent · 14:02</div>
+        <div class="agent">The reconnect loop retries on a fixed 2s timer. I’ll add capped backoff with jitter and keep the action queue across attempts.</div>
+      </div>
+      <div class="tools">
+        <div class="tool"><span>read connection.rs</span><span>412 lines</span></div>
+        <div class="tool"><span>edit connection.rs</span><span>+38 −11</span></div>
+        <div class="tool"><span>bash cargo test -p tectr-client reconnect</span><span class="bad">1 failed</span></div>
+      </div>
+      <div>
+        <div class="who label">Agent · 14:07</div>
+        <div class="agent">One test fails on a stale fixture left by an earlier build. I want to clear the incremental cache and run it again.</div>
+      </div>
+    </div>
+    <div class="dock">
+      <div class="top label"><span>Waiting 4:12 · Bash</span></div>
+      <pre>rm -rf target/debug/incremental &amp;&amp; cargo test -p tectr-client reconnect</pre>
+      <div class="why">Deletes files outside version control</div>
+      <div class="slider"><span class="thumb">▸</span>Slide to approve</div>
+      <div class="deny"><span>Deny</span><span>Reply</span></div>
+    </div>
+    <div class="home dark"></div>
+  </div>
+  <figcaption class="label">Decision</figcaption>
+</figure>
+
+<script>
+// Same deterministic trace as the board, without the scripted behavior
+function seed(str) { let h = 7; for (const c of str) h = (h * 31 + c.charCodeAt(0)) >>> 0; return () => (h = (h * 1664525 + 1013904223) >>> 0) / 2 ** 32; }
+const pct = t => `${((60 - Math.min(t, 60)) / 60 * 100).toFixed(2)}%`;
+document.querySelectorAll('[data-t]').forEach(el => {
+  const [id, from, to, d, wait] = el.dataset.t.split(',');
+  const r = seed(id), [a, b] = wait ? wait.split('-').map(Number) : [];
+  let html = wait ? `<u style="left:${pct(a)};width:${((a - b) / 60 * 100).toFixed(2)}%"></u>` : '';
+  for (let t = +from; t > +to; t -= (0.3 + r() * 1.4) / +d) {
+    if (wait && t <= a && t >= b) continue;
+    const v = r();
+    html += `<i class="${v < 0.5 ? 'r' : v < 0.8 ? 'b' : 'e'}" style="left:${pct(t)}"></i>`;
+  }
+  el.innerHTML = html;
+});
+</script>
+</body>
+</html>

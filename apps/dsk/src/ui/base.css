@@ -1,0 +1,31 @@
+/* App-wide defaults. Values come from design/tokens. Appearance follows the system
+   unless <html> has data-theme="light" or data-theme="dark". */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-surface-base);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  font-feature-settings: "cv11", "ss03";
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.003em;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Keeps the app in its own stacking context, so Base UI popups layer above it. */
+#root {
+  isolation: isolate;
+}

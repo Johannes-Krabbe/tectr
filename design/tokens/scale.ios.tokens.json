@@ -1,0 +1,48 @@
+{
+  "font": {
+    "$type": "fontFamily",
+    "ui": { "$value": "SF Pro" },
+    "code": { "$value": "Geist Mono" }
+  },
+  "text": {
+    "$type": "typography",
+    "meta": { "$value": { "fontFamily": "{font.ui}", "fontSize": 13, "fontWeight": 400, "lineHeight": 1.3 }, "$extensions": { "tectr.ios": { "textStyle": "footnote" } } },
+    "label": { "$value": { "fontFamily": "{font.ui}", "fontSize": 15, "fontWeight": 500, "lineHeight": 1.3 }, "$extensions": { "tectr.ios": { "textStyle": "subheadline" } } },
+    "body": { "$value": { "fontFamily": "{font.ui}", "fontSize": 15, "fontWeight": 400, "lineHeight": 1.35 }, "$extensions": { "tectr.ios": { "textStyle": "subheadline" } } },
+    "reading": { "$value": { "fontFamily": "{font.ui}", "fontSize": 16, "fontWeight": 400, "lineHeight": 1.45 }, "$extensions": { "tectr.ios": { "textStyle": "callout" } } },
+    "heading": { "$value": { "fontFamily": "{font.ui}", "fontSize": 17, "fontWeight": 600, "lineHeight": 1.3 }, "$extensions": { "tectr.ios": { "textStyle": "headline" } } },
+    "title": { "$value": { "fontFamily": "{font.ui}", "fontSize": 22, "fontWeight": 600, "lineHeight": 1.25 }, "$extensions": { "tectr.ios": { "textStyle": "title2" } } },
+    "code-small": { "$value": { "fontFamily": "{font.code}", "fontSize": 12, "fontWeight": 400, "lineHeight": 1.45 }, "$extensions": { "tectr.ios": { "textStyle": "caption" } } },
+    "code-body": { "$value": { "fontFamily": "{font.code}", "fontSize": 13, "fontWeight": 400, "lineHeight": 1.5 }, "$extensions": { "tectr.ios": { "textStyle": "footnote" } } }
+  },
+  "space": {
+    "$type": "dimension",
+    "2xs": { "$value": 2 },
+    "xs": { "$value": 4 },
+    "sm": { "$value": 8 },
+    "md": { "$value": 12 },
+    "lg": { "$value": 16 },
+    "xl": { "$value": 24 },
+    "2xl": { "$value": 32 }
+  },
+  "radius": {
+    "$type": "dimension",
+    "xs": { "$value": 6 },
+    "sm": { "$value": 10 },
+    "md": { "$value": 12 },
+    "lg": { "$value": 16 }
+  },
+  "size": {
+    "$type": "dimension",
+    "icon": { "$value": 16 },
+    "row": { "$value": 44 },
+    "control": { "$value": 44 },
+    "input": { "$value": 44 }
+  },
+  "motion": {
+    "$type": "duration",
+    "fast": { "$value": 150 },
+    "normal": { "$value": 300 },
+    "fade": { "$value": 400 }
+  }
+}

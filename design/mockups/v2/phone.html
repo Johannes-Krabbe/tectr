@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tectr · phone mockup v2</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { min-height: 100vh; display: flex; justify-content: center; align-items: center; gap: 56px; padding: 32px; background: #050407; }
+  figure { display: flex; flex-direction: column; gap: 14px; }
+  figcaption { color: var(--ink-3); text-align: center; font-size: 12.5px; }
+
+  .phone { position: relative; width: 390px; height: 844px; border-radius: 46px; overflow: hidden; display: flex; flex-direction: column; background: var(--base); box-shadow: 0 0 0 9px #000, 0 0 0 10px var(--line); }
+  .bar { flex: none; display: flex; justify-content: space-between; align-items: center; height: 50px; padding: 14px 30px 0; font: 600 16px/1 -apple-system, "SF Pro Text", var(--ui); }
+  .bar .sig { font-size: 12px; font-weight: 500; }
+  .home { position: absolute; left: 50%; bottom: 8px; width: 134px; height: 5px; margin-left: -67px; border-radius: 3px; background: var(--ink); }
+
+  .title { flex: none; padding: 8px 16px 12px; }
+  .title h1 { font: 700 30px/1.1 var(--ui); letter-spacing: -0.025em; }
+  .title p { margin-top: 3px; color: var(--ink-3); font-size: 14px; }
+  .title p b { font-weight: 500; color: var(--waiting); }
+  .scroll { flex: 1; overflow: hidden; padding: 0 12px; }
+
+  .sec { display: flex; align-items: center; gap: 7px; padding: 12px 6px 7px; font-size: 13px; font-weight: 500; color: var(--ink-2); }
+  .sec i { width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
+  .sec span { margin-left: auto; color: var(--ink-3); font-weight: 450; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .item { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); align-items: start; }
+  .item:last-child { border-bottom: 0; }
+  .item .status { margin-top: 3px; }
+  .item .task { font: 500 15px/1.3 var(--ui); letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .age { font-size: 13px; color: var(--ink-3); line-height: 1.5; }
+  .item .now { grid-column: 2 / 4; margin-top: 2px; font-size: 13.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .trace { grid-column: 2 / 4; margin-top: 6px; }
+  .item.waiting { background: rgba(240, 182, 77, 0.08); }
+  .item.waiting .now, .item.waiting .age { color: var(--waiting); }
+  .item.failed .now, .item.failed .age { color: var(--failed); }
+  .item.done .task { color: var(--ink-2); font-weight: 450; }
+
+  .tabs { flex: none; display: grid; grid-template-columns: 1fr 1fr 1fr; height: 82px; padding-top: 11px; background: var(--panel); border-top: 1px solid var(--line); text-align: center; font-size: 12px; font-weight: 500; color: var(--ink-3); }
+  .tabs .on { color: var(--accent-ink); }
+  .tabs b { margin-left: 3px; color: var(--waiting); font-weight: 600; }
+
+  .nav { flex: none; display: flex; justify-content: space-between; align-items: center; height: 40px; padding: 0 14px; font-size: 16px; }
+  .nav .back { color: var(--accent-ink); }
+  .nav .pos { color: var(--ink-3); font-size: 13.5px; }
+  .head { flex: none; padding: 2px 16px 12px; border-bottom: 1px solid var(--line); }
+  .head h1 { font: 600 21px/1.2 var(--ui); letter-spacing: -0.02em; }
+  .head p { margin-top: 3px; font-size: 13px; color: var(--ink-3); }
+  .log { flex: 1; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; padding: 12px 16px; }
+  .you { padding: 10px 12px; background: var(--surface); border-radius: 12px; font-size: 15px; line-height: 1.45; }
+  .agent { font-size: 15px; line-height: 1.5; }
+  .tools { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--ink-3); }
+  .tools div { display: flex; justify-content: space-between; gap: 10px; }
+  .tools .bad { color: var(--failed); flex: none; }
+
+  .decide { flex: none; margin: 0 10px; padding: 14px; border-radius: 16px 16px 0 0; background: var(--panel); border: 1px solid rgba(240, 182, 77, 0.32); border-bottom: 0; padding-bottom: 34px; }
+  .decide .top { display: flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 500; color: var(--waiting); }
+  .decide pre { margin-top: 9px; font: 400 13px/1.5 var(--code); white-space: pre-wrap; word-break: break-word; }
+  .decide .why { margin-top: 5px; font-size: 13.5px; color: var(--ink-2); }
+  .approve { display: flex; align-items: center; justify-content: center; height: 50px; margin-top: 13px; border-radius: 12px; background: var(--accent); color: #fff; font-size: 16px; font-weight: 600; }
+  .row2 { display: flex; gap: 8px; margin-top: 8px; }
+  .row2 span { flex: 1; display: flex; align-items: center; justify-content: center; height: 44px; border-radius: 12px; background: var(--surface-2); font-size: 15px; font-weight: 500; }
+</style>
+</head>
+<body>
+
+<figure>
+  <div class="phone">
+    <div class="bar"><span>14:11</span><span class="sig">5G</span></div>
+    <div class="title"><h1>Sessions</h1><p><b>2 waiting</b> · 6 working · 1 failed</p></div>
+    <div class="scroll">
+      <div class="sec"><i></i>Laptop<span>Local</span></div>
+      <div class="card">
+        <div class="item waiting" data-i="waiting"><span></span><div class="task">Client reconnect backoff</div><span class="age">4:12</span><div class="now">rm -rf target/debug/incremental</div><div class="trace" data-t="L3,9,4,2,4-0"></div></div>
+        <div class="item" data-i="working"><span></span><div class="task">Spawn daemon sessions via ACP</div><span class="age">18:04</span><div class="now">Editing crates/daemon/src/spawn.rs</div><div class="trace" data-t="L1,34,0,1.3,19-16"></div></div>
+        <div class="item" data-i="working"><span></span><div class="task">iOS UniFFI bindings</div><span class="age">7:16</span><div class="now">Running cargo build</div><div class="trace" data-t="L4,8,0,1.5"></div></div>
+      </div>
+      <div class="sec"><i></i>Desktop<span>18 ms</span></div>
+      <div class="card">
+        <div class="item waiting" data-i="waiting"><span></span><div class="task">Move diffing off the UI thread</div><span class="age">1:11</span><div class="now">Question: which diff crate?</div><div class="trace" data-t="D3,15,1,1.4,1-0"></div></div>
+        <div class="item failed" data-i="failed"><span></span><div class="task">Incremental markdown parsing</div><span class="age">6m</span><div class="now">cargo test: 3 failed</div><div class="trace" data-t="D2,46,6,1.1"></div></div>
+        <div class="item" data-i="working"><span></span><div class="task">Virtualized transcript</div><span class="age">41:11</span><div class="now">Editing ui/src/transcript/viewport.ts</div><div class="trace" data-t="D1,42,0,1.6,25-21"></div></div>
+      </div>
+    </div>
+    <div class="tabs"><span class="on">Sessions</span><span>Inbox<b>2</b></span><span>Machines</span></div>
+    <div class="home"></div>
+  </div>
+  <figcaption>Sessions</figcaption>
+</figure>
+
+<figure>
+  <div class="phone">
+    <div class="bar"><span>14:11</span><span class="sig">5G</span></div>
+    <div class="nav"><span class="back">‹ Sessions</span><span class="pos">1 of 2 waiting</span></div>
+    <div class="head"><h1>Client reconnect backoff</h1><p>Claude · Laptop · +38 −11</p></div>
+    <div class="log">
+      <div class="you">Add exponential backoff to daemon reconnects in tectr-client. Don’t lose queued actions.</div>
+      <div class="agent">The reconnect loop retries on a fixed 2s timer. I’ll add capped backoff with jitter and keep the queue across attempts.</div>
+      <div class="tools">
+        <div><span>Read connection.rs</span><span>412 lines</span></div>
+        <div><span>Edit connection.rs</span><span>+38 −11</span></div>
+        <div><span>Run cargo test</span><span class="bad">1 failed</span></div>
+      </div>
+      <div class="agent">One test fails on a stale fixture left by an earlier build. I want to clear the incremental cache and run it again.</div>
+    </div>
+    <div class="decide">
+      <div class="top" data-i="waiting"><span></span>Run command · 4:12</div>
+      <pre>rm -rf target/debug/incremental &amp;&amp; cargo test -p tectr-client reconnect</pre>
+      <div class="why">Deletes files outside version control</div>
+      <div class="approve">Hold to approve</div>
+      <div class="row2"><span>Deny</span><span>Reply</span></div>
+    </div>
+    <div class="home"></div>
+  </div>
+  <figcaption>Decision</figcaption>
+</figure>
+
+<script>
+const ICON = {
+  working: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="#b9a6ff" stroke-width="1.5"/><path d="M7 3.5a3.5 3.5 0 0 1 0 7z" fill="#b9a6ff"/></svg>`,
+  waiting: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#f0b64d"/><rect x="4.6" y="4" width="1.7" height="6" rx=".6" fill="#0e0d12"/><rect x="7.7" y="4" width="1.7" height="6" rx=".6" fill="#0e0d12"/></svg>`,
+  failed: `<svg class="status" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#f0766e"/><path d="M4.8 4.8l4.4 4.4M9.2 4.8L4.8 9.2" stroke="#0e0d12" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+};
+document.querySelectorAll('[data-i]').forEach(el => { el.querySelector('span').innerHTML = ICON[el.dataset.i]; });
+
+function seed(str) { let h = 7; for (const c of str) h = (h * 31 + c.charCodeAt(0)) >>> 0; return () => (h = (h * 1664525 + 1013904223) >>> 0) / 2 ** 32; }
+const pct = t => `${((60 - Math.min(t, 60)) / 60 * 100).toFixed(2)}%`;
+document.querySelectorAll('[data-t]').forEach(el => {
+  const [id, from, to, d, wait] = el.dataset.t.split(',');
+  const r = seed(id), [a, b] = wait ? wait.split('-').map(Number) : [];
+  let html = wait ? `<u style="left:${pct(a)};width:${((a - b) / 60 * 100).toFixed(2)}%"></u>` : '';
+  for (let t = +from; t > +to; t -= (0.3 + r() * 1.4) / +d) {
+    if (wait && t <= a && t >= b) continue;
+    const v = r();
+    html += `<i class="${v < 0.5 ? 'r' : v < 0.8 ? 'b' : 'e'}" style="left:${pct(t)}"></i>`;
+  }
+  el.innerHTML = html;
+});
+</script>
+</body>
+</html>

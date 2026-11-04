@@ -1,0 +1,48 @@
+{
+  "font": {
+    "$type": "fontFamily",
+    "ui": { "$value": "\"Inter Variable\", \"Inter\", -apple-system, \"SF Pro Text\", sans-serif" },
+    "code": { "$value": "\"Geist Mono Variable\", \"Geist Mono\", ui-monospace, \"SF Mono\", Menlo, monospace" }
+  },
+  "text": {
+    "$type": "typography",
+    "meta": { "$value": { "fontFamily": "{font.ui}", "fontSize": 12, "fontWeight": 450, "lineHeight": 1.35 } },
+    "label": { "$value": { "fontFamily": "{font.ui}", "fontSize": 12.5, "fontWeight": 500, "lineHeight": 1.4 } },
+    "body": { "$value": { "fontFamily": "{font.ui}", "fontSize": 13, "fontWeight": 450, "lineHeight": 1.4 } },
+    "reading": { "$value": { "fontFamily": "{font.ui}", "fontSize": 13.5, "fontWeight": 450, "lineHeight": 1.55 } },
+    "heading": { "$value": { "fontFamily": "{font.ui}", "fontSize": 15, "fontWeight": 600, "lineHeight": 1.2 } },
+    "title": { "$value": { "fontFamily": "{font.ui}", "fontSize": 17, "fontWeight": 500, "lineHeight": 1.2 } },
+    "code-small": { "$value": { "fontFamily": "{font.code}", "fontSize": 11.5, "fontWeight": 400, "lineHeight": 1.55 } },
+    "code-body": { "$value": { "fontFamily": "{font.code}", "fontSize": 12.5, "fontWeight": 400, "lineHeight": 1.55 } }
+  },
+  "space": {
+    "$type": "dimension",
+    "2xs": { "$value": 2 },
+    "xs": { "$value": 4 },
+    "sm": { "$value": 8 },
+    "md": { "$value": 12 },
+    "lg": { "$value": 16 },
+    "xl": { "$value": 20 },
+    "2xl": { "$value": 28 }
+  },
+  "radius": {
+    "$type": "dimension",
+    "xs": { "$value": 4 },
+    "sm": { "$value": 6 },
+    "md": { "$value": 8 },
+    "lg": { "$value": 11 }
+  },
+  "size": {
+    "$type": "dimension",
+    "icon": { "$value": 14 },
+    "row": { "$value": 29 },
+    "control": { "$value": 28 },
+    "input": { "$value": 38 }
+  },
+  "motion": {
+    "$type": "duration",
+    "fast": { "$value": 80 },
+    "normal": { "$value": 160 },
+    "fade": { "$value": 320 }
+  }
+}

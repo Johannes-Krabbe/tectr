@@ -1,0 +1,112 @@
+{
+  "devices": [
+    { "id": "laptop", "name": "Laptop", "online": true },
+    { "id": "desktop", "name": "Desktop", "online": true },
+    { "id": "vps", "name": "VPS", "online": false, "lastSeen": "2h ago" }
+  ],
+  "workspaces": [
+    {
+      "id": "tectr-laptop",
+      "name": "tectr",
+      "device": "laptop",
+      "path": "~/Developer/tectr",
+      "topics": [
+        {
+          "id": "reconnect",
+          "name": "Client reconnect backoff",
+          "worktrees": [
+            { "id": "reconnect-main", "branch": "reconnect-backoff", "path": "~/Developer/tectr/.worktrees/reconnect-backoff" },
+            { "id": "reconnect-tests", "branch": "reconnect-tests", "path": "~/Developer/tectr/.worktrees/reconnect-tests" }
+          ],
+          "sessions": [
+            { "id": "s1", "title": "Add capped backoff", "agent": "Claude", "worktree": "reconnect-main", "state": "waiting", "age": "4:12", "now": "rm -rf target/debug/incremental" },
+            { "id": "s2", "title": "Reconnect test matrix", "agent": "Codex", "worktree": "reconnect-tests", "state": "working", "age": "9:40", "now": "Editing tests/reconnect.rs" }
+          ]
+        },
+        {
+          "id": "spawn",
+          "name": "Spawn sessions via ACP",
+          "worktrees": [{ "id": "spawn-main", "branch": "acp-spawn", "path": "~/Developer/tectr/.worktrees/acp-spawn" }],
+          "sessions": [
+            { "id": "s3", "title": "Spawn adapters", "agent": "Claude", "worktree": "spawn-main", "state": "working", "age": "18:04", "now": "Editing crates/tectr-daemon/src/spawn.rs" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tectr-desktop",
+      "name": "tectr",
+      "device": "desktop",
+      "path": "~/src/tectr",
+      "topics": [
+        {
+          "id": "markdown",
+          "name": "Incremental markdown parsing",
+          "worktrees": [{ "id": "markdown-main", "branch": "incremental-markdown", "path": "~/src/tectr/.worktrees/incremental-markdown" }],
+          "sessions": [
+            { "id": "s4", "title": "Parser", "agent": "Claude", "worktree": "markdown-main", "state": "failed", "age": "6m", "now": "cargo test: 3 failed" }
+          ]
+        },
+        {
+          "id": "transcript",
+          "name": "Virtualized transcript",
+          "worktrees": [{ "id": "transcript-main", "branch": "virtual-transcript", "path": "~/src/tectr/.worktrees/virtual-transcript" }],
+          "sessions": [
+            { "id": "s5", "title": "Viewport", "agent": "Codex", "worktree": "transcript-main", "state": "done", "age": "1h", "now": "Finished" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "relay-vps",
+      "name": "push-relay",
+      "device": "vps",
+      "path": "~/code/push-relay",
+      "topics": [
+        {
+          "id": "apns",
+          "name": "APNs token refresh",
+          "worktrees": [{ "id": "apns-main", "branch": "apns-refresh", "path": "~/code/push-relay/.worktrees/apns-refresh" }],
+          "sessions": [
+            { "id": "s6", "title": "Token refresh", "agent": "Claude", "worktree": "apns-main", "state": "stale", "age": "2h", "now": "Last seen 2h ago" }
+          ]
+        }
+      ]
+    }
+  ],
+  "request": {
+    "session": "s1",
+    "kind": "Run command",
+    "age": "4:12",
+    "position": "1 of 2 waiting",
+    "command": "rm -rf target/debug/incremental && cargo test -p tectr-client reconnect",
+    "reason": "Deletes files outside version control"
+  },
+  "review": {
+    "topic": "reconnect",
+    "files": [
+      {
+        "path": "crates/tectr-client/src/connection.rs",
+        "add": 3,
+        "del": 1,
+        "hunks": [
+          {
+            "header": "@@ -84,6 +84,8 @@ impl Connection",
+            "lines": [
+              { "kind": "context", "spans": [["keyword", "async fn "], ["function", "reconnect"], ["punctuation", "(&"], ["keyword", "mut "], ["plain", "self"], ["punctuation", ") {"]] },
+              { "kind": "del", "spans": [["plain", "    sleep"], ["punctuation", "("], ["type", "Duration"], ["punctuation", "::"], ["function", "from_secs"], ["punctuation", "("], ["constant", "2"], ["punctuation", ")).await;"]] },
+              { "kind": "add", "spans": [["comment", "    // Capped, with jitter so clients don't retry together."]] },
+              { "kind": "add", "spans": [["keyword", "    let "], ["plain", "delay = backoff"], ["punctuation", "."], ["function", "next"], ["punctuation", "("], ["string", "\"reconnect\""], ["punctuation", ");"]] },
+              { "kind": "add", "spans": [["plain", "    sleep"], ["punctuation", "("], ["plain", "delay"], ["punctuation", ").await;"]] },
+              { "kind": "context", "spans": [["punctuation", "}"]] }
+            ],
+            "comments": [
+              { "afterLine": 1, "text": "Keep the queue intact across this wait." },
+              { "afterLine": 3, "text": "Keep the cap at 30s, and reset it once a connection stays up." }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,68 @@
+/* v2: calm, Linear-adjacent, near-black with purple accents. Exploratory, not a design system yet. */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=Geist+Mono:wght@400;500&display=swap");
+
+:root {
+  /* Near-black with a trace of purple. Purple itself is reserved for accents. */
+  --base: #09080c;
+  --panel: #0e0d12;
+  --surface: #17151d;
+  --surface-2: #201d28;
+  --line: #1e1c25;
+  --line-strong: #2f2c3a;
+
+  --ink: #edecf1;
+  --ink-2: #a8a6b3;
+  --ink-3: #7c7a89;
+
+  --accent: #7c5cf0;
+  --accent-ink: #b9a6ff;
+  --accent-tint: rgba(124, 92, 240, 0.16);
+
+  --waiting: #f0b64d;
+  --failed: #f0766e;
+  --live: #5cc99a;
+
+  --add-bg: rgba(92, 201, 154, 0.13);
+  --add-ink: #c2ecd8;
+  --del-bg: rgba(240, 118, 110, 0.13);
+  --del-ink: #f4cbc8;
+
+  --ui: "Inter", -apple-system, "SF Pro Text", sans-serif;
+  --code: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--base);
+  color: var(--ink);
+  font: 450 13px/1.4 var(--ui);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv11", "ss03";
+  letter-spacing: -0.003em;
+  -webkit-font-smoothing: antialiased;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  font: 500 11px/1 var(--ui);
+}
+
+/* Status icons */
+.status { flex: none; width: 14px; height: 14px; display: block; }
+
+/* The trace, turned down: one tick per tool call */
+.trace { position: relative; height: 12px; color: var(--ink-3); }
+.trace i { position: absolute; bottom: 0; width: 1px; background: currentColor; }
+.trace i.r { height: 3px; opacity: 0.7; }
+.trace i.b { height: 6px; opacity: 0.85; }
+.trace i.e { height: 10px; }
+.trace i.x { height: 12px; background: var(--failed); }
+.trace u { position: absolute; bottom: 0; height: 2px; border-radius: 1px; background: var(--waiting); opacity: 0.75; }

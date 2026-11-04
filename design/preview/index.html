@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tectr · design tokens preview</title>
+<!-- Google Fonts is a convenience for this page only. The apps bundle their fonts. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../tokens/generated/tokens.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: #808080; }
+  body { font: var(--text-body); font-feature-settings: "cv11", "ss03"; font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+  .themes { display: grid; grid-template-columns: 1fr 1fr; }
+  .theme { min-width: 0; padding: var(--space-xl); background: var(--color-surface-base); color: var(--color-text-primary); }
+  .eyebrow { margin: var(--space-2xl) 0 var(--space-md); font: var(--text-label); color: var(--color-text-tertiary); }
+  .eyebrow:first-child { margin-top: 0; }
+  .note { padding: var(--space-md) var(--space-xl); background: var(--color-surface-panel); color: var(--color-text-secondary); border-bottom: 1px solid var(--color-line-subtle); }
+
+  /* The shared fixture, drawn with tokens */
+  .scene { display: grid; grid-template-columns: 228px minmax(0, 1fr); gap: var(--space-sm); }
+  .tree { min-width: 0; }
+  .device { display: flex; align-items: center; gap: 7px; height: 27px; margin-top: var(--space-md); padding: 0 var(--space-sm); font: 600 12.5px/1.4 var(--font-ui); }
+  .device:first-child { margin-top: 0; }
+  .device .seen { margin-left: auto; font: var(--text-meta); color: var(--color-text-tertiary); }
+  .device.off .name { color: var(--color-text-tertiary); }
+  .dot { flex: none; width: 6px; height: 6px; margin: 0 2px; border-radius: 50%; background: var(--color-status-online); }
+  .off .dot { background: none; box-shadow: inset 0 0 0 1.5px var(--color-text-tertiary); }
+  .workspace { display: flex; align-items: center; height: 27px; padding: 0 var(--space-sm); font: var(--text-label); color: var(--color-text-secondary); }
+  .topic { display: flex; align-items: center; gap: 9px; height: var(--size-row); padding: 0 var(--space-sm) 0 25px; border-radius: var(--radius-sm); }
+  .topic .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topic .meta { flex: none; font: var(--text-meta); color: var(--color-text-tertiary); }
+  .topic.waiting { background: var(--color-status-waiting-tint); }
+  .topic.selected { background: var(--color-status-waiting-tint-strong); }
+  .topic.waiting .meta { color: var(--color-status-waiting); font-weight: 500; }
+  .topic.failed .meta { color: var(--color-status-failed); font-weight: 500; }
+  .topic.done .name, .topic.stale .name { color: var(--color-text-tertiary); }
+
+  .icon { flex: none; display: block; width: var(--size-icon); height: var(--size-icon); }
+  .icon svg { display: block; width: 100%; height: 100%; }
+  .s-working { color: var(--color-status-working); }
+  .s-waiting { color: var(--color-status-waiting); }
+  .s-failed { color: var(--color-status-failed); }
+  .s-done { color: var(--color-status-done); }
+  .s-idle { color: var(--color-status-idle); }
+  .s-stale { color: var(--color-status-stale); }
+
+  .panel { min-width: 0; padding: var(--space-md); background: var(--color-surface-panel); border: 1px solid var(--color-line-subtle); border-radius: 10px; }
+  .agent { margin-bottom: var(--space-md); font: var(--text-reading); }
+  .you { margin-bottom: var(--space-md); padding: 10px var(--space-md); border-radius: var(--radius-md); background: var(--color-surface-raised); }
+  .request { padding: var(--space-md); border: 1px solid var(--color-status-waiting-border); border-radius: 9px; background: var(--color-status-waiting-tint); }
+  .request-top { display: flex; align-items: center; gap: 7px; font: var(--text-label); color: var(--color-status-waiting); }
+  .request-top .pos { margin-left: auto; font: var(--text-meta); color: var(--color-text-tertiary); }
+  .request pre { margin-top: var(--space-sm); font: var(--text-code-body); white-space: pre-wrap; word-break: break-word; }
+  .request .why { margin-top: var(--space-xs); color: var(--color-text-secondary); }
+  .actions { display: flex; align-items: center; gap: 6px; margin-top: var(--space-md); }
+  .btn { display: inline-flex; align-items: center; height: var(--size-control); padding: 0 10px; border-radius: var(--radius-sm); background: var(--color-surface-control); font: var(--text-label); }
+  .btn.primary { background: var(--color-accent-solid); color: var(--color-text-on-accent); }
+
+  .file { margin: var(--space-lg) 0 6px; font: var(--text-code-small); color: var(--color-text-tertiary); }
+  .file b { font-weight: 400; color: var(--color-status-online); }
+  .file i { font-style: normal; color: var(--color-status-failed); }
+  .hunk { overflow: hidden; border: 1px solid var(--color-line-subtle); border-radius: 7px; background: var(--color-surface-base); font: var(--text-code-small); }
+  .hunk .head { padding: 3px 10px; border-bottom: 1px solid var(--color-line-subtle); color: var(--color-text-tertiary); }
+  .hunk .line { padding-left: 10px; min-height: 18px; white-space: pre; overflow: hidden; }
+  .hunk .add { background: var(--color-diff-add-bg); }
+  .hunk .del { background: var(--color-diff-del-bg); }
+  .comment { padding: var(--space-sm) 10px; border-top: 1px solid var(--color-line-subtle); border-bottom: 1px solid var(--color-line-subtle); background: var(--color-surface-panel); font: var(--text-body); }
+  .comment span { display: block; font: var(--text-meta); color: var(--color-accent-text); }
+  .review { display: flex; align-items: center; gap: var(--space-sm); margin-top: var(--space-sm); padding: 6px 6px 6px var(--space-md); border: 1px solid var(--color-line-strong); border-radius: var(--radius-md); background: var(--color-surface-raised); color: var(--color-text-secondary); }
+  .review .btn:first-of-type { margin-left: auto; }
+
+  .sheetwrap { margin-top: var(--space-sm); padding: var(--space-xl); background: var(--color-scrim); border-radius: 10px; }
+  .sheet { overflow: hidden; border: 1px solid var(--color-line-strong); border-radius: var(--radius-lg); background: var(--color-surface-overlay); box-shadow: var(--shadow-sheet); }
+  .sheet-head { padding: var(--space-md) var(--space-lg) 0; font: var(--text-label); color: var(--color-text-secondary); }
+  .sheet-name { padding: var(--space-xs) var(--space-lg) var(--space-sm); font: var(--text-title); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 var(--space-lg) var(--space-md); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; border-radius: var(--radius-sm); background: var(--color-surface-control); font: var(--text-label); }
+  .chip span { color: var(--color-text-tertiary); font-weight: 450; }
+  .chip.on { box-shadow: inset 0 0 0 1px var(--color-accent-text); }
+  .sheet-foot { display: flex; justify-content: flex-end; align-items: center; gap: 6px; padding: var(--space-sm) 10px; border-top: 1px solid var(--color-line-strong); }
+
+  /* Reference sections */
+  .icons { display: flex; flex-wrap: wrap; gap: var(--space-lg); }
+  .icons div { display: flex; align-items: center; gap: 7px; color: var(--color-text-secondary); }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-sm) var(--space-md); }
+  .swatch { display: flex; align-items: center; gap: var(--space-sm); min-width: 0; font: var(--text-code-small); color: var(--color-text-secondary); }
+  .swatch i { flex: none; width: 22px; height: 22px; border-radius: 5px; box-shadow: inset 0 0 0 1px var(--color-line-strong); }
+  .swatch span { min-width: 0; line-height: 1.25; overflow-wrap: anywhere; }
+  .swatch small { display: block; font-size: 10.5px; color: var(--color-text-tertiary); }
+  .scales { padding: var(--space-xl); background: var(--color-surface-base); color: var(--color-text-primary); border-top: 1px solid var(--color-line-subtle); }
+  table { width: 100%; max-width: 760px; border-collapse: collapse; }
+  th, td { height: 26px; padding: 0 var(--space-md) 0 0; text-align: left; border-bottom: 1px solid var(--color-line-subtle); }
+  th { font: var(--text-label); color: var(--color-text-tertiary); }
+  td:first-child { font: var(--text-code-small); color: var(--color-text-secondary); }
+</style>
+</head>
+<body>
+<p class="note" data-theme="dark">Shows tokens and component parts in both modes using the shared fixture. It isn't a layout proposal, and it can't show Liquid Glass.</p>
+<div class="themes">
+  <section class="theme" data-theme="dark"></section>
+  <section class="theme" data-theme="light"></section>
+</div>
+<section class="scales" data-theme="dark" id="scales"></section>
+
+<script src="../tokens/generated/preview-data.js"></script>
+<script>
+const { tokens, icons, board } = window.TECTR;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const icon = state => `<span class="icon s-${state}">${icons[state]}</span>`;
+const URGENCY = ['waiting', 'failed', 'working', 'done', 'idle', 'stale'];
+const topicState = topic => URGENCY.find(state => topic.sessions.some(s => s.state === state));
+
+function treeHTML() {
+  return board.devices.map(device => {
+    const head = `<div class="device ${device.online ? '' : 'off'}"><span class="dot"></span><span class="name">${esc(device.name)}</span>${device.lastSeen ? `<span class="seen">${esc(device.lastSeen)}</span>` : ''}</div>`;
+    const workspaces = board.workspaces.filter(w => w.device === device.id).map(workspace => {
+      const topics = workspace.topics.map(topic => {
+        const state = topicState(topic);
+        const lead = topic.sessions.find(s => s.state === state);
+        const selected = topic.id === board.review.topic ? 'selected' : '';
+        return `<div class="topic ${state} ${selected}">${icon(state)}<span class="name">${esc(topic.name)}</span><span class="meta">${esc(lead.age)}</span></div>`;
+      }).join('');
+      return `<div class="workspace">${esc(workspace.name)}</div>${topics}`;
+    }).join('');
+    return head + workspaces;
+  }).join('');
+}
+
+function requestHTML() {
+  const r = board.request;
+  return `<div class="request">
+    <div class="request-top">${icon('waiting')}${esc(r.kind)} · ${esc(r.age)}<span class="pos">${esc(r.position)}</span></div>
+    <pre>${esc(r.command)}</pre>
+    <p class="why">${esc(r.reason)}</p>
+    <div class="actions"><span class="btn primary">Approve</span><span class="btn">Deny</span></div>
+  </div>`;
+}
+
+function reviewHTML() {
+  const files = board.review.files.map(file => {
+    const hunks = file.hunks.map(hunk => {
+      const lines = hunk.lines.map((line, i) => {
+        const spans = line.spans.map(([role, text]) => `<span style="color:var(--color-syntax-${role})">${esc(text)}</span>`).join('');
+        const comments = hunk.comments.filter(c => c.afterLine === i).map(c => `<div class="comment"><span>Draft comment</span>${esc(c.text)}</div>`).join('');
+        return `<div class="line ${line.kind}">${spans}</div>${comments}`;
+      }).join('');
+      return `<div class="hunk"><div class="head">${esc(hunk.header)}</div>${lines}</div>`;
+    }).join('');
+    return `<p class="file">${esc(file.path)} <b>+${file.add}</b> <i>−${file.del}</i></p>${hunks}`;
+  }).join('');
+  const n = board.review.files.flatMap(f => f.hunks).flatMap(h => h.comments).length;
+  return `${files}<div class="review">${n} draft comments<span class="btn">Discard</span><span class="btn primary">Send ${n} comments</span></div>`;
+}
+
+function sheetHTML() {
+  return `<div class="sheetwrap"><div class="sheet">
+    <div class="sheet-head">New topic in tectr, on Laptop</div>
+    <div class="sheet-name">Client reconnect backoff</div>
+    <div class="chips"><span class="chip on"><span>Agent</span>Claude</span><span class="chip"><span>Mode</span>Auto</span><span class="chip"><span>Branch</span>reconnect-backoff</span></div>
+    <div class="sheet-foot"><span class="btn">Create in background</span><span class="btn primary">Create</span></div>
+  </div></div>`;
+}
+
+function iconsHTML() {
+  return `<div class="icons">${URGENCY.map(state => `<div>${icon(state)}${state}</div>`).join('')}</div>`;
+}
+
+function swatchesHTML(mode) {
+  return Object.entries(tokens[mode]).filter(([, t]) => t.type === 'color').map(([name, t]) =>
+    `<div class="swatch"><i style="background:${t.value}"></i><span>${name.replace('color.', '')}<small>${t.value}</small></span></div>`).join('');
+}
+
+document.querySelectorAll('.theme').forEach(section => {
+  const mode = section.dataset.theme;
+  section.innerHTML = `
+    <p class="eyebrow">${mode === 'dark' ? 'Dark' : 'Light'}</p>
+    <div class="scene">
+      <div class="tree">${treeHTML()}</div>
+      <div class="panel">
+        <div class="you">Add exponential backoff to daemon reconnects. Don’t lose queued actions.</div>
+        <p class="agent">One test fails on a stale fixture from an earlier build. I want to clear the incremental cache and run it again.</p>
+        ${requestHTML()}
+        ${reviewHTML()}
+      </div>
+    </div>
+    ${sheetHTML()}
+    <p class="eyebrow">Status icons</p>
+    ${iconsHTML()}
+    <p class="eyebrow">Colors</p>
+    <div class="swatches">${swatchesHTML(mode)}</div>`;
+});
+
+const scaleValue = t => {
+  if (t.type === 'typography') {
+    const style = t.extensions?.['tectr.ios']?.textStyle;
+    return `${t.value.fontSize}/${t.value.lineHeight} · ${t.value.fontWeight}${style ? ` · ${style}` : ''}`;
+  }
+  if (t.type === 'fontFamily') return esc(t.value.split(',')[0].replaceAll('"', ''));
+  return t.type === 'duration' ? `${t.value} ms` : `${t.value}`;
+};
+const rows = Object.keys(tokens.desktop).map(name =>
+  `<tr><td>${name}</td><td>${scaleValue(tokens.desktop[name])}</td><td>${scaleValue(tokens.ios[name])}</td></tr>`).join('');
+document.getElementById('scales').innerHTML = `
+  <p class="eyebrow">Same role, different values</p>
+  <table><thead><tr><th>Token</th><th>Desktop (px)</th><th>iOS (pt, Dynamic Type)</th></tr></thead><tbody>${rows}</tbody></table>`;
+</script>
+</body>
+</html>
