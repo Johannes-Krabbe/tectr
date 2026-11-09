@@ -1,3 +1,5 @@
+We don't care about backwards compatibility, this app is only used by me and i am fine with always updating to the latest version. So feel free to remove any unused code even if it breaks older versions.
+
 **Hard rules:**
 
 - **Writing:** no em dashes, ellipsis characters, middots, arrows or decorative unicode anywhere (chat, code, docs, commits, UI copy). Use plain ASCII, `...` and `->`. Exception: platform key glyphs like the Cmd symbol in the UI.
@@ -57,7 +59,10 @@ mise run lint         # fmt check + clippy
 mise run dsk:test     # desktop app tests
 mise run tokens:test  # tokens, contrast, no raw colors
 mise run tokens       # regenerate tokens and icons
+mise run release:build  # build the release app, CLI and daemon locally, publishing nothing
 ```
+
+Builds from source are the dev channel (port 7768, `tectr-dev` folders) and never touch the installed release. Run `mise run release <version>` only when asked: it publishes.
 
 Avoid `cargo --workspace`: it includes the desktop app, which needs its frontend built first.
 

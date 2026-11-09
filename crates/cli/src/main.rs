@@ -9,8 +9,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{Connection, Device, Engine};
 use protocol::{
-    Approval, Command, CommandOutput, DEFAULT_PORT, MachineId, PermissionMode, SessionEvent,
-    SessionEventKind, SessionRef, SessionStatus, ToolCallPatch, TopicId,
+    Approval, Command, CommandOutput, MachineId, PermissionMode, SessionEvent, SessionEventKind,
+    SessionRef, SessionStatus, ToolCallPatch, TopicId,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast::error::RecvError;
@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let engine = Engine::new("tectr-cli");
     if cli.daemons.is_empty() {
-        engine.add_daemon(&format!("ws://127.0.0.1:{DEFAULT_PORT}"));
+        engine.add_daemon(&protocol::local_daemon_url());
     }
     for url in &cli.daemons {
         engine.add_daemon(url);

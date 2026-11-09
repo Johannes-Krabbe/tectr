@@ -28,8 +28,47 @@ use serde_json::Value;
 pub const PROTOCOL_VERSION: u32 = 1;
 /// The oldest protocol version this build still speaks.
 pub const MIN_PROTOCOL_VERSION: u32 = 1;
-/// The port a daemon listens on unless configured otherwise.
-pub const DEFAULT_PORT: u16 = 7767;
+/// Which install a build belongs to. Dev and release each get their own daemon port, data
+/// and settings, so working on tectr never touches the installed app's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Dev,
+    Release,
+}
+
+impl Channel {
+    /// Only the release script builds with `TECTR_CHANNEL=release`. Everything else,
+    /// including `cargo run`, tests and `cargo build --release`, is dev, so a stray build
+    /// can't take over the installed daemon's port or data.
+    pub fn current() -> Self {
+        match option_env!("TECTR_CHANNEL") {
+            Some("release") => Self::Release,
+            _ => Self::Dev,
+        }
+    }
+
+    /// The port this channel's daemon listens on unless configured otherwise.
+    pub fn default_port(self) -> u16 {
+        match self {
+            Self::Release => 7767,
+            Self::Dev => 7768,
+        }
+    }
+
+    /// The folder name for this channel's data and settings, such as
+    /// `~/Library/Application Support/<dir_name>`.
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            Self::Release => "tectr",
+            Self::Dev => "tectr-dev",
+        }
+    }
+}
+
+/// The daemon on this machine for this build's channel.
+pub fn local_daemon_url() -> String {
+    format!("ws://127.0.0.1:{}", Channel::current().default_port())
+}
 
 /// Picks the highest version both sides support, if there is one.
 pub fn negotiate_version(peer_min: u32, peer_max: u32) -> Option<u32> {
@@ -795,6 +834,14 @@ pub enum StopReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_builds_never_share_the_installed_daemon() {
+        assert_eq!(Channel::current(), Channel::Dev);
+        assert_ne!(Channel::Dev.default_port(), Channel::Release.default_port());
+        assert_ne!(Channel::Dev.dir_name(), Channel::Release.dir_name());
+        assert_eq!(local_daemon_url(), "ws://127.0.0.1:7768");
+    }
 
     #[test]
     fn negotiation_picks_highest_common_version() {

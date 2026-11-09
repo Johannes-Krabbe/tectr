@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use engine::{Device, Engine, Update};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use protocol::{Command, CommandOutput, DEFAULT_PORT, MachineId, SessionEvent, SessionRef};
+use protocol::{Channel, Command, CommandOutput, MachineId, SessionEvent, SessionRef};
 use settings::{Binding, InstalledFont, Scheme, Settings, Store, Value};
 #[cfg(target_os = "macos")]
 use tauri::menu::{
@@ -234,7 +234,7 @@ fn daemon_urls() -> Vec<String> {
         .map(str::to_owned)
         .collect();
     if urls.is_empty() {
-        vec![format!("ws://127.0.0.1:{DEFAULT_PORT}")]
+        vec![protocol::local_daemon_url()]
     } else {
         urls
     }
@@ -475,7 +475,12 @@ fn main() {
             app.manage(engine);
 
             let home = dirs::home_dir().ok_or("couldn't find your home folder")?;
-            let path = home.join(".config").join("tectr").join("dsk.toml");
+            // Dev builds keep their own file, so settings only dev knows don't show up as
+            // problems in the installed app.
+            let path = home
+                .join(".config")
+                .join(Channel::current().dir_name())
+                .join("dsk.toml");
             let store = Arc::new(Mutex::new(Store::open(path)));
             match watch_settings(app.handle().clone(), store.clone()) {
                 // Dropping the watcher would stop it, so it lives as long as the app.
@@ -488,6 +493,12 @@ fn main() {
             }
             app.manage(store);
             app.manage(TriedTheme::default());
+            // Running from source next to the installed app, the title says which is which.
+            if Channel::current() == Channel::Dev {
+                for window in app.webview_windows().into_values() {
+                    let _ = window.set_title("tectr dev");
+                }
+            }
             repaint_windows(app.handle());
             Ok(())
         })

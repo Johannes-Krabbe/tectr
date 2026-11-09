@@ -8,6 +8,8 @@ mod core;
 mod folders;
 mod git;
 mod server;
+#[cfg(unix)]
+pub mod shell_env;
 mod store;
 
 use std::collections::BTreeMap;

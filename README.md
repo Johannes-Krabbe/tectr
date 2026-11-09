@@ -4,6 +4,16 @@ A fast desktop and mobile app for running, watching, and steering many coding ag
 
 Today this is a daemon, a command-line client, a first version of the desktop app, and an empty iOS app.
 
+## Install
+
+On an Apple Silicon Mac:
+
+```sh
+brew install --cask johannes-krabbe/tap/tectr
+```
+
+This installs the app, the `tectr` CLI and `tectr-daemon`, and runs the daemon as a LaunchAgent, so it starts at login and keeps agents running when the app is closed. `brew upgrade --cask tectr` restarts it on the new version. Its log is `~/Library/Logs/tectr/daemon.log`. It reads your login shell's PATH, so agents installed through nvm or into `~/.local/bin` are found. Claude Code sessions need Node 22 or newer.
+
 ## Requirements
 
 - Rust (the version is pinned in `rust-toolchain.toml`)
@@ -12,6 +22,8 @@ Today this is a daemon, a command-line client, a first version of the desktop ap
 - A working Claude Code login on the machine running the daemon
 
 ## Try it
+
+Anything built from source is a dev build: its daemon uses port 7768, `~/Library/Application Support/tectr-dev` and `~/.config/tectr-dev`, so it runs next to the installed app without sharing anything. Only `mise run release` builds use the installed app's port 7767 and `tectr` folders.
 
 Start the daemon. It listens on loopback only:
 
@@ -69,7 +81,7 @@ cd apps/dsk && pnpm tauri dev
 
 It connects to the daemon on this machine, or to the ones in `TECTR_DAEMONS`. ⌘K lists every action with its shortcut.
 
-The app's own settings live in `~/.config/tectr/dsk.toml`, which holds only what differs from the defaults and applies as soon as it's saved. `dsk.defaults.toml` next to it lists every setting. Settings (⌘,) edits the same file, so people and agents can both change it. Shortcuts are the first section:
+The app's own settings live in `~/.config/tectr/dsk.toml` (`~/.config/tectr-dev/dsk.toml` when built from source), which holds only what differs from the defaults and applies as soon as it's saved. `dsk.defaults.toml` next to it lists every setting. Settings (⌘,) edits the same file, so people and agents can both change it. Shortcuts are the first section:
 
 ```toml
 [keybinds.nav]                # the shared default for moving around
@@ -119,6 +131,10 @@ extends = "tokyo-night"
 The app comes with its own two themes plus Catppuccin, Tokyo Night, Dracula, One, GitHub, Nord, Gruvbox, Solarized, Rosé Pine, Monokai and Vague, in dark and light where they have both.
 
 To start topics from the app, add a provider first: hover a device in the sidebar and click the settings icon, or press Enter on it. Adding one starts that agent once on that device to ask which models and modes it offers.
+
+## Release
+
+Releases are built and published from this Mac, not CI. `mise run release:build` builds and packages into `target/release-dist` without publishing. `mise run release 0.2.0` bumps the version, builds, tags, pushes, creates the GitHub release and updates the cask in `johannes-krabbe/homebrew-tap`. Edit the cask in `packaging/homebrew/tectr.rb`, not in the tap.
 
 ## iOS app
 

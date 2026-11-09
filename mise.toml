@@ -40,3 +40,11 @@ run = "node --test design/tokens/tokens.test.mjs"
 [tasks.tectr]
 description = "Run the CLI, for example: mise run tectr status"
 run = "cargo run -q -p cli --"
+
+[tasks."release:build"]
+description = "Build the release app, CLI and daemon into target/release-dist, publishing nothing"
+run = "scripts/release.sh build"
+
+[tasks.release]
+description = "Bump, build, tag and publish to GitHub Releases and the Homebrew tap, for example: mise run release 0.2.0"
+run = "scripts/release.sh publish"
