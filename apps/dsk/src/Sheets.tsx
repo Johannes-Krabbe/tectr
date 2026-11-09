@@ -10,17 +10,17 @@ import {
 } from "react";
 import { shownValue } from "./appearance";
 import {
+  type ArchiveRisk,
   type CommandOutput,
   errorText,
   type Folder,
-  type PermissionMode,
   request,
   type Session,
   type Topic,
   type Workspace,
 } from "./engine";
 import { act, type ActionId, keysLabel, remapNative } from "./keybinds";
-import { deleteTopicEffect, sessionLabel } from "./model";
+import { archiveLosses, archiveSummary, type MoveChoice, sessionLabel } from "./model";
 import {
   afterPaste,
   highlightWhileTyping,
@@ -35,27 +35,21 @@ import { Keys } from "./ui/StatusIcon";
 
 export type SheetRequest =
   | { kind: "workspace"; machineId: string; deviceName: string; local: boolean }
-  | { kind: "agent"; machineId: string; topic: Topic }
   | { kind: "close"; machineId: string; session: Session }
   | { kind: "rename"; machineId: string; topic: Topic }
+  | { kind: "rename_device"; machineId: string; name: string }
   | {
-      kind: "delete";
+      kind: "archive";
       machineId: string;
       workspace: Workspace;
       topic: Topic;
+      risk: ArchiveRisk;
       /** Where the keyboard goes back to, because the row it was on is going away. */
       fromSidebar: boolean;
-    };
-
-export const MODES: { mode: PermissionMode; label: string; effect: string }[] = [
-  { mode: "auto", label: "Auto", effect: "The agent decides what needs asking" },
-  { mode: "manual", label: "Manual", effect: "Asks before making changes" },
-  { mode: "yolo", label: "Yolo", effect: "Never asks before running anything" },
-];
+    }
+  | { kind: "move"; machineId: string; topic: Topic; choice: MoveChoice };
 
 const CANCEL_KEY: [ActionId, string][] = [["sheet.cancel", "Escape"]];
-
-const modeAction = (index: number) => `sheet.mode_${index + 1}` as ActionId;
 
 /** Creates something with a name and defaults for the rest. */
 function Sheet({
@@ -78,7 +72,8 @@ function Sheet({
   action: string;
   hint?: string;
   canSubmit: boolean;
-  run: () => Promise<CommandOutput>;
+  /** `null` goes on to the sheet's next step, which stays open. */
+  run: () => Promise<CommandOutput | null>;
   onClose: () => void;
   onDone: (output: CommandOutput) => void;
   onKeyDown?: (event: KeyboardEvent<HTMLFormElement>) => void;
@@ -119,6 +114,10 @@ function Sheet({
     setError(null);
     try {
       const output = await run();
+      if (output === null) {
+        setBusy(false);
+        return;
+      }
       created.current = !returnsFocus;
       onDone(output);
       onClose();
@@ -362,83 +361,6 @@ function WorkspaceSheet({
   );
 }
 
-function AgentSheet({
-  sheet,
-  onClose,
-  onDone,
-}: {
-  sheet: Extract<SheetRequest, { kind: "agent" }>;
-  onClose: () => void;
-  onDone: (output: CommandOutput) => void;
-}) {
-  const [agent, setAgent] = useState("claude");
-  const [mode, setMode] = useState<PermissionMode>("auto");
-  const [model, setModel] = useState("");
-  const worktree = sheet.topic.worktrees[0];
-  return (
-    <Sheet
-      where={`New agent in ${sheet.topic.name}`}
-      action="Start agent"
-      hint={MODES.find((option) => option.mode === mode)?.effect}
-      canSubmit={agent.trim() !== "" && worktree !== undefined}
-      run={() =>
-        request(sheet.machineId, {
-          command: "start_session",
-          topic_id: sheet.topic.id,
-          worktree_id: worktree.id,
-          agent: agent.trim(),
-          mode,
-          model: model.trim() || null,
-        })
-      }
-      onClose={onClose}
-      onDone={onDone}
-      hints={[keyHint("Permission mode", "sheet.mode_1", "sheet.mode_2", "sheet.mode_3")]}
-      onKeyDown={(event) => {
-        MODES.some((option, index) => act(event, modeAction(index), () => setMode(option.mode)));
-      }}
-    >
-      <input
-        className="sheet-name"
-        autoFocus
-        value={agent}
-        aria-label="Agent"
-        spellCheck={false}
-        autoCorrect="off"
-        autoCapitalize="off"
-        onFocus={(event) => event.target.select()}
-        onChange={(event) => setAgent(event.target.value)}
-      />
-      <input
-        className="sheet-small"
-        value={model}
-        placeholder="Model, or leave empty for the agent's default"
-        aria-label="Model"
-        spellCheck={false}
-        autoCorrect="off"
-        autoCapitalize="off"
-        onChange={(event) => setModel(event.target.value)}
-      />
-      <fieldset className="chips">
-        <legend className="visually-hidden">Permission mode</legend>
-        {MODES.map((option, index) => (
-          <label key={option.mode} className="chip">
-            <input
-              type="radio"
-              name="mode"
-              className="visually-hidden"
-              checked={mode === option.mode}
-              onChange={() => setMode(option.mode)}
-            />
-            {option.label}
-            <Keys action={modeAction(index)} />
-          </label>
-        ))}
-      </fieldset>
-    </Sheet>
-  );
-}
-
 /** The second confirmation for closing a tab whose agent is still running. */
 function CloseSheet({
   sheet,
@@ -523,27 +445,114 @@ function RenameSheet({
   );
 }
 
-/** The sheet is the confirmation, so a running agent doesn't need asking about again. */
-function DeleteSheet({
+function RenameDeviceSheet({
   sheet,
   onClose,
   onDone,
 }: {
-  sheet: Extract<SheetRequest, { kind: "delete" }>;
+  sheet: Extract<SheetRequest, { kind: "rename_device" }>;
+  onClose: () => void;
+  onDone: (output: CommandOutput) => void;
+}) {
+  const [name, setName] = useState(sheet.name);
+  return (
+    <Sheet
+      where={`Rename ${sheet.name}`}
+      action="Rename"
+      hint="Leave it empty to use the hostname"
+      canSubmit
+      returnsFocus
+      // Confirming the hostname it shows isn't choosing it, so it can go on following it.
+      run={async () =>
+        name.trim() === sheet.name
+          ? { output: "done" }
+          : request(sheet.machineId, { command: "rename_machine", name })
+      }
+      onClose={onClose}
+      onDone={onDone}
+      input={name}
+    >
+      <input
+        className="sheet-name"
+        autoFocus
+        value={name}
+        aria-label="Device name"
+        spellCheck={false}
+        onFocus={(event) => event.target.select()}
+        onChange={(event) => setName(event.target.value)}
+      />
+    </Sheet>
+  );
+}
+
+/** Asks once when archiving stops agents, and twice when it throws away work in git: the second
+ * time with exactly what goes. Without either, archiving doesn't ask at all. */
+function ArchiveSheet({
+  sheet,
+  onClose,
+  onDone,
+}: {
+  sheet: Extract<SheetRequest, { kind: "archive" }>;
+  onClose: () => void;
+  onDone: (output: CommandOutput) => void;
+}) {
+  const losses = archiveLosses(sheet.risk);
+  const [sure, setSure] = useState(losses.length === 0);
+  return (
+    <Sheet
+      where={sure && losses.length ? `Archiving ${sheet.topic.name} loses this` : `Archive ${sheet.topic.name}`}
+      action={sure ? (losses.length ? "Archive and lose it" : "Archive topic") : "Continue"}
+      hint={sure && losses.length ? "It can't be brought back." : archiveSummary(sheet.risk)}
+      canSubmit
+      focusAction
+      run={async () => {
+        if (!sure) {
+          setSure(true);
+          return null;
+        }
+        return request(sheet.machineId, {
+          command: "archive_topic",
+          topic_id: sheet.topic.id,
+          force: true,
+        });
+      }}
+      onClose={onClose}
+      onDone={onDone}
+    >
+      {sure && losses.length > 0 && (
+        <ul className="sheet-losses">
+          {losses.map((loss) => (
+            <li key={loss}>{loss}</li>
+          ))}
+        </ul>
+      )}
+    </Sheet>
+  );
+}
+
+/** Moving stops agents, so a running one needs confirming. */
+function MoveSheet({
+  sheet,
+  onClose,
+  onDone,
+}: {
+  sheet: Extract<SheetRequest, { kind: "move" }>;
   onClose: () => void;
   onDone: (output: CommandOutput) => void;
 }) {
   return (
     <Sheet
-      where={`Delete ${sheet.topic.name}`}
-      action="Delete topic"
-      hint={deleteTopicEffect(sheet.topic, sheet.workspace.path)}
+      where={`An agent in ${sheet.topic.name} is still running`}
+      action="Stop and move"
+      hint="Moving stops it. It picks up in the new folder with your next message."
       canSubmit
       focusAction
+      returnsFocus
       run={() =>
         request(sheet.machineId, {
-          command: "delete_topic",
+          command: "move_topic",
           topic_id: sheet.topic.id,
+          to: sheet.choice.target,
           force: true,
         })
       }
@@ -570,13 +579,15 @@ export function Sheets({
       return (
         <WorkspaceSheet sheet={sheet} workspaces={workspaces} onClose={onClose} onDone={onDone} />
       );
-    case "agent":
-      return <AgentSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
     case "close":
       return <CloseSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
     case "rename":
       return <RenameSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
-    case "delete":
-      return <DeleteSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
+    case "rename_device":
+      return <RenameDeviceSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
+    case "archive":
+      return <ArchiveSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
+    case "move":
+      return <MoveSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
   }
 }

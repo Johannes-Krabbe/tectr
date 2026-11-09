@@ -10,7 +10,7 @@ Coding agents like Claude Code and Codex are most useful when several of them wo
 
 tectr is a single place to run all of your agents:
 
-- **Organized by device, workspace, and topic.** A workspace is a repo on one device, so the same repo on two devices is two workspaces. A topic is a feature or task inside a workspace. It can span many branches and git worktrees, so parallel work stays isolated. Each topic holds tabs: agents, diffs, and terminals side by side.
+- **Organized by device, workspace, and topic.** A workspace is a repo on one device, so the same repo on two devices is two workspaces. A topic is a feature or task inside a workspace. It works in one folder at a time, the repo or a git worktree, and can move between them, so a discussion at the repo root can become the implementation in a worktree. Each topic holds tabs: agents, diffs, and terminals side by side.
 - **Many agents in parallel.** Topics run independently, across as many workspaces and devices as you like.
 - **See everything at a glance.** A sidebar sorted by device shows each agent's state live (working, waiting for you, done, failed) across all workspaces and topics.
 - **Full control, not just monitoring.** Send prompts, answer the agent's questions, interrupt, and resume, all from the app. Agents run in auto mode by default, or in yolo mode if you configure it.
@@ -101,8 +101,6 @@ Routing everything through a server (client => server => daemon => agent) would 
 
 - **Auth and terms**: confirm what Anthropic's terms allow when a third-party client drives Claude Code with a claude.ai subscription rather than an API key.
 - **Relationship to twig**: twig is written in Go and the daemon in Rust. Should the daemon call twig as a separate process, or reimplement its worktree logic?
-- **Agents sharing a worktree**: can two agents run at the same time in one worktree, or only one at a time?
-- **Finished topics**: are they archived and their worktrees removed, or kept in a folded "Done" group?
 - **Desktop and phone layout**: the desktop UX isn't settled, and the phone app hasn't been redesigned around workspaces and topics yet.
 
 ## First milestone

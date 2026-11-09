@@ -1,6 +1,6 @@
 # tectr: design system decisions
 
-Last updated: 2026-11-06.
+Last updated: 2026-11-09.
 
 `architecture.md` covers how tectr is built. This file records how the desktop and iOS apps keep one design language while each feels native. The work itself lives in `design/`.
 
@@ -35,7 +35,11 @@ Share the design decisions, not the components. No UI library renders native Swi
 | Desktop imports `design/tokens/generated/tokens.css` directly, while iOS gets generated files inside its package | Proposed | Vite can read the file where it is, so no copy can drift. A Swift package can't reach outside its folder |
 | iOS colors are generated as code rather than an asset catalog | Proposed | Names are checked by the compiler, and there's no lookup that can fail silently. Icons stay in a catalog, which is what gives them vector scaling and template rendering |
 | Highlighting and diffing run in Rust, which sends spans labelled by role (`keyword`, `added`) | Settled | Both apps get the same result, and each maps roles to tokens. This also meets the off-UI-thread rule. Highlighting is built in `crates/highlight`, and diffing isn't yet |
+| Status icons are drawn by hand, and other desktop icons come from Lucide through one `Icon` component | Built | Status icons need the cut-outs, one color for iOS templates, and layers to move between states, which no library has. Lucide covers the rest at a 1.5px stroke, and only `ui/Icon.tsx` imports it, so an icon can be swapped or drawn in one place. iOS uses SF Symbols |
 | Components have the same names, parts, and states on both platforms | Proposed | People and agents can talk about one `RequestCard`. See `design/spec/components.md` |
+| The logo is the Joint mark, a T-shaped tenon set into a block, in one color | Settled | Tectonics, the craft of joining parts, is where the name comes from. One color lets it follow any theme. Drafts are in `design/mockups/logo/` |
+| App icons are the light mark on a dark tile, and the name is Inter SemiBold, outlined | Proposed | The dark tile matches the near-black direction and keeps purple for primary actions. Outlining means no logo file depends on an installed font |
+| Both apps use a Liquid Glass app icon from an Icon Composer document, with the flat `.icns` as the fallback on older macOS | Proposed | It's how app icons look on macOS 26 and iOS 26. The build generates the document, so it stays in step with the mark and the tokens. Tauri compiles it into `Assets.car`, and iOS needs no flat icon because it targets iOS 26 |
 | Fonts are bundled, not loaded from a CDN | Proposed | Instant startup, and it works offline. Desktop uses Fontsource's Inter and Geist Mono packages, and iOS ships a Geist Mono TTF with its license. The mockups and preview page use Google Fonts only for convenience |
 | Both apps follow the system appearance, with a manual override | Proposed | Expected on both platforms. Desktop has the override, in its appearance settings |
 | Desktop offers other people's themes alongside its own | Settled | People asked to choose. Tectr's own two stay the default, and everything in Color below that's about the look applies to those two |
@@ -94,7 +98,8 @@ Proposed, extending the layout in `architecture.md`.
 design/
 ├── tokens/        # source of truth, build script, tests
 │   └── generated/ # tokens.css and preview data, committed
-├── icons/         # status icons, one color, cut-outs instead of inner colors
+├── icons/         # status icons, one color, cut-outs instead of inner colors. Other icons are Lucide
+├── logo/          # mark, name, app icons, favicons, and the build that draws them
 ├── spec/          # component anatomy and wording
 ├── fixtures/      # the same fake state for both apps
 ├── preview/       # one page showing everything in both modes
@@ -112,7 +117,7 @@ apps/ios/
 
 ## Not done yet
 
-- **Components:** both apps have the tokens, fonts, and root theme. Desktop has first versions of `StatusIcon`, `DeviceHeader`, `WorkspaceRow`, `TopicRow`, `RequestCard`, `ActivityLine`, `Sheet`, `Button`, `Kbd`, and the ⌘K palette, without the folded states. iOS shows only a placeholder.
+- **Components:** both apps have the tokens, fonts, and root theme. Desktop has first versions of `StatusIcon`, `DeviceHeader`, `WorkspaceRow`, `TopicRow`, `RequestCard`, `ActivityLine`, `NewTab`, `Sheet`, `Button`, `Kbd`, and the ⌘K palette, without the folded states. iOS shows only a placeholder.
 - **Appearance on iOS:** it follows the system only, with tectr's own themes. Choosing a theme is desktop only.
 - **Automated token check:** nothing runs `mise run tokens:test` or the package tests in CI yet.
 

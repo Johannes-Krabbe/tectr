@@ -6,20 +6,33 @@ Token names are shortened: `text.primary` means `color.text.primary`.
 
 ## StatusIcon
 
-One icon per state, from `design/icons/`. Each is a single color, and inner shapes are cut-outs, so they work on any surface and as iOS template images.
+One icon per state, from `design/icons/`. Each is a single color, and inner shapes are cut-outs, so they work on any surface and as iOS template images. They're drawn by hand, not taken from the icon library.
 
 | State | Color | Meaning |
 |---|---|---|
-| `working` | `status.working` | The agent is running |
+| `working` | `status.working` | The agent is running. An arc turns around a faint ring |
 | `waiting` | `status.waiting` | It needs you |
 | `failed` | `status.failed` | It stopped with an error |
-| `done` | `status.done` | It finished |
+| `done` | `status.done` | It finished and you haven't looked yet. Green, the theme's `status.online` |
+| `read` | `status.read` | It finished and you've seen it. A gray outline check |
 | `idle` | `status.idle` | Nothing is running |
 | `stale` | `status.stale` | Its device is offline, so this is the last known state |
 
-A topic shows its most urgent session, in this order: waiting, failed, working, done, idle, stale.
+A topic shows its most urgent session, in this order: waiting, failed, done, working, read, idle, stale. An unread result is something for you to do and a working agent isn't, so it comes first.
 
-Size: `size.icon`. Desktop uses the SVGs directly, and iOS imports them as template images in an asset catalog.
+- **Read:** a session is unread from the moment a turn finishes until it has been shown for a second in a focused window with the keyboard in the main pane, or someone marks it read. Moving over its topic in the sidebar shows it without reading it. The flag lives on the session in the daemon, so reading on one client reads everywhere. Starting new work clears it. Failed has no read state.
+- **Motion:** desktop puts every state in one SVG as layers and shows the current one, so a row's icon moves between states. Finishing closes the arc into a full ring that then fills with the check. Reading drains the fill over `motion.fade`. Every turning arc is pinned to the document timeline, so they turn in step.
+- **Reduced motion:** the arc stands still, which still reads differently from idle, and states change without moving. `appearance.layout.animate_status` turns it off too.
+
+Size: `size.icon`. Desktop composes the SVGs into layers in `StatusIcon`, and iOS imports them as template images in an asset catalog.
+
+## Icon
+
+Every other icon comes from Lucide through `apps/dsk/src/ui/Icon.tsx`, by a name of our own like `settings` or `add`. Nothing else imports the library, which a test checks, so swapping an icon or drawing one by hand is one line in that file.
+
+- **Size:** `size.icon`, with a 1.5px stroke at any size.
+- **Hand-drawn icons:** only where no library icon fits or where it has to move. Draw them on Lucide's 24px grid with round caps and joins, so they sit next to it.
+- **iOS:** SF Symbols, mapped from the same names.
 
 ## DeviceHeader
 
@@ -59,7 +72,7 @@ What an agent does between its messages, as one line in `text.meta`. Messages ar
 - **While running:** at the end of the transcript, it names the newest step still going in `text.tertiary`, with a `text.primary` highlight sweeping across it every `motion.sweep`. Each step fades out before the next fades in, and stays up long enough to read.
 - **Waiting:** "Waiting for you" in `status.waiting`, without the sweep.
 - **Finished:** how long it took and how many steps, such as "Worked for 12s, 6 steps", with failures in `status.failed`. Time spent on a permission request doesn't count.
-- **Unfolded:** the steps below it, on a `line.subtle` rule. A key or the palette does this for every activity, and pressing or clicking a line does it for one.
+- **Unfolded:** the steps below it, on a `line.subtle` rule. A key or the palette does this for every activity, and pressing or clicking a line does it for one. Clicking the live line, or `pane.toggle_turn`, does it for the whole turn so far and for activities it starts later, so you can watch an agent work across its messages.
 - **Reduced motion:** no sweep, and messages and scrolling don't animate either.
 - **Settings:** `appearance.transcript.steps` and `appearance.transcript.animate`.
 
@@ -77,11 +90,19 @@ Diff review is a major feature: you leave comments on many things, then send the
 - **Rule:** comments are drafts until sent, and nothing reaches the agent before that.
 - **iOS:** a bottom toolbar, in glass.
 
+## NewTab
+
+What a topic's new tab shows: what to open next, as a short numbered list in the middle of the pane.
+
+- **Rows:** icon in `text.tertiary`, label, and the key on the right, `size.row` tall. The focused row is `surface.control`, so the choice shows however the tab was opened.
+- **Not built yet:** shown, disabled, with a meta note, so the numbers stay put as kinds arrive.
+- **After choosing:** kinds that need setting up, like an agent, replace the list with their form. Kinds that don't open straight away.
+
 ## Sheet
 
 Creates something with just a name, with defaults for the rest.
 
-- **Parts:** where it will be created, name input in `text.title`, option chips, footer.
+- **Parts:** where it will be created, name input in `text.title`, footer.
 - **Surface:** `surface.overlay`, `line.strong` border, `shadow.sheet`, over `scrim`.
 - **iOS:** a system `.sheet`, using our tokens only for content.
 

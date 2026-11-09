@@ -18,9 +18,15 @@ export interface Navigation {
   settingsSection: string;
   /** Where moving between workspaces comes back to in each one. Topic ID by workspace ID. */
   lastTopics: Record<string, string>;
-  /** Which tab each topic shows. Session ID by topic ID. */
+  /** Which tab each topic shows. Session ID, or `NEW_TAB`, by topic ID. */
   tabs: Record<string, string>;
+  /** The topics with a new tab open. */
+  newTabs: string[];
 }
+
+/** The ID of a topic's new tab, where you choose what to open. Only this client has it: it
+ * becomes a real tab, which every client sees, once something starts from it. */
+export const NEW_TAB = "new";
 
 const NOTHING_YET: Navigation = {
   view: null,
@@ -29,6 +35,7 @@ const NOTHING_YET: Navigation = {
   settingsSection: "general",
   lastTopics: {},
   tabs: {},
+  newTabs: [],
 };
 
 const STORAGE_KEY = "tectr.navigation";
@@ -86,9 +93,9 @@ export function landingIn(
     : { kind: "new_topic", machineId, workspaceId };
 }
 
-/** Where deleting the shown topic lands: the topic after it, or else the one before. `workspace`
- * is as it was before deleting. */
-export function landingAfterDeleting(
+/** Where archiving the shown topic lands: the topic after it, or else the one before. `workspace`
+ * is as it was before archiving. */
+export function landingAfterArchiving(
   machineId: string,
   workspace: { id: string; topics: { id: string }[] },
   topicId: string,
@@ -101,8 +108,28 @@ export function landingAfterDeleting(
     : { kind: "new_topic", machineId, workspaceId };
 }
 
-export function chooseTab(navigation: Navigation, topicId: string, sessionId: string): Navigation {
-  return { ...navigation, tabs: { ...navigation.tabs, [topicId]: sessionId } };
+export function chooseTab(navigation: Navigation, topicId: string, tabId: string): Navigation {
+  return { ...navigation, tabs: { ...navigation.tabs, [topicId]: tabId } };
+}
+
+/** A topic's tabs: its sessions, then the new tab while it's open. A topic with no sessions
+ * always has one, because choosing what to open is all there is to do there. */
+export function topicTabs(navigation: Navigation, topicId: string, sessionIds: string[]): string[] {
+  const open = sessionIds.length === 0 || navigation.newTabs.includes(topicId);
+  return open ? [...sessionIds, NEW_TAB] : sessionIds;
+}
+
+/** Opens the topic's new tab, or goes to it when it's already open. */
+export function openNewTab(navigation: Navigation, topicId: string): Navigation {
+  const newTabs = navigation.newTabs.includes(topicId)
+    ? navigation.newTabs
+    : [...navigation.newTabs, topicId];
+  return chooseTab({ ...navigation, newTabs }, topicId, NEW_TAB);
+}
+
+/** Closes the topic's new tab. Which tab shows next is up to `shownTab`. */
+export function closeNewTab(navigation: Navigation, topicId: string): Navigation {
+  return { ...navigation, newTabs: navigation.newTabs.filter((id) => id !== topicId) };
 }
 
 /** The tab a topic shows: the chosen one while it exists. A closed tab, which any client can

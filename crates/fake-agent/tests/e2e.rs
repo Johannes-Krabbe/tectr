@@ -11,9 +11,10 @@ use daemon::{AgentLauncher, Config, Daemon};
 use engine::{Connection, Engine, EngineError};
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    Approval, ClientMessage, Command, CommandOutput, DaemonState, ErrorCode, MachineId,
-    PermissionMode, PermissionOutcome, ServerMessage, Session, SessionEventKind, SessionRef,
-    SessionStatus, StopReason, Topic, TopicId, Workspace,
+    Approval, ArchiveRisk, ClientMessage, Command, CommandOutput, DaemonState, ErrorCode,
+    MachineId, MoveTarget, PermissionMode, PermissionOutcome, ServerMessage, Session,
+    SessionEventKind, SessionRef, SessionStatus, StopReason, Topic, TopicId, Workspace,
+    WorktreeRisk,
 };
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -64,6 +65,8 @@ impl Fixture {
                     args: vec![],
                 },
             )]),
+            // Tests shouldn't hold the machine awake. The daemon's own tests cover it.
+            keep_awake: None,
             ..Config::new(self.root.join("Application Support").join(name), port)
         }
     }
@@ -142,7 +145,7 @@ async fn start_session(
     mode: PermissionMode,
     model: Option<&str>,
 ) -> SessionRef {
-    let session = start_agent(engine, machine, &topic.id, topic, "fake", mode, model)
+    let session = start_agent(engine, machine, &topic.id, "fake", mode, model)
         .await
         .unwrap();
     let session = SessionRef {
@@ -157,7 +160,6 @@ async fn start_agent(
     engine: &Engine,
     machine: &MachineId,
     topic_id: &TopicId,
-    topic: &Topic,
     agent: &str,
     mode: PermissionMode,
     model: Option<&str>,
@@ -167,7 +169,6 @@ async fn start_agent(
             machine,
             Command::StartSession {
                 topic_id: topic_id.clone(),
-                worktree_id: topic.worktrees[0].id.clone(),
                 agent: agent.to_owned(),
                 mode,
                 model: model.map(str::to_owned),
@@ -616,7 +617,6 @@ async fn a_session_gets_its_model_and_effort_without_losing_its_mode() {
     let start = async |model: &str, effort: Option<&str>| {
         let command = Command::StartSession {
             topic_id: topic.id.clone(),
-            worktree_id: topic.worktrees[0].id.clone(),
             agent: "fake".to_owned(),
             mode: PermissionMode::Yolo,
             model: Some(model.to_owned()),
@@ -664,7 +664,6 @@ async fn start_configured(
 ) -> SessionRef {
     let command = Command::StartSession {
         topic_id: topic.id.clone(),
-        worktree_id: topic.worktrees[0].id.clone(),
         agent: "fake".to_owned(),
         mode,
         model: Some(model.to_owned()),
@@ -1667,11 +1666,10 @@ async fn a_new_topic_never_reuses_a_number_still_in_the_list() {
     let first = add_unnamed_topic(&engine, &machine, &fixture.repo).await;
     add_unnamed_topic(&engine, &machine, &fixture.repo).await;
 
-    let delete = Command::DeleteTopic {
-        topic_id: first.id,
-        force: false,
-    };
-    engine.request(&machine, delete).await.unwrap();
+    engine
+        .request(&machine, archive_topic(&first, false))
+        .await
+        .unwrap();
 
     let next = add_unnamed_topic(&engine, &machine, &fixture.repo).await;
     assert_eq!(next.name, "Topic #3");
@@ -1682,18 +1680,72 @@ fn branches(repo: &Path) -> String {
     run_git(repo, &["branch", "--format=%(refname:short)"])
 }
 
-fn delete_topic(topic: &Topic, force: bool) -> Command {
-    Command::DeleteTopic {
+fn archive_topic(topic: &Topic, force: bool) -> Command {
+    Command::ArchiveTopic {
         topic_id: topic.id.clone(),
         force,
     }
 }
 
+fn restore_topic(topic: &Topic) -> Command {
+    Command::RestoreTopic {
+        topic_id: topic.id.clone(),
+    }
+}
+
+fn move_topic(topic: &Topic, to: MoveTarget, force: bool) -> Command {
+    Command::MoveTopic {
+        topic_id: topic.id.clone(),
+        to,
+        force,
+    }
+}
+
+fn commit(dir: &Path, message: &str) {
+    run_git(
+        dir,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        ],
+    );
+}
+
+async fn archived(engine: &Engine, machine: &MachineId) -> Vec<TopicId> {
+    match engine
+        .request(machine, Command::ListArchivedTopics)
+        .await
+        .unwrap()
+    {
+        CommandOutput::ArchivedTopics { topics } => topics.into_iter().map(|t| t.id).collect(),
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+async fn add_root_topic(engine: &Engine, machine: &MachineId, repo: &Path) -> Topic {
+    let workspace = add_workspace(engine, machine, repo).await;
+    let command = Command::CreateTopic {
+        workspace_id: workspace.id,
+        name: None,
+        at_root: true,
+    };
+    match engine.request(machine, command).await.unwrap() {
+        CommandOutput::Topic { topic, .. } => topic,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn deleting_a_topic_removes_its_clean_worktree_and_merged_branch_and_stays_gone() {
+async fn archiving_a_clean_topic_removes_its_folder_and_restoring_brings_it_all_back() {
     let fixture = Fixture::new();
     let daemon = fixture.daemon("d").await;
-    let port = daemon.addr().port();
     let machine = daemon.machine_id().clone();
     let engine = connect(&daemon).await;
     let (topic, session) =
@@ -1701,13 +1753,14 @@ async fn deleting_a_topic_removes_its_clean_worktree_and_merged_branch_and_stays
     let pid = agent_pid(&engine, &session).await;
     wait_for_status(&engine, &session, SessionStatus::Done).await;
     let worktree = PathBuf::from(&topic.worktrees[0].path);
+    let branch = topic.worktrees[0].branch.clone();
     assert!(worktree.exists());
 
-    engine
-        .request(&machine, delete_topic(&topic, false))
+    let output = engine
+        .request(&machine, archive_topic(&topic, false))
         .await
         .unwrap();
-
+    assert_eq!(output, CommandOutput::Done);
     assert!(state_of(&engine).topic(&topic.id).is_none());
     assert!(state_of(&engine).session(&session.session_id).is_none());
     wait_for("the agent's process to die", || {
@@ -1716,25 +1769,44 @@ async fn deleting_a_topic_removes_its_clean_worktree_and_merged_branch_and_stays
     .await;
     wait_for("the worktree to go", || (!worktree.exists()).then_some(())).await;
     wait_for("the branch to go", || {
-        (!branches(&fixture.repo).contains(&topic.worktrees[0].branch)).then_some(())
+        (!branches(&fixture.repo).contains(&branch)).then_some(())
     })
     .await;
+    assert_eq!(
+        archived(&engine, &machine).await,
+        std::slice::from_ref(&topic.id)
+    );
 
     let error = engine
-        .request(&machine, delete_topic(&topic, false))
+        .request(&machine, archive_topic(&topic, false))
         .await
         .unwrap_err();
     assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::NotFound));
 
-    daemon.shutdown().await;
-    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
-    let engine = connect(&daemon).await;
-    assert!(state_of(&engine).topic(&topic.id).is_none());
+    // Its folder comes back at the same path, so the agent picks up where it was.
+    engine
+        .request(&machine, restore_topic(&topic))
+        .await
+        .unwrap();
+    let restored = state_of(&engine).topic(&topic.id).cloned().unwrap();
+    assert_eq!(restored.worktrees, topic.worktrees);
+    assert_eq!(restored.sessions.len(), 1);
+    assert_eq!(run_git(&worktree, &["branch", "--show-current"]), branch);
+    assert!(archived(&engine, &machine).await.is_empty());
+    prompt(&engine, &session, "whoami").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let report = agent_text(&engine, &session).concat();
+    assert!(report.contains("resumed=true"), "{report}");
+    assert!(
+        report.contains(&format!("cwd={}", worktree.display())),
+        "{report}"
+    );
+    assert!(!report.contains("[tectr]"), "nothing moved: {report}");
     daemon.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn deleting_a_topic_with_a_running_agent_has_to_be_forced() {
+async fn archiving_says_what_it_would_lose_and_only_loses_it_when_forced() {
     let fixture = Fixture::new();
     let daemon = fixture.daemon("d").await;
     let machine = daemon.machine_id().clone();
@@ -1743,22 +1815,36 @@ async fn deleting_a_topic_with_a_running_agent_has_to_be_forced() {
         start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Manual).await;
     let pid = agent_pid(&engine, &session).await;
     wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let worktree = PathBuf::from(&topic.worktrees[0].path);
+    let branch = topic.worktrees[0].branch.clone();
+    commit(&worktree, "work");
+    std::fs::write(worktree.join("unsaved.txt"), "work").unwrap();
     prompt(&engine, &session, "write").await.unwrap();
     let approval = wait_for_approval(&engine, &session).await;
 
-    let error = engine
-        .request(&machine, delete_topic(&topic, false))
+    let output = engine
+        .request(&machine, archive_topic(&topic, false))
         .await
-        .unwrap_err();
-    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::Busy));
+        .unwrap();
+    let expected = ArchiveRisk {
+        running: 1,
+        worktrees: vec![WorktreeRisk {
+            path: worktree.display().to_string(),
+            branch: branch.clone(),
+            uncommitted: 1,
+            unpushed: 1,
+        }],
+    };
+    assert_eq!(output, CommandOutput::ArchiveRisk { risk: expected });
     assert!(state_of(&engine).topic(&topic.id).is_some());
     assert!(
         is_process_alive(&pid),
-        "refusing must leave the agent running"
+        "asking must leave the agent running"
     );
+    assert!(worktree.join("unsaved.txt").exists());
 
     engine
-        .request(&machine, delete_topic(&topic, true))
+        .request(&machine, archive_topic(&topic, true))
         .await
         .unwrap();
     assert!(state_of(&engine).topic(&topic.id).is_none());
@@ -1772,84 +1858,150 @@ async fn deleting_a_topic_with_a_running_agent_has_to_be_forced() {
         (!is_process_alive(&pid)).then_some(())
     })
     .await;
+    wait_for("the worktree to go", || (!worktree.exists()).then_some(())).await;
     daemon.shutdown().await;
+    assert!(!branches(&fixture.repo).contains(&branch));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn deleting_a_topic_never_discards_work_in_git() {
+async fn pushed_commits_are_not_at_risk() {
     let fixture = Fixture::new();
-    let daemon = fixture.daemon("d").await;
-    let machine = daemon.machine_id().clone();
-    let engine = connect(&daemon).await;
-
-    let uncommitted = add_topic(&engine, &machine, &fixture.repo).await;
-    let uncommitted_path = PathBuf::from(&uncommitted.worktrees[0].path);
-    let unsaved = uncommitted_path.join("unsaved.txt");
-    std::fs::write(&unsaved, "work").unwrap();
-
-    let unmerged = add_topic(&engine, &machine, &fixture.repo).await;
-    let unmerged_path = PathBuf::from(&unmerged.worktrees[0].path);
+    let remote = fixture.root.join("remote.git");
+    run_git(&fixture.root, &["init", "-q", "--bare", "remote.git"]);
     run_git(
-        &unmerged_path,
-        &[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "work",
-        ],
+        &fixture.repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
     );
-
-    // `force` is about running agents, and doesn't change what happens in git.
-    for topic in [&uncommitted, &unmerged] {
-        engine
-            .request(&machine, delete_topic(topic, true))
-            .await
-            .unwrap();
-    }
-    wait_for("the committed worktree to go", || {
-        (!unmerged_path.exists()).then_some(())
-    })
-    .await;
-    // Each finishes on its own, and shutting down waits for what's left.
-    daemon.shutdown().await;
-
-    assert_eq!(std::fs::read_to_string(&unsaved).unwrap(), "work");
-    let left = branches(&fixture.repo);
-    assert!(left.contains(&uncommitted.worktrees[0].branch), "{left}");
-    assert!(left.contains(&unmerged.worktrees[0].branch), "{left}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn deleting_a_topic_at_the_repo_root_leaves_the_repo_alone() {
-    let fixture = Fixture::new();
     let daemon = fixture.daemon("d").await;
     let machine = daemon.machine_id().clone();
     let engine = connect(&daemon).await;
-    let workspace = add_workspace(&engine, &machine, &fixture.repo).await;
-    let command = Command::CreateTopic {
-        workspace_id: workspace.id,
-        name: None,
-        at_root: true,
-    };
-    let topic = match engine.request(&machine, command).await.unwrap() {
-        CommandOutput::Topic { topic, .. } => topic,
-        other => panic!("unexpected output {other:?}"),
-    };
-    let before = branches(&fixture.repo);
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let worktree = PathBuf::from(&topic.worktrees[0].path);
+    commit(&worktree, "pushed work");
+    run_git(&worktree, &["push", "-q", "origin", "HEAD"]);
 
-    engine
-        .request(&machine, delete_topic(&topic, false))
+    let output = engine
+        .request(&machine, archive_topic(&topic, false))
         .await
         .unwrap();
+    assert_eq!(output, CommandOutput::Done);
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archiving_a_topic_at_the_repo_root_leaves_the_repo_alone() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let topic = add_root_topic(&engine, &machine, &fixture.repo).await;
+    std::fs::write(fixture.repo.join("unsaved.txt"), "work").unwrap();
+    let before = branches(&fixture.repo);
+
+    let output = engine
+        .request(&machine, archive_topic(&topic, false))
+        .await
+        .unwrap();
+    assert_eq!(
+        output,
+        CommandOutput::Done,
+        "the repo isn't the topic's to lose"
+    );
     daemon.shutdown().await;
 
     assert!(fixture.repo.join(".git").exists());
+    assert!(fixture.repo.join("unsaved.txt").exists());
     assert_eq!(branches(&fixture.repo), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_a_topic_takes_its_tabs_along_and_tells_each_agent_once() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let topic = add_root_topic(&engine, &machine, &fixture.repo).await;
+    let root = topic.worktrees[0].clone();
+    let session = start_session(&engine, &machine, &topic, PermissionMode::Yolo, None).await;
+    wait_for_status(&engine, &session, SessionStatus::Ready).await;
+    commit(&fixture.repo, "discussed");
+
+    // A new worktree starts from the commit the topic was on.
+    engine
+        .request(&machine, move_topic(&topic, MoveTarget::NewWorktree, false))
+        .await
+        .unwrap();
+    let moved = state_of(&engine).topic(&topic.id).cloned().unwrap();
+    assert_eq!(moved.worktrees.len(), 2);
+    let folder = moved.worktree().unwrap().clone();
+    assert_ne!(folder.id, root.id);
+    assert!(
+        folder.branch.starts_with("tectr/topic-1-"),
+        "{}",
+        folder.branch
+    );
+    assert_eq!(
+        run_git(Path::new(&folder.path), &["rev-parse", "HEAD"]),
+        run_git(&fixture.repo, &["rev-parse", "HEAD"])
+    );
+
+    prompt(&engine, &session, "whoami").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let said = agent_text(&engine, &session);
+    assert!(
+        said[0].starts_with("[tectr] This conversation moved"),
+        "{said:?}"
+    );
+    assert!(said[0].contains(&folder.path), "{said:?}");
+    assert!(said[1].contains("resumed=true"), "{said:?}");
+    assert!(
+        said[1].contains(&format!("cwd={}", folder.path)),
+        "{said:?}"
+    );
+    prompt(&engine, &session, "echo again").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    assert_eq!(agent_text(&engine, &session)[2..], ["again"]);
+
+    // The branch shown follows what the agent checks out.
+    run_git(Path::new(&folder.path), &["switch", "-q", "-c", "part-2"]);
+    prompt(&engine, &session, "echo switched").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    wait_for("the new branch to show", || {
+        let topic = state_of(&engine).topic(&topic.id).cloned()?;
+        (topic.worktree()?.branch == "part-2").then_some(())
+    })
+    .await;
+
+    // A running agent has to be confirmed, and going back reuses the repo's folder.
+    prompt(&engine, &session, "hang").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Working).await;
+    let error = engine
+        .request(&machine, move_topic(&topic, MoveTarget::Root, false))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::Busy));
+    engine
+        .request(&machine, move_topic(&topic, MoveTarget::Root, true))
+        .await
+        .unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Stopped).await;
+    let back = state_of(&engine).topic(&topic.id).cloned().unwrap();
+    assert_eq!(back.worktree_id, root.id);
+    assert_eq!(back.worktrees.len(), 2);
+
+    // Archiving removes the worktree it left, but not the branch the agent made there.
+    engine
+        .request(&machine, archive_topic(&topic, true))
+        .await
+        .unwrap();
+    wait_for("the left worktree to go", || {
+        (!Path::new(&folder.path).exists()).then_some(())
+    })
+    .await;
+    daemon.shutdown().await;
+    let left = branches(&fixture.repo);
+    assert!(!left.contains(&folder.branch), "{left}");
+    assert!(left.contains("part-2"), "{left}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2136,7 +2288,6 @@ async fn bad_requests_get_clear_errors() {
         &engine,
         &machine,
         &topic.id,
-        &topic,
         "nope",
         PermissionMode::Auto,
         None,
@@ -2147,7 +2298,6 @@ async fn bad_requests_get_clear_errors() {
         &engine,
         &machine,
         &topic.id,
-        &topic,
         "fake",
         PermissionMode::Unknown,
         None,
@@ -2179,7 +2329,6 @@ async fn an_agent_that_cant_start_fails_its_session() {
         &engine,
         &machine,
         &topic.id,
-        &topic,
         "missing",
         PermissionMode::Auto,
         None,
@@ -2268,4 +2417,52 @@ async fn say_hello(socket: &mut RawSocket, min_version: u32, max_version: u32) -
     )
     .await;
     raw_next(socket).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_turn_is_unread_until_any_client_reads_it() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let desk = connect(&daemon).await;
+    let pocket = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&desk, &machine, &fixture.repo, PermissionMode::Manual).await;
+    let unread = |engine: &Engine| session_state(engine, &session).unread;
+    let set_unread = |unread: bool| {
+        desk.request(
+            &machine,
+            Command::SetUnread {
+                session_id: session.session_id.clone(),
+                unread,
+            },
+        )
+    };
+    assert!(!unread(&desk), "a fresh session has nothing to read");
+    assert!(
+        matches!(set_unread(true).await, Err(EngineError::Command(error)) if error.code == ErrorCode::InvalidInput),
+        "only a finished session can be unread"
+    );
+
+    prompt(&desk, &session, "echo a b").await.unwrap();
+    wait_for_status(&desk, &session, SessionStatus::Done).await;
+    assert!(unread(&desk));
+    wait_for("the other client to see it unread", || {
+        unread(&pocket).then_some(())
+    })
+    .await;
+
+    set_unread(false).await.unwrap();
+    wait_for("the other client to see it read", || {
+        (!unread(&pocket)).then_some(())
+    })
+    .await;
+    set_unread(true).await.unwrap();
+    assert!(unread(&desk), "it can be marked unread again");
+
+    prompt(&desk, &session, "echo c").await.unwrap();
+    assert!(!unread(&desk), "working on something new clears it");
+    wait_for_status(&desk, &session, SessionStatus::Done).await;
+    assert!(unread(&desk));
+    daemon.shutdown().await;
 }

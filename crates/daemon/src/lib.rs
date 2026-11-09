@@ -4,6 +4,7 @@
 
 mod acp;
 mod agents;
+mod awake;
 mod core;
 mod folders;
 mod git;
@@ -19,6 +20,7 @@ use std::sync::Arc;
 
 pub use agents::{AgentLauncher, default_agents};
 use anyhow::{Context, Result};
+pub use awake::KeepAwakeCommand;
 use protocol::MachineId;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -37,6 +39,8 @@ pub struct Config {
     pub port: u16,
     pub agents: BTreeMap<String, AgentLauncher>,
     pub event_buffer: usize,
+    /// Runs while an agent works, if the device's settings allow it.
+    pub keep_awake: Option<KeepAwakeCommand>,
 }
 
 impl Config {
@@ -46,6 +50,7 @@ impl Config {
             port,
             agents: default_agents(),
             event_buffer: DEFAULT_EVENT_BUFFER,
+            keep_awake: KeepAwakeCommand::system(),
         }
     }
 }
@@ -85,9 +90,11 @@ impl Daemon {
             machine_name(),
             config.agents,
             config.event_buffer,
+            config.keep_awake,
         )?;
         let machine_id = core.machine().id;
         tokio::spawn(core.clone().refresh_providers());
+        tokio::spawn(core.clone().refresh_branches(None));
         let (shutdown, shutdown_rx) = watch::channel(false);
         let accept_task = tokio::spawn(server::accept_loop(core.clone(), listener, shutdown_rx));
 

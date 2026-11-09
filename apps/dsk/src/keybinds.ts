@@ -53,7 +53,7 @@ export type ActionId =
   | "global.settings"
   | "global.new_topic"
   | "global.new_workspace"
-  | "global.new_agent"
+  | "global.new_tab"
   | "global.next_request"
   | "global.interrupt"
   | "global.close_tab"
@@ -73,6 +73,10 @@ export type ActionId =
   | "global.next_topic"
   | "global.prev_workspace"
   | "global.next_workspace"
+  | "global.mark_all_read"
+  | "global.toggle_vim"
+  | "global.move_topic"
+  | "global.archived_topics"
   | "sidebar.up"
   | "sidebar.down"
   | "sidebar.first"
@@ -85,7 +89,8 @@ export type ActionId =
   | "sidebar.confirm"
   | "sidebar.add"
   | "sidebar.rename"
-  | "sidebar.delete"
+  | "sidebar.archive"
+  | "sidebar.toggle_unread"
   | "pane.up"
   | "pane.down"
   | "pane.first"
@@ -96,6 +101,7 @@ export type ActionId =
   | "pane.page_down"
   | "pane.compose"
   | "pane.toggle_steps"
+  | "pane.toggle_turn"
   | "pane.back"
   | "pane.next_request"
   | "pane.pick_model"
@@ -116,6 +122,12 @@ export type ActionId =
   | "permission.option_7"
   | "permission.option_8"
   | "permission.option_9"
+  | "new_tab.up"
+  | "new_tab.down"
+  | "new_tab.confirm"
+  | "new_tab.agent"
+  | "new_tab.terminal"
+  | "new_tab.diff"
   | "new_topic.start"
   | "new_topic.newline"
   | "new_topic.cancel"
@@ -130,9 +142,6 @@ export type ActionId =
   | "sheet.up"
   | "sheet.down"
   | "sheet.complete"
-  | "sheet.mode_1"
-  | "sheet.mode_2"
-  | "sheet.mode_3"
   | "palette.up"
   | "palette.down"
   | "palette.confirm"
@@ -153,6 +162,8 @@ export type ActionId =
   | "device.remove"
   | "device.pick_model"
   | "device.pick_effort"
+  | "device.rename"
+  | "device.toggle_keep_awake"
   | "sections.up"
   | "sections.down"
   | "sections.first"
@@ -258,6 +269,11 @@ export const showsSteps = () => shownValue("transcript.steps") === "shown";
 /** Rejects with a message written to be shown as is. */
 export const toggleSteps = () =>
   saveAppearance("transcript.steps", showsSteps() ? "folded" : "shown");
+
+export const vimOn = () => shownValue("vim.enabled") === true;
+
+/** Rejects with a message written to be shown as is. */
+export const toggleVim = () => saveAppearance("vim.enabled", !vimOn());
 
 let triedTheme: string | null = null;
 
@@ -434,6 +450,16 @@ export function act(event: KeyEventLike, id: ActionId, run: () => void): boolean
     run();
   }
   return true;
+}
+
+/** Whether an action has already run for this press. */
+export const isClaimed = (event: KeyEventLike) => claimed === nativeOf(event);
+
+/** Takes a press for something that isn't an action, like vim in a text box, so no action
+ * runs for it after. */
+export function claim(event: KeyEventLike) {
+  claimed = nativeOf(event);
+  forgetPressed();
 }
 
 /** Whether a press completes one of an action's keys, for screens that run it themselves. */

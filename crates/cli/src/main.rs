@@ -9,8 +9,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{Connection, Device, Engine};
 use protocol::{
-    Approval, Command, CommandOutput, MachineId, PermissionMode, SessionEvent, SessionEventKind,
-    SessionRef, SessionStatus, ToolCallPatch, TopicId,
+    Approval, ArchivedTopic, Command, CommandOutput, MachineId, MoveTarget, PermissionMode,
+    SessionEvent, SessionEventKind, SessionRef, SessionStatus, ToolCallPatch, TopicId,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast::error::RecvError;
@@ -44,19 +44,52 @@ enum Cmd {
         #[arg(long)]
         on: Option<String>,
     },
+    /// Choose a device's name. An empty name goes back to its hostname.
+    RenameDevice {
+        name: String,
+        /// The machine to rename, by name or ID prefix. Needed only with
+        /// more than one daemon.
+        #[arg(long)]
+        on: Option<String>,
+    },
+    /// Choose whether a device stays awake while an agent is starting or working, so a
+    /// locked screen doesn't pause it. Closing a laptop's lid still sleeps.
+    KeepAwake {
+        #[arg(value_enum)]
+        state: Switch,
+        /// The machine to change, by name or ID prefix. Needed only with more than one
+        /// daemon.
+        #[arg(long)]
+        on: Option<String>,
+    },
     /// Create a topic with a fresh branch and worktree.
     NewTopic { workspace: String, name: String },
     /// Choose a topic's name.
     RenameTopic { topic: String, name: String },
-    /// Stop a topic's agents and remove it, along with its worktree unless that has uncommitted
-    /// changes. Its branch stays unless it's fully merged.
-    DeleteTopic {
+    /// Stop a topic's agents, take it out of the app and remove its worktrees and the branches
+    /// made for them. Without --force, nothing happens if that would stop an agent or lose
+    /// uncommitted work or unpushed commits, and what it would is printed instead.
+    ArchiveTopic {
         topic: String,
-        /// Delete it even if an agent is still running.
+        /// Archive it whatever that loses.
         #[arg(long)]
         force: bool,
     },
-    /// Start an agent in a topic's first worktree.
+    /// List archived topics, newest first.
+    Archived,
+    /// Bring an archived topic back with its tabs, making its folder again.
+    RestoreTopic { topic: String },
+    /// Move every tab of a topic to another folder: `new` for a fresh worktree from where the
+    /// topic is now, `root` for the repo itself, or a worktree the topic was in, by branch or ID
+    /// prefix.
+    MoveTopic {
+        topic: String,
+        to: String,
+        /// Move it even if an agent is still running, which stops it.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Start an agent in a topic's folder.
     NewSession {
         topic: String,
         #[arg(long, default_value = "claude")]
@@ -90,6 +123,12 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Switch {
+    On,
+    Off,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -137,6 +176,25 @@ async fn main() -> Result<()> {
                 println!("workspace {} {}", short(&workspace.id.0), workspace.path);
             }
         }
+        Cmd::RenameDevice { name, on } => {
+            let machine = choose_machine(&engine, on.as_deref())?;
+            engine
+                .request(&machine, Command::RenameMachine { name })
+                .await?;
+        }
+        Cmd::KeepAwake { state, on } => {
+            let machine = choose_machine(&engine, on.as_deref())?;
+            let mut settings = online_devices(&engine)
+                .into_iter()
+                .filter_map(|device| device.state)
+                .find(|state| state.machine.id == machine)
+                .map(|state| state.settings)
+                .unwrap_or_default();
+            settings.keep_awake = matches!(state, Switch::On);
+            engine
+                .request(&machine, Command::SetDeviceSettings { settings })
+                .await?;
+        }
         Cmd::NewTopic { workspace, name } => {
             let (machine, workspace_id) = resolve(
                 &engine,
@@ -167,10 +225,83 @@ async fn main() -> Result<()> {
                 .request(&machine, Command::RenameTopic { topic_id, name })
                 .await?;
         }
-        Cmd::DeleteTopic { topic, force } => {
+        Cmd::ArchiveTopic { topic, force } => {
             let (machine, topic_id) = resolve_topic(&engine, &topic)?;
+            let output = engine
+                .request(&machine, Command::ArchiveTopic { topic_id, force })
+                .await?;
+            if let CommandOutput::ArchiveRisk { risk } = output {
+                if risk.running > 0 {
+                    println!("{} agent(s) still running", risk.running);
+                }
+                for worktree in &risk.worktrees {
+                    println!(
+                        "{}: {} uncommitted file(s), {} unpushed commit(s) on {}",
+                        worktree.path, worktree.uncommitted, worktree.unpushed, worktree.branch
+                    );
+                }
+                bail!("archiving would lose this. Pass --force to archive anyway");
+            }
+        }
+        Cmd::Archived => {
+            for (_, machine, topic) in archived_topics(&engine).await? {
+                println!("{machine} topic {} {}", short(&topic.id.0), topic.name);
+            }
+        }
+        Cmd::RestoreTopic { topic } => {
+            let mut matches: Vec<_> = archived_topics(&engine)
+                .await?
+                .into_iter()
+                .filter(|(_, _, archived)| archived.id.0.starts_with(&topic))
+                .collect();
+            let (machine, _, archived) = match matches.len() {
+                1 => matches.remove(0),
+                0 => bail!("no archived topic matches {topic}"),
+                count => bail!("{topic} is ambiguous: {count} matches"),
+            };
             engine
-                .request(&machine, Command::DeleteTopic { topic_id, force })
+                .request(
+                    &machine,
+                    Command::RestoreTopic {
+                        topic_id: archived.id,
+                    },
+                )
+                .await?;
+        }
+        Cmd::MoveTopic { topic, to, force } => {
+            let (machine, topic_id) = resolve_topic(&engine, &topic)?;
+            let to = match to.as_str() {
+                "new" => MoveTarget::NewWorktree,
+                "root" => MoveTarget::Root,
+                wanted => {
+                    let worktrees: Vec<_> = engine
+                        .devices()
+                        .iter()
+                        .filter_map(|device| device.state.as_ref())
+                        .find_map(|state| state.topic(&topic_id))
+                        .map(|topic| topic.worktrees.clone())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|w| w.branch == wanted || w.id.0.starts_with(wanted))
+                        .collect();
+                    match worktrees.as_slice() {
+                        [worktree] => MoveTarget::Worktree {
+                            worktree_id: worktree.id.clone(),
+                        },
+                        [] => bail!("this topic has no worktree matching {wanted}"),
+                        _ => bail!("{wanted} is ambiguous"),
+                    }
+                }
+            };
+            engine
+                .request(
+                    &machine,
+                    Command::MoveTopic {
+                        topic_id,
+                        to,
+                        force,
+                    },
+                )
                 .await?;
         }
         Cmd::NewSession {
@@ -180,20 +311,11 @@ async fn main() -> Result<()> {
             model,
         } => {
             let (machine, topic_id) = resolve_topic(&engine, &topic)?;
-            let worktree_id = engine
-                .devices()
-                .iter()
-                .filter_map(|device| device.state.as_ref())
-                .find_map(|state| state.topic(&topic_id))
-                .and_then(|topic| topic.worktrees.first())
-                .map(|worktree| worktree.id.clone())
-                .context("this topic has no worktree")?;
             let output = engine
                 .request(
                     &machine,
                     Command::StartSession {
                         topic_id,
-                        worktree_id,
                         agent,
                         mode: mode.into(),
                         model,
@@ -323,6 +445,26 @@ fn describe_failures(engine: &Engine) -> String {
         .join("\n")
 }
 
+/// Every online machine's archived topics, with the machine and its name.
+async fn archived_topics(engine: &Engine) -> Result<Vec<(MachineId, String, ArchivedTopic)>> {
+    let mut all = vec![];
+    for device in online_devices(engine) {
+        let Some(state) = device.state else { continue };
+        let output = engine
+            .request(&state.machine.id, Command::ListArchivedTopics)
+            .await?;
+        if let CommandOutput::ArchivedTopics { topics } = output {
+            let machine = &state.machine;
+            all.extend(
+                topics
+                    .into_iter()
+                    .map(|t| (machine.id.clone(), machine.name.clone(), t)),
+            );
+        }
+    }
+    Ok(all)
+}
+
 fn resolve_topic(engine: &Engine, prefix: &str) -> Result<(MachineId, TopicId)> {
     resolve(
         engine,
@@ -429,7 +571,17 @@ fn print_status(engine: &Engine) {
             for topic in &workspace.topics {
                 println!("    topic {} {}", short(&topic.id.0), topic.name);
                 for worktree in &topic.worktrees {
-                    println!("      worktree {} {}", worktree.branch, worktree.path);
+                    let here = if worktree.id == topic.worktree_id {
+                        " (here)"
+                    } else {
+                        ""
+                    };
+                    println!(
+                        "      worktree {} {} {}{here}",
+                        short(&worktree.id.0),
+                        worktree.branch,
+                        worktree.path
+                    );
                 }
                 for session in &topic.sessions {
                     println!(

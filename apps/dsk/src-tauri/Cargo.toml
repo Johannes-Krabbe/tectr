@@ -15,6 +15,7 @@ highlight.workspace = true
 protocol.workspace = true
 settings.workspace = true
 
+arboard = { version = "3", default-features = false }
 dirs.workspace = true
 notify = "8"
 open = "5"

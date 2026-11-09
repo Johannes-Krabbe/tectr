@@ -3,7 +3,8 @@ import type { Device, Workspace } from "./engine";
 import type { View } from "./navigation";
 import { act } from "./keybinds";
 import { ago, isOnline, STATE_LABEL, topicState } from "./model";
-import { Keys, SettingsIcon, StatusIcon } from "./ui/StatusIcon";
+import { Icon } from "./ui/Icon";
+import { Keys, StatusIcon } from "./ui/StatusIcon";
 
 interface Props {
   devices: Device[];
@@ -118,7 +119,7 @@ export function Sidebar({
                   aria-label={`Settings for ${name}`}
                   onClick={() => machineId && onSettings(machineId)}
                 >
-                  <SettingsIcon />
+                  <Icon name="settings" />
                 </button>
                 <button
                   className="add"
@@ -128,7 +129,7 @@ export function Sidebar({
                   aria-label={`Add a workspace on ${name}`}
                   onClick={() => onAddWorkspace(device)}
                 >
-                  +
+                  <Icon name="add" />
                 </button>
               </div>
               {online && device.state?.workspaces.length === 0 && (
@@ -159,7 +160,7 @@ export function Sidebar({
                       aria-label={`Create a topic in ${workspace.name}`}
                       onClick={() => onNewTopic(device, workspace)}
                     >
-                      +
+                      <Icon name="add" />
                     </button>
                   </div>
                   {online && workspace.topics.length === 0 && (

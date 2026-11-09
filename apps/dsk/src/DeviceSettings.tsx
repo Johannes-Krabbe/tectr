@@ -10,7 +10,7 @@ import {
 } from "./engine";
 import { act } from "./keybinds";
 import { inPane } from "./keys";
-import { defaultEffort, isOnline, modelLabel } from "./model";
+import { defaultEffort, isOnline, keepsAwake, modelLabel, withKeepAwakeToggled } from "./model";
 import { hint, type Hint, useHints } from "./shortcuts";
 import { Choice, Picker } from "./ui/Picker";
 import { SettingsLayout } from "./ui/SettingsPage";
@@ -41,9 +41,11 @@ const defaultModelOf = (provider: Provider): ProviderModel | undefined =>
 /** The settings of one device. They live on its daemon, so every client sees the same ones. */
 export function DeviceSettings({
   device,
+  onRename,
   onClose,
 }: {
   device: Device;
+  onRename: () => void;
   onClose: () => void;
 }) {
   const machineId = device.state?.machine.id;
@@ -55,6 +57,18 @@ export function DeviceSettings({
   const [checkError, setCheckError] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
   const [picking, setPicking] = useState<"model" | "effort" | null>(null);
+  const [awakeError, setAwakeError] = useState<string | null>(null);
+  const keepAwake = device.state ? keepsAwake(device.state) : true;
+
+  const toggleKeepAwake = () => {
+    const state = device.state;
+    if (!state || !online) return;
+    setAwakeError(null);
+    request(state.machine.id, {
+      command: "set_device_settings",
+      settings: withKeepAwakeToggled(state),
+    }).catch((reason) => setAwakeError(errorText(reason)));
+  };
 
   const rows = candidates ? rowsOf(candidates, providers) : [];
   const selected = Math.max(Math.min(cursor, rows.length - 1), 0);
@@ -127,6 +141,12 @@ export function DeviceSettings({
     rowHints.push(hint("Add", "device.confirm"));
   }
   useHints("pane", [
+    ...(online
+      ? [
+          hint("Rename", "device.rename"),
+          hint(keepAwake ? "Let it sleep" : "Keep awake", "device.toggle_keep_awake"),
+        ]
+      : []),
     ...rowHints,
     ...(rows.length > 0
       ? [
@@ -141,6 +161,8 @@ export function DeviceSettings({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!inPane(event)) return;
+      if (online && act(event, "device.rename", onRename)) return;
+      if (online && act(event, "device.toggle_keep_awake", toggleKeepAwake)) return;
       const moveBy = (step: number) => () =>
         setCursor(Math.max(Math.min(selected + step, rows.length - 1), 0));
       if (act(event, "device.up", moveBy(-1)) || act(event, "device.down", moveBy(1))) return;
@@ -179,6 +201,27 @@ export function DeviceSettings({
     >
       <div className="pane settings">
         <div className="settings-in">
+          {device.state && (
+            <div className="settings-row">
+              <span className="name">Name</span>
+              <span className="meta">{device.state.machine.name}</span>
+              <button className="button" disabled={!online} onClick={onRename}>
+                Rename
+                <Keys action="device.rename" />
+              </button>
+            </div>
+          )}
+          {device.state && (
+            <div className="settings-row">
+              <span className="name">Keep awake while agents work</span>
+              <span className="meta">{keepAwake ? "On" : "Off"}</span>
+              <button className="button" disabled={!online} onClick={toggleKeepAwake}>
+                {keepAwake ? "Turn off" : "Turn on"}
+                <Keys action="device.toggle_keep_awake" />
+              </button>
+            </div>
+          )}
+          {awakeError && <p className="error settings-error">{awakeError}</p>}
           {!online && <p className="empty">This device is offline</p>}
           {online && !candidates && !checkError && <p className="empty">Checking this device</p>}
           {checkError && <p className="error">{checkError}</p>}

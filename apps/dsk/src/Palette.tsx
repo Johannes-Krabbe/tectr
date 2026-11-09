@@ -37,8 +37,20 @@ function matches(item: PaletteItem, query: string): boolean {
     .every((word) => text.includes(word));
 }
 
-/** Reaches every action and topic, and shows each one's shortcut. */
-export function Palette({ items, onClose }: { items: PaletteItem[]; onClose: () => void }) {
+/** Reaches every action and topic, and shows each one's shortcut. A list to choose from, like
+ * archived topics, says what it holds with `placeholder` and what having none means with
+ * `empty`. */
+export function Palette({
+  items,
+  onClose,
+  placeholder = "Find a topic or command",
+  empty = "Nothing matches",
+}: {
+  items: PaletteItem[];
+  onClose: () => void;
+  placeholder?: string;
+  empty?: string;
+}) {
   // Dismissing it puts focus back. A command decides where focus goes itself, and
   // putting it back would take it from the sheet that command just opened.
   const ran = useRef(false);
@@ -49,21 +61,21 @@ export function Palette({ items, onClose }: { items: PaletteItem[]; onClose: () 
         <Dialog.Backdrop className="scrim" />
         <Dialog.Popup
           className="sheet"
-          aria-label="Commands"
+          aria-label={placeholder}
           finalFocus={() => !ran.current}
           onKeyDownCapture={(event) => remapNative(event, KEYS)}
         >
           <Autocomplete.Root open inline items={items} autoHighlight="always" keepHighlight filter={matches}>
             <Autocomplete.Input
               className="sheet-name"
-              placeholder="Find a topic or command"
-              aria-label="Find a topic or command"
+              placeholder={placeholder}
+              aria-label={placeholder}
               spellCheck={false}
               autoCorrect="off"
               autoCapitalize="off"
             />
             <Autocomplete.Empty>
-              <p className="palette-empty">Nothing matches</p>
+              <p className="palette-empty">{items.length ? "Nothing matches" : empty}</p>
             </Autocomplete.Empty>
             <Autocomplete.List className="palette-list">
               {(item: PaletteItem) => (

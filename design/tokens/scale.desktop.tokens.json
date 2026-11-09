@@ -44,6 +44,7 @@
     "fast": { "$value": 80 },
     "normal": { "$value": 160 },
     "fade": { "$value": 320 },
-    "sweep": { "$value": 1600 }
+    "sweep": { "$value": 1600 },
+    "turn": { "$value": 1100 }
   }
 }

@@ -1,0 +1,32 @@
+{
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.09020,0.08235,0.11373,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "tenon.svg",
+          "name": "tenon"
+        },
+        {
+          "glass": true,
+          "image-name": "block.svg",
+          "name": "block"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

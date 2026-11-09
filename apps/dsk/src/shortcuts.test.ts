@@ -13,7 +13,7 @@ const nothing = {
   interrupt: false,
   tabs: 0,
   closeTab: false,
-  newAgent: false,
+  newTab: false,
   newTopic: false,
   newWorkspace: false,
   topics: 0,
@@ -48,7 +48,7 @@ test("the sidebar shows its own keys, for the row that has the keyboard", () => 
   assert.ok(!labels("sidebar-topic").includes("Write"));
   assert.ok(labels("sidebar-topic").includes("Open"));
   assert.ok(labels("sidebar-topic").includes("Rename"));
-  assert.ok(labels("sidebar-topic").includes("Delete"));
+  assert.ok(labels("sidebar-topic").includes("Archive"));
   assert.ok(!labels("sidebar-workspace").includes("Rename"));
   assert.ok(labels("sidebar-topic").includes("New topic"));
   assert.ok(!labels("sidebar-workspace").includes("Open"));

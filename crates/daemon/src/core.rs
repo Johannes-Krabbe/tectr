@@ -13,15 +13,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use protocol::{
-    Approval, ApprovalId, Command, CommandError, CommandOutput, DaemonState, ErrorCode, Machine,
-    MachineId, PermissionMode, PermissionOption, PermissionOutcome, Provider, ProviderCandidate,
-    Session, SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, StateChange,
-    StopReason, ToolCallPatch, Topic, Workspace, WorkspaceId, Worktree,
+    Approval, ApprovalId, ArchiveRisk, Command, CommandError, CommandOutput, DaemonState,
+    DeviceSettings, ErrorCode, Machine, MachineId, MoveTarget, PermissionMode, PermissionOption,
+    PermissionOutcome, Provider, ProviderCandidate, Session, SessionEvent, SessionEventKind,
+    SessionId, SessionRef, SessionStatus, StateChange, StopReason, ToolCallPatch, Topic, TopicId,
+    Workspace, WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::agents::AgentLauncher;
+use crate::awake::{KeepAwake, KeepAwakeCommand};
 use crate::store::Store;
 use crate::{acp, folders, git};
 
@@ -73,29 +75,36 @@ struct Inner {
     closing: Vec<JoinHandle<()>>,
     last_seq: HashMap<SessionId, u64>,
     signals: broadcast::Sender<Signal>,
+    awake: KeepAwake,
 }
 
 pub struct Core {
     inner: Mutex<Inner>,
     signals: broadcast::Sender<Signal>,
     data_dir: PathBuf,
+    /// What the machine is called until someone names it.
+    hostname: String,
     agents: BTreeMap<String, AgentLauncher>,
     /// Stops two sessions from installing the same adapter at the same time.
     adapter_install: tokio::sync::Mutex<()>,
+    /// Held while worktrees are made or removed for archiving, restoring and moving, so that
+    /// restoring a topic straight after archiving it can't race the removal of its folder.
+    worktree_changes: Arc<tokio::sync::Mutex<()>>,
     shutting_down: AtomicBool,
 }
 
 impl Core {
     pub fn open(
         data_dir: &Path,
-        machine_name: String,
+        hostname: String,
         agents: BTreeMap<String, AgentLauncher>,
         event_buffer: usize,
+        keep_awake: Option<KeepAwakeCommand>,
     ) -> Result<Arc<Self>> {
         let store = Store::open(&data_dir.join("tectr.db"))?;
         let machine = Machine {
             id: store.machine_id()?,
-            name: machine_name,
+            name: store.machine_name()?.unwrap_or_else(|| hostname.clone()),
         };
         let state = store.load_state(machine)?;
         let last_seq = store.last_seqs()?.into_iter().collect();
@@ -107,14 +116,17 @@ impl Core {
             closing: Vec::new(),
             last_seq,
             signals: signals.clone(),
+            awake: KeepAwake::new(keep_awake),
         };
         inner.recover()?;
         Ok(Arc::new(Self {
             inner: Mutex::new(inner),
             signals,
             data_dir: data_dir.to_owned(),
+            hostname,
             agents,
             adapter_install: tokio::sync::Mutex::new(()),
+            worktree_changes: Arc::new(tokio::sync::Mutex::new(())),
             shutting_down: AtomicBool::new(false),
         }))
     }
@@ -162,21 +174,31 @@ impl Core {
                     .await
             }
             Command::RenameTopic { topic_id, name } => self.rename_topic(&topic_id, &name),
-            Command::DeleteTopic { topic_id, force } => self.delete_topic(&topic_id, force),
+            Command::ArchiveTopic { topic_id, force } => self.archive_topic(&topic_id, force).await,
+            Command::RestoreTopic { topic_id } => self.restore_topic(&topic_id).await,
+            Command::ListArchivedTopics => {
+                let topics = self.lock().store.archived_topics().map_err(internal)?;
+                Ok(CommandOutput::ArchivedTopics { topics })
+            }
+            Command::MoveTopic {
+                topic_id,
+                to,
+                force,
+            } => self.move_topic(&topic_id, to, force).await,
             Command::StartSession {
                 topic_id,
-                worktree_id,
                 agent,
                 mode,
                 model,
                 effort,
-            } => self.start_session(topic_id, worktree_id, agent, mode, model, effort),
+            } => self.start_session(topic_id, agent, mode, model, effort),
             Command::SendPrompt { session_id, text } => self.send_prompt(&session_id, text),
             Command::CancelTurn { session_id } => self.cancel_turn(&session_id),
             Command::AnswerApproval {
                 approval_id,
                 option_id,
             } => self.answer_approval(&approval_id, &option_id),
+            Command::RenameMachine { name } => self.rename_machine(&name),
             Command::DetectProviders => Ok(self.detect_providers().await),
             Command::AddProvider { agent } => self.add_provider(&agent).await,
             Command::RemoveProvider { agent } => self.remove_provider(&agent),
@@ -185,6 +207,7 @@ impl Core {
                 model,
                 effort,
             } => self.set_provider_defaults(&agent, model, effort),
+            Command::SetDeviceSettings { settings } => self.set_device_settings(settings),
             Command::SetSessionSettings {
                 session_id,
                 mode,
@@ -198,6 +221,7 @@ impl Core {
                 };
                 self.set_session_settings(&session_id, settings).await
             }
+            Command::SetUnread { session_id, unread } => self.set_unread(&session_id, unread),
             Command::SetDraft { session_id, text } => self.set_draft(session_id, text),
             Command::CloseSession { session_id, force } => self.close_session(&session_id, force),
             Command::Unknown => Err(invalid("this daemon doesn't know that command")),
@@ -273,7 +297,7 @@ impl Core {
                 .join("worktrees")
                 .join(&workspace_id.0)
                 .join(&unique);
-            git::add_worktree(&repo, &path, &branch)
+            git::add_worktree(&repo, &path, &branch, "HEAD")
                 .await
                 .map_err(internal)?;
             // macOS temp directories are symlinks. Agents should see the real path.
@@ -283,14 +307,16 @@ impl Core {
             (path, branch)
         };
 
+        let worktree = Worktree {
+            id: crate::new_id().as_str().into(),
+            path: path.display().to_string(),
+            branch,
+        };
         let topic = Topic {
             id: topic_id.as_str().into(),
             name,
-            worktrees: vec![Worktree {
-                id: crate::new_id().as_str().into(),
-                path: path.display().to_string(),
-                branch,
-            }],
+            worktree_id: worktree.id.clone(),
+            worktrees: vec![worktree],
             sessions: vec![],
         };
         let mut inner = self.lock();
@@ -306,6 +332,26 @@ impl Core {
             workspace_id: workspace_id.clone(),
             topic,
         })
+    }
+
+    fn rename_machine(&self, name: &str) -> Result<CommandOutput, CommandError> {
+        let chosen = Some(name.trim()).filter(|name| !name.is_empty());
+        let mut inner = self.lock();
+        inner.store.set_machine_name(chosen).map_err(internal)?;
+        inner.emit(StateChange::MachineRenamed {
+            name: chosen.unwrap_or(&self.hostname).to_owned(),
+        });
+        Ok(CommandOutput::Done)
+    }
+
+    fn set_device_settings(&self, settings: DeviceSettings) -> Result<CommandOutput, CommandError> {
+        let mut inner = self.lock();
+        inner
+            .store
+            .set_device_settings(&settings)
+            .map_err(internal)?;
+        inner.emit(StateChange::DeviceSettingsChanged { settings });
+        Ok(CommandOutput::Done)
     }
 
     fn rename_topic(
@@ -329,39 +375,62 @@ impl Core {
         Ok(CommandOutput::Done)
     }
 
-    /// Stops the topic's agents and removes it straight away. Its worktrees are removed behind
-    /// that, because agents can take seconds to exit and have to be gone first.
-    fn delete_topic(
+    /// Without `force`, git is asked first what would be lost, and anything at all leaves the
+    /// topic as it is. Otherwise the topic goes straight away and its worktrees behind that,
+    /// because agents can take seconds to exit and have to be gone first.
+    async fn archive_topic(
         &self,
-        topic_id: &protocol::TopicId,
+        topic_id: &TopicId,
         force: bool,
     ) -> Result<CommandOutput, CommandError> {
-        let mut inner = self.lock();
-        let (repo, topic) = inner
-            .state
-            .workspaces
-            .iter()
-            .find_map(|workspace| {
-                let topic = workspace.topics.iter().find(|t| &t.id == topic_id)?;
-                Some((PathBuf::from(&workspace.path), topic.clone()))
-            })
-            .ok_or_else(|| not_found("topic", topic_id))?;
-        if !force && topic.sessions.iter().any(|s| inner.is_running(s)) {
-            return Err(CommandError {
-                code: ErrorCode::Busy,
-                message: "an agent in this topic is still running, so deleting it needs confirming"
-                    .to_owned(),
-            });
+        let (repo, owned, running) = {
+            let inner = self.lock();
+            let (_, repo, topic) = inner.topic_with_repo(topic_id)?;
+            let made = inner.store.made_branches(topic_id).map_err(internal)?;
+            let running = topic
+                .sessions
+                .iter()
+                .filter(|s| inner.is_running(s))
+                .count();
+            (repo.clone(), owned_worktrees(&repo, &topic, &made), running)
+        };
+        if !force {
+            let mut worktrees = vec![];
+            for (path, branch) in &owned {
+                let uncommitted = git::uncommitted(path).await.map_err(internal)?;
+                let unpushed = git::unpushed(&repo, branch).await.map_err(internal)?;
+                if uncommitted > 0 || unpushed > 0 {
+                    worktrees.push(WorktreeRisk {
+                        path: path.display().to_string(),
+                        branch: branch.clone(),
+                        uncommitted,
+                        unpushed,
+                    });
+                }
+            }
+            if running > 0 || !worktrees.is_empty() {
+                let running = running as u32;
+                let risk = ArchiveRisk { running, worktrees };
+                return Ok(CommandOutput::ArchiveRisk { risk });
+            }
         }
+
+        let changing = self.worktree_changes.clone().lock_owned().await;
+        let mut inner = self.lock();
+        let (_, _, topic) = inner.topic_with_repo(topic_id)?;
         inner
             .store
-            .delete_topic(topic_id, now_ms())
+            .archive_topic(topic_id, now_ms())
             .map_err(internal)?;
 
         let mut agents = vec![];
         for session in &topic.sessions {
+            let running = inner.is_running(session);
             agents.extend(inner.stop_agent(&session.id));
-            // The topic is already gone from the database, so this can't turn back now.
+            if running {
+                inner.set_status(&session.id, SessionStatus::Stopped);
+            }
+            // The topic is already archived in the database, so this can't turn back now.
             if let Err(error) = inner.set_draft(&session.id, String::new()) {
                 tracing::error!(id = %session.id, "failed to clear a draft: {error:#}");
             }
@@ -369,15 +438,248 @@ impl Core {
         inner.emit(StateChange::TopicRemoved {
             topic_id: topic_id.clone(),
         });
-        let cleanup = tokio::spawn(remove_worktrees(repo, topic.worktrees, agents));
+        let cleanup = tokio::spawn(async move {
+            discard_worktrees(repo, owned, agents).await;
+            drop(changing);
+        });
         inner.keep_closing(cleanup);
         Ok(CommandOutput::Done)
+    }
+
+    /// Makes the topic's folder again at the same path, so its agents' own history still
+    /// matches it when they resume.
+    async fn restore_topic(&self, topic_id: &TopicId) -> Result<CommandOutput, CommandError> {
+        let _changing = self.worktree_changes.lock().await;
+        let (workspace_id, mut topic, repo) = {
+            let inner = self.lock();
+            let (workspace_id, topic) = inner
+                .store
+                .archived_topic(topic_id)
+                .map_err(internal)?
+                .ok_or_else(|| not_found("archived topic", topic_id))?;
+            let repo = inner
+                .state
+                .workspace(&workspace_id)
+                .map(|workspace| PathBuf::from(&workspace.path))
+                .ok_or_else(|| not_found("workspace", &workspace_id))?;
+            (workspace_id, topic, repo)
+        };
+        if let Some(worktree) = topic.worktree() {
+            let path = Path::new(&worktree.path);
+            if path != repo && !path.exists() {
+                git::restore_worktree(&repo, path, &worktree.branch)
+                    .await
+                    .map_err(internal)?;
+            }
+        }
+        for worktree in &mut topic.worktrees {
+            if let Ok(branch) = git::current_branch(Path::new(&worktree.path)).await {
+                worktree.branch = branch;
+            }
+        }
+
+        let mut inner = self.lock();
+        inner.store.restore_topic(topic_id).map_err(internal)?;
+        // Archiving stopped its agents, and one stopped on its way out may not have said so.
+        for session in &mut topic.sessions {
+            if matches!(
+                session.status,
+                SessionStatus::Starting | SessionStatus::Working | SessionStatus::WaitingForYou
+            ) {
+                session.status = SessionStatus::Stopped;
+                inner.store.update_session(session).map_err(internal)?;
+            }
+        }
+        inner.emit(StateChange::TopicAdded {
+            workspace_id: workspace_id.clone(),
+            topic: topic.clone(),
+        });
+        Ok(CommandOutput::Topic {
+            workspace_id,
+            topic,
+        })
+    }
+
+    /// Agents stop here and resume in the new folder on their next prompt, which tells them.
+    /// The folder left behind stays, so the topic can go back to it.
+    async fn move_topic(
+        &self,
+        topic_id: &TopicId,
+        to: MoveTarget,
+        force: bool,
+    ) -> Result<CommandOutput, CommandError> {
+        let _changing = self.worktree_changes.lock().await;
+        let (workspace_id, repo, topic) = {
+            let inner = self.lock();
+            let found = inner.topic_with_repo(topic_id)?;
+            inner.check_idle(&found.2, force)?;
+            found
+        };
+        let current = topic
+            .worktree()
+            .ok_or_else(|| internal(anyhow::anyhow!("the topic has no folder")))?
+            .clone();
+        let existing = match &to {
+            MoveTarget::NewWorktree => None,
+            MoveTarget::Root => topic
+                .worktrees
+                .iter()
+                .find(|w| Path::new(&w.path) == repo)
+                .cloned(),
+            MoveTarget::Worktree { worktree_id } => Some(
+                topic
+                    .worktrees
+                    .iter()
+                    .find(|w| &w.id == worktree_id)
+                    .ok_or_else(|| not_found("worktree in that topic", worktree_id))?
+                    .clone(),
+            ),
+            MoveTarget::Unknown => return Err(invalid("this daemon doesn't know that place")),
+        };
+        if existing.as_ref().is_some_and(|w| w.id == current.id) {
+            return Ok(CommandOutput::Done);
+        }
+        let target = match existing {
+            Some(worktree) if Path::new(&worktree.path).exists() => worktree,
+            Some(worktree) => {
+                return Err(invalid(format!("{} no longer exists", worktree.path)));
+            }
+            None if matches!(to, MoveTarget::Root) => Worktree {
+                id: crate::new_id().as_str().into(),
+                path: repo.display().to_string(),
+                branch: git::current_branch(&repo).await.map_err(internal)?,
+            },
+            None => {
+                let start = git::head_commit(Path::new(&current.path))
+                    .await
+                    .map_err(internal)?;
+                let id = crate::new_id();
+                let (path, branch) = self
+                    .add_topic_worktree(&repo, &workspace_id, &topic.name, &id, &start)
+                    .await?;
+                Worktree {
+                    id: id.as_str().into(),
+                    path,
+                    branch,
+                }
+            }
+        };
+
+        let mut inner = self.lock();
+        let (_, _, topic) = inner.topic_with_repo(topic_id)?;
+        let mut worktrees = topic.worktrees.clone();
+        if !worktrees.iter().any(|w| w.id == target.id) {
+            inner
+                .store
+                .insert_worktree(topic_id, &target)
+                .map_err(internal)?;
+            worktrees.push(target.clone());
+        }
+        inner
+            .store
+            .set_topic_worktree(topic_id, &target.id)
+            .map_err(internal)?;
+        for session in &topic.sessions {
+            let running = inner.is_running(session);
+            if let Some(task) = inner.stop_agent(&session.id) {
+                inner.keep_closing(task);
+            }
+            if running {
+                inner.set_status(&session.id, SessionStatus::Stopped);
+            }
+        }
+        inner.emit(StateChange::WorktreesChanged {
+            topic_id: topic_id.clone(),
+            worktree_id: target.id,
+            worktrees,
+        });
+        Ok(CommandOutput::Done)
+    }
+
+    /// A new branch from `start` in a new folder in the data directory, named after the topic.
+    async fn add_topic_worktree(
+        &self,
+        repo: &Path,
+        workspace_id: &WorkspaceId,
+        name: &str,
+        id: &str,
+        start: &str,
+    ) -> Result<(String, String), CommandError> {
+        let unique = format!("{}-{}", git::slug(name), &id[..6]);
+        let branch = format!("tectr/{unique}");
+        let path = self
+            .data_dir
+            .join("worktrees")
+            .join(&workspace_id.0)
+            .join(&unique);
+        git::add_worktree(repo, &path, &branch, start)
+            .await
+            .map_err(internal)?;
+        // macOS temp directories are symlinks. Agents should see the real path.
+        let path = tokio::fs::canonicalize(&path)
+            .await
+            .map_err(|e| internal(e.into()))?;
+        Ok((path.display().to_string(), branch))
+    }
+
+    /// Reads what each folder has checked out, because an agent can switch branches. Only the
+    /// topic of `session` when there is one, otherwise every topic.
+    pub async fn refresh_branches(self: Arc<Self>, session: Option<SessionId>) {
+        let folders: Vec<(TopicId, WorktreeId, String)> = {
+            let inner = self.lock();
+            inner
+                .state
+                .topics()
+                .filter(|topic| {
+                    session
+                        .as_ref()
+                        .is_none_or(|id| topic.sessions.iter().any(|s| &s.id == id))
+                })
+                .flat_map(|topic| {
+                    topic
+                        .worktrees
+                        .iter()
+                        .map(|w| (topic.id.clone(), w.id.clone(), w.path.clone()))
+                })
+                .collect()
+        };
+        let mut found = vec![];
+        for (topic_id, worktree_id, path) in folders {
+            // A folder that's gone has nothing checked out to show.
+            if let Ok(branch) = git::current_branch(Path::new(&path)).await {
+                found.push((topic_id, worktree_id, branch));
+            }
+        }
+        let mut inner = self.lock();
+        let mut changed: BTreeMap<TopicId, Topic> = BTreeMap::new();
+        for (topic_id, worktree_id, branch) in found {
+            let Some(topic) = changed
+                .get(&topic_id)
+                .or_else(|| inner.state.topic(&topic_id))
+                .cloned()
+            else {
+                continue;
+            };
+            let mut topic = topic;
+            if let Some(worktree) = topic.worktrees.iter_mut().find(|w| w.id == worktree_id)
+                && worktree.branch != branch
+            {
+                worktree.branch = branch;
+                changed.insert(topic_id, topic);
+            }
+        }
+        for (topic_id, topic) in changed {
+            inner.emit(StateChange::WorktreesChanged {
+                topic_id,
+                worktree_id: topic.worktree_id,
+                worktrees: topic.worktrees,
+            });
+        }
     }
 
     fn start_session(
         self: &Arc<Self>,
         topic_id: protocol::TopicId,
-        worktree_id: protocol::WorktreeId,
         agent: String,
         mode: PermissionMode,
         model: Option<String>,
@@ -392,27 +694,32 @@ impl Core {
             )));
         }
         let mut inner = self.lock();
-        let topic = inner
+        let cwd = inner
             .state
             .topic(&topic_id)
-            .ok_or_else(|| not_found("topic", &topic_id))?;
-        if !topic.worktrees.iter().any(|w| w.id == worktree_id) {
-            return Err(not_found("worktree in that topic", &worktree_id));
-        }
+            .ok_or_else(|| not_found("topic", &topic_id))?
+            .worktree()
+            .ok_or_else(|| internal(anyhow::anyhow!("the topic has no folder")))?
+            .path
+            .clone();
 
         let session = Session {
             id: SessionId(crate::new_id()),
-            worktree_id,
             agent,
             mode,
             model,
             effort,
             status: SessionStatus::Starting,
             title: None,
+            unread: false,
         };
         inner
             .store
             .insert_session(&topic_id, &session)
+            .map_err(internal)?;
+        inner
+            .store
+            .set_agent_cwd(&session.id, &cwd)
             .map_err(internal)?;
         inner.emit(StateChange::SessionAdded {
             topic_id: topic_id.clone(),
@@ -573,11 +880,8 @@ impl Core {
             })?
             .clone();
         let cwd = inner
-            .state
-            .topics()
-            .flat_map(|topic| &topic.worktrees)
-            .find(|worktree| worktree.id == session.worktree_id)
-            .context("the session's worktree no longer exists")?
+            .folder_of(&session.id)
+            .context("the session's topic has no folder")?
             .path
             .clone();
         let spawn = acp::AgentSpawn {
@@ -633,6 +937,16 @@ impl Core {
                 .map_err(internal)?,
         }
 
+        let folder = inner
+            .folder_of(session_id)
+            .ok_or_else(|| internal(anyhow::anyhow!("the session's topic has no folder")))?
+            .clone();
+        let told = inner.store.agent_cwd(session_id).map_err(internal)?;
+        let sent = match &told {
+            Some(old) if old != &folder.path => moved_note(old, &folder) + &text,
+            _ => text.clone(),
+        };
+
         inner.append(
             session_id,
             SessionEventKind::UserPrompt { text: text.clone() },
@@ -640,8 +954,13 @@ impl Core {
         inner.set_status(session_id, SessionStatus::Working);
         let live = inner.live.get(session_id).expect("made live just above");
         live.commands
-            .send(SessionCommand::Prompt(text))
+            .send(SessionCommand::Prompt(sent))
             .map_err(|_| internal(anyhow::anyhow!("the agent has just exited")))?;
+        if told.as_ref() != Some(&folder.path)
+            && let Err(error) = inner.store.set_agent_cwd(session_id, &folder.path)
+        {
+            tracing::error!(%session_id, "failed to store the agent's folder: {error:#}");
+        }
         // It's been sent, so it's no longer a draft. A failure above leaves it in place.
         if let Err(error) = inner.set_draft(session_id, String::new()) {
             tracing::error!(%session_id, "failed to clear a draft: {error:#}");
@@ -785,6 +1104,30 @@ impl Core {
         session.mode = settings.mode;
         session.model = settings.model;
         session.effort = settings.effort;
+        let session = session.clone();
+        inner.store.update_session(&session).map_err(internal)?;
+        inner.emit(StateChange::SessionChanged { session });
+        Ok(CommandOutput::Done)
+    }
+
+    fn set_unread(
+        &self,
+        session_id: &SessionId,
+        unread: bool,
+    ) -> Result<CommandOutput, CommandError> {
+        let mut inner = self.lock();
+        let session = inner
+            .state
+            .session_mut(session_id)
+            .ok_or_else(|| not_found("session", session_id))?;
+        let finished = matches!(session.status, SessionStatus::Done | SessionStatus::Stopped);
+        if unread && !finished {
+            return Err(invalid("only a finished session can be unread"));
+        }
+        if session.unread == unread {
+            return Ok(CommandOutput::Done);
+        }
+        session.unread = unread;
         let session = session.clone();
         inner.store.update_session(&session).map_err(internal)?;
         inner.emit(StateChange::SessionChanged { session });
@@ -994,6 +1337,8 @@ impl Core {
             // The SDK ends a stubborn agent within about three seconds.
             let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
         }
+        // An agent that didn't stop in time can't hold the machine awake.
+        self.lock().awake.set(false);
     }
 }
 
@@ -1021,6 +1366,44 @@ impl Inner {
             .collect();
         for id in interrupted {
             self.set_status(&id, SessionStatus::Stopped);
+        }
+        Ok(())
+    }
+
+    /// The topic with the path of its workspace's repo.
+    fn topic_with_repo(
+        &self,
+        topic_id: &TopicId,
+    ) -> Result<(WorkspaceId, PathBuf, Topic), CommandError> {
+        self.state
+            .workspaces
+            .iter()
+            .find_map(|workspace| {
+                let topic = workspace.topics.iter().find(|t| &t.id == topic_id)?;
+                Some((
+                    workspace.id.clone(),
+                    PathBuf::from(&workspace.path),
+                    topic.clone(),
+                ))
+            })
+            .ok_or_else(|| not_found("topic", topic_id))
+    }
+
+    /// The folder a session's tabs work in, which is its topic's.
+    fn folder_of(&self, session_id: &SessionId) -> Option<&Worktree> {
+        self.state
+            .topics()
+            .find(|topic| topic.sessions.iter().any(|s| &s.id == session_id))?
+            .worktree()
+    }
+
+    fn check_idle(&self, topic: &Topic, force: bool) -> Result<(), CommandError> {
+        if !force && topic.sessions.iter().any(|s| self.is_running(s)) {
+            return Err(CommandError {
+                code: ErrorCode::Busy,
+                message: "an agent in this topic is still running, so this needs confirming"
+                    .to_owned(),
+            });
         }
         Ok(())
     }
@@ -1092,6 +1475,20 @@ impl Inner {
     fn emit(&mut self, change: StateChange) {
         self.state.apply(&change);
         let _ = self.signals.send(Signal::State(Arc::new(change)));
+        self.sync_awake();
+    }
+
+    /// Every status, setting, and removed tab arrives through `emit`, so checking here keeps
+    /// the machine awake exactly while some agent is starting or working. Waiting for an
+    /// answer doesn't count: nothing moves until someone is back anyway.
+    fn sync_awake(&mut self) {
+        let busy = self.state.sessions().any(|session| {
+            matches!(
+                session.status,
+                SessionStatus::Starting | SessionStatus::Working
+            )
+        });
+        self.awake.set(busy && self.state.settings.keep_awake);
     }
 
     fn append(&mut self, id: &SessionId, kind: SessionEventKind) {
@@ -1127,6 +1524,12 @@ impl Inner {
             return;
         }
         session.status = status;
+        // An agent stopping after it finished leaves what it finished unread.
+        match status {
+            SessionStatus::Done => session.unread = true,
+            SessionStatus::Stopped => {}
+            _ => session.unread = false,
+        }
         let session = session.clone();
         if let Err(error) = self.store.update_session(&session) {
             tracing::error!(%id, "failed to store the session status: {error:#}");
@@ -1157,22 +1560,52 @@ impl Inner {
     }
 }
 
-/// A topic at the repo root has the repo's own folder as its worktree, which is never removed. A
-/// worktree git won't remove stays on disk with its branch, because it holds uncommitted work.
-async fn remove_worktrees(repo: PathBuf, worktrees: Vec<Worktree>, agents: Vec<JoinHandle<()>>) {
+/// The worktrees archiving removes, with the branch tectr made for each. The repo's own folder
+/// isn't one of them.
+fn owned_worktrees(
+    repo: &Path,
+    topic: &Topic,
+    made: &[(WorktreeId, String)],
+) -> Vec<(PathBuf, String)> {
+    topic
+        .worktrees
+        .iter()
+        .filter(|worktree| Path::new(&worktree.path) != repo)
+        .map(|worktree| {
+            let branch = made
+                .iter()
+                .find(|(id, _)| id == &worktree.id)
+                .map_or(&worktree.branch, |(_, branch)| branch);
+            (PathBuf::from(&worktree.path), branch.clone())
+        })
+        .collect()
+}
+
+async fn discard_worktrees(
+    repo: PathBuf,
+    worktrees: Vec<(PathBuf, String)>,
+    agents: Vec<JoinHandle<()>>,
+) {
     for agent in agents {
         // The SDK ends a stubborn agent within about three seconds.
         let _ = tokio::time::timeout(Duration::from_secs(5), agent).await;
     }
-    for worktree in worktrees {
-        let path = Path::new(&worktree.path);
-        if path == repo {
-            continue;
-        }
-        if let Err(error) = git::remove_worktree(&repo, path, &worktree.branch).await {
-            tracing::warn!(path = worktree.path, "keeping a worktree: {error:#}");
+    for (path, branch) in worktrees {
+        if let Err(error) = git::discard_worktree(&repo, &path, &branch).await {
+            tracing::warn!(path = %path.display(), "failed to remove a worktree: {error:#}");
         }
     }
+}
+
+/// Goes before the first prompt an agent gets in a new folder. Its history is full of paths in
+/// the old one, which it would otherwise go on editing.
+fn moved_note(old: &str, folder: &Worktree) -> String {
+    format!(
+        "[tectr] This conversation moved to another folder. You now work in {} on branch {}, \
+         no longer in {old}. Use paths in the new folder from here on and change nothing in the \
+         old one.\n\n",
+        folder.path, folder.branch
+    )
 }
 
 fn now_ms() -> i64 {
@@ -1223,6 +1656,116 @@ fn internal(error: anyhow::Error) -> CommandError {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn a_chosen_name_outlives_a_restart_and_empty_goes_back_to_the_hostname() {
+        let dir = tempfile::tempdir().unwrap();
+        let open = || Core::open(dir.path(), "host".to_owned(), BTreeMap::new(), 16, None).unwrap();
+        let name = |core: &Core| core.snapshot_and_subscribe().0.machine.name;
+
+        let core = open();
+        assert_eq!(name(&core), "host");
+        let rename = |name: &str| Command::RenameMachine {
+            name: name.to_owned(),
+        };
+        core.handle(rename("  Desk  ")).await.unwrap();
+        assert_eq!(name(&core), "Desk");
+
+        drop(core);
+        let core = open();
+        assert_eq!(name(&core), "Desk");
+        core.handle(rename(" ")).await.unwrap();
+        assert_eq!(name(&core), "host");
+    }
+
+    #[tokio::test]
+    async fn the_machine_stays_awake_only_while_an_agent_works_and_the_setting_allows() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = Store::open(&dir.path().join("tectr.db")).unwrap();
+            store
+                .insert_workspace(&Workspace {
+                    id: "w".into(),
+                    name: "r".into(),
+                    path: "/r".into(),
+                    topics: vec![],
+                })
+                .unwrap();
+            let topic = Topic {
+                id: "t".into(),
+                name: "t".into(),
+                worktree_id: "wt".into(),
+                worktrees: vec![Worktree {
+                    id: "wt".into(),
+                    path: "/wt".into(),
+                    branch: "b".into(),
+                }],
+                sessions: vec![],
+            };
+            store.insert_topic(&"w".into(), &topic, false).unwrap();
+            store
+                .insert_session(
+                    &topic.id,
+                    &Session {
+                        id: "s".into(),
+                        agent: "a".into(),
+                        mode: PermissionMode::Auto,
+                        model: None,
+                        effort: None,
+                        status: SessionStatus::Ready,
+                        title: None,
+                        unread: false,
+                    },
+                )
+                .unwrap();
+        }
+        let stand_in = KeepAwakeCommand {
+            program: "sleep".into(),
+            args: vec!["60".into()],
+        };
+        let open = || {
+            Core::open(
+                dir.path(),
+                "m".to_owned(),
+                BTreeMap::new(),
+                16,
+                Some(stand_in.clone()),
+            )
+            .unwrap()
+        };
+        let core = open();
+        let set_status = |core: &Core, status| core.lock().set_status(&"s".into(), status);
+        let awake = |core: &Core| core.lock().awake.is_on();
+        let keep_awake = |keep_awake| Command::SetDeviceSettings {
+            settings: DeviceSettings { keep_awake },
+        };
+
+        assert!(!awake(&core), "an idle machine may sleep");
+        set_status(&core, SessionStatus::Working);
+        assert!(awake(&core));
+        set_status(&core, SessionStatus::WaitingForYou);
+        assert!(!awake(&core), "nothing moves until someone answers");
+        set_status(&core, SessionStatus::Working);
+        assert!(awake(&core));
+
+        core.handle(keep_awake(false)).await.unwrap();
+        assert!(!awake(&core), "turning it off lets a working machine sleep");
+
+        // The setting outlives a restart.
+        drop(core);
+        let core = open();
+        assert!(!core.snapshot_and_subscribe().0.settings.keep_awake);
+        set_status(&core, SessionStatus::Working);
+        assert!(!awake(&core));
+        core.handle(keep_awake(true)).await.unwrap();
+        assert!(
+            awake(&core),
+            "turning it on applies to a turn already running"
+        );
+
+        set_status(&core, SessionStatus::Done);
+        assert!(!awake(&core));
+    }
+
     /// Simulates a daemon that died without shutting down: its database says
     /// agents are working and waiting, but their processes are gone.
     #[tokio::test]
@@ -1230,13 +1773,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let session_in = |id: &str, status| Session {
             id: id.into(),
-            worktree_id: "wt".into(),
             agent: "a".into(),
             mode: PermissionMode::Auto,
             model: None,
             effort: None,
             status,
             title: None,
+            unread: false,
         };
         let approval = Approval {
             id: "a1".into(),
@@ -1261,6 +1804,7 @@ mod tests {
                     &Topic {
                         id: topic_id.clone(),
                         name: "t".into(),
+                        worktree_id: "wt".into(),
                         worktrees: vec![Worktree {
                             id: "wt".into(),
                             path: "/wt".into(),
@@ -1283,7 +1827,7 @@ mod tests {
             store.insert_pending_approval(&approval).unwrap();
         }
 
-        let core = Core::open(dir.path(), "m".to_owned(), BTreeMap::new(), 16).unwrap();
+        let core = Core::open(dir.path(), "m".to_owned(), BTreeMap::new(), 16, None).unwrap();
         let (state, _) = core.snapshot_and_subscribe();
 
         assert!(state.approvals.is_empty());
@@ -1313,7 +1857,7 @@ mod tests {
 
         // A second start finds nothing left to clean up.
         drop(core);
-        let core = Core::open(dir.path(), "m".to_owned(), BTreeMap::new(), 16).unwrap();
+        let core = Core::open(dir.path(), "m".to_owned(), BTreeMap::new(), 16, None).unwrap();
         assert_eq!(
             core.events_after(&"waiting".into(), 0, 10).unwrap().len(),
             2

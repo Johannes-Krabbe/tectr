@@ -47,9 +47,9 @@ export function LiveLine({
   label: string;
   waiting: boolean;
   animate: boolean;
+  /** Whether the turn it belongs to shows its steps, including ones still to come. */
   open: boolean;
-  /** Missing when there's nothing to unfold yet. */
-  onToggle?: () => void;
+  onToggle: () => void;
 }) {
   const step = useSteppedLabel(label);
   const text = (
@@ -68,12 +68,10 @@ export function LiveLine({
       {step.label}
     </span>
   );
-  return onToggle ? (
+  return (
     <FoldButton open={open} onToggle={onToggle}>
       {text}
     </FoldButton>
-  ) : (
-    <div className="activity-line">{text}</div>
   );
 }
 

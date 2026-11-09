@@ -40,6 +40,7 @@
   --motion-normal: 160ms;
   --motion-fade: 320ms;
   --motion-sweep: 1600ms;
+  --motion-turn: 1100ms;
 }
 
 :root, [data-theme="dark"] {
@@ -66,7 +67,8 @@
   --color-status-waiting-tint-strong: #f0b64d26;
   --color-status-waiting-border: #f0b64d47;
   --color-status-failed: #f0766e;
-  --color-status-done: #8a8896;
+  --color-status-done: #5cc99a;
+  --color-status-read: #8a8896;
   --color-status-idle: #8a8896;
   --color-status-stale: #8a8896;
   --color-status-online: #5cc99a;
@@ -113,7 +115,8 @@
   --color-status-waiting-tint-strong: #f0b64d40;
   --color-status-waiting-border: #8f5a0047;
   --color-status-failed: #c2332a;
-  --color-status-done: #66636f;
+  --color-status-done: #0f6e4f;
+  --color-status-read: #66636f;
   --color-status-idle: #66636f;
   --color-status-stale: #66636f;
   --color-status-online: #0f6e4f;
@@ -161,7 +164,8 @@
   --color-status-waiting-tint-strong: #f0b64d40;
   --color-status-waiting-border: #8f5a0047;
   --color-status-failed: #c2332a;
-  --color-status-done: #66636f;
+  --color-status-done: #0f6e4f;
+  --color-status-read: #66636f;
   --color-status-idle: #66636f;
   --color-status-stale: #66636f;
   --color-status-online: #0f6e4f;

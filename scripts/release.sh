@@ -33,6 +33,14 @@ build() {
   version="$(current_version)"
   [[ "$(uname -sm)" == "Darwin arm64" ]] || fail "builds only on an Apple Silicon Mac"
 
+  # Tauri compiles the Liquid Glass icon with actool, which only Xcode 26 or later
+  # has. Without it Tauri logs an error and ships the flat .icns, so use Xcode even
+  # when xcode-select points at the Command Line Tools.
+  if ! actool --version >/dev/null 2>&1; then
+    [[ -d /Applications/Xcode.app ]] || fail "needs Xcode 26 or later for the app icon"
+    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+  fi
+
   # Picks the release port and data folders in protocol::Channel. Without it the
   # build would be a dev build.
   export TECTR_CHANNEL=release
@@ -43,6 +51,8 @@ build() {
   # A dev build would quietly use the dev port and data, so check before shipping.
   target/release/tectr-daemon --help | grep -q "default: $RELEASE_PORT" ||
     fail "the daemon isn't a release build"
+  [[ -f target/release/bundle/macos/tectr.app/Contents/Resources/Assets.car ]] ||
+    fail "the app has no Liquid Glass icon"
 
   rm -rf "$dist"
   mkdir -p "$dist/stage"

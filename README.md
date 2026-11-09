@@ -1,4 +1,12 @@
-# tectr
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/logo/lockup-on-dark.svg">
+    <img alt="tectr" src="design/logo/lockup-on-light.svg" height="40">
+  </picture>
+</h1>
+
+> [!CAUTION]
+> **I don't recommend using tectr yet.** It is in early development and essential features are still missing. Expect breaking changes, rough edges and lost data.
 
 A fast desktop and mobile app for running, watching, and steering many coding agents in parallel. See [idea.md](idea.md) for the product and [context/architecture.md](context/architecture.md) for the design.
 
@@ -13,7 +21,7 @@ brew trust johannes-krabbe/tap    # Homebrew only loads casks from taps you trus
 brew install --cask johannes-krabbe/tap/tectr
 ```
 
-This installs the app, the `tectr` CLI and `tectr-daemon`, and runs the daemon as a LaunchAgent, so it starts at login and keeps agents running when the app is closed. `brew upgrade --cask tectr` restarts it on the new version. Its log is `~/Library/Logs/tectr/daemon.log`. It reads your login shell's PATH, so agents installed through nvm or into `~/.local/bin` are found. Claude Code sessions need Node 22 or newer.
+This installs the app, the `tectr` CLI and `tectr-daemon`, and runs the daemon as a LaunchAgent, so it starts at login and keeps agents running when the app is closed. While an agent works it also keeps the Mac from idle sleeping, so locking the screen doesn't pause it (closing the lid still does). Turn that off in the device's settings or with `tectr keep-awake off`. `brew upgrade --cask tectr` restarts it on the new version. Its log is `~/Library/Logs/tectr/daemon.log`. It reads your login shell's PATH, so agents installed through nvm or into `~/.local/bin` are found. Claude Code sessions need Node 22 or newer.
 
 ## Requirements
 
@@ -24,7 +32,7 @@ This installs the app, the `tectr` CLI and `tectr-daemon`, and runs the daemon a
 
 ## Try it
 
-Anything built from source is a dev build: its daemon uses port 7768, `~/Library/Application Support/tectr-dev` and `~/.config/tectr-dev`, so it runs next to the installed app without sharing anything. Only `mise run release` builds use the installed app's port 7767 and `tectr` folders.
+Anything built from source is a dev build: its daemon uses port 7769, `~/Library/Application Support/tectr-dev` and `~/.config/tectr-dev`, so it runs next to the installed app without sharing anything. Only `mise run release` builds use the installed app's port 7767 and `tectr` folders.
 
 Start the daemon. It listens on loopback only:
 
@@ -54,7 +62,11 @@ tectr watch <session> [--until-done]   # print the history and follow it
 tectr answer <approval> <option>       # answer from anywhere, by number or ID
 tectr cancel <session>                 # interrupt the current turn
 tectr rename-topic <topic> "..."       # choose a topic's name
-tectr delete-topic <topic> [--force]   # stop its agents and remove it
+tectr move-topic <topic> new|root|<worktree> [--force]  # move its tabs to another folder
+tectr archive-topic <topic> [--force]  # stop its agents, remove its worktrees, keep its tabs
+tectr archived                         # list archived topics
+tectr restore-topic <topic>            # bring one back with its folder
+tectr rename-device "..." [--on <device>]  # name a device, "" goes back to its hostname
 ```
 
 To use several daemons, repeat `--daemon` or set `TECTR_DAEMONS` to a comma-separated list of URLs.
@@ -123,6 +135,11 @@ ligatures = false
 
 [appearance.layout]
 density = 90                  # also corners, sidebar_width and content_width
+
+[appearance.vim]
+enabled = true                # vim keys in the message box and the new topic box
+escape = "jk"                 # leave insert mode with jk as well as Esc
+system_clipboard = false      # keep yanks out of the system clipboard
 
 [appearance.themes.midnight]  # your own theme, which then shows up in the lists
 extends = "tokyo-night"

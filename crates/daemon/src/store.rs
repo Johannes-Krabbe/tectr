@@ -6,9 +6,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use protocol::{
-    Approval, ApprovalId, DaemonState, Machine, MachineId, PermissionMode, Provider, Session,
-    SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, Topic, TopicId,
-    Workspace, WorkspaceId, Worktree, WorktreeId,
+    Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, Machine, MachineId,
+    PermissionMode, Provider, Session, SessionEvent, SessionEventKind, SessionId, SessionRef,
+    SessionStatus, Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -77,6 +77,22 @@ const MIGRATIONS: &[&str] = &[
         name
     ) WHERE auto_named = 1;
 ",
+    "
+    ALTER TABLE sessions ADD COLUMN unread INTEGER NOT NULL DEFAULT 0;
+",
+    // A topic's tabs share one folder now. SQLite can't drop a column a foreign key uses, so
+    // `sessions.worktree_id` stays, and is kept equal to the topic's folder.
+    "
+    ALTER TABLE topics RENAME COLUMN deleted_at_ms TO archived_at_ms;
+    ALTER TABLE topics ADD COLUMN worktree_id TEXT REFERENCES worktrees(id);
+    ALTER TABLE sessions ADD COLUMN agent_cwd TEXT;
+    UPDATE sessions SET agent_cwd = (SELECT path FROM worktrees WHERE id = sessions.worktree_id)
+        WHERE agent_session_id IS NOT NULL;
+    UPDATE topics SET worktree_id =
+        (SELECT id FROM worktrees WHERE topic_id = topics.id ORDER BY rowid LIMIT 1);
+    UPDATE sessions SET worktree_id =
+        (SELECT worktree_id FROM topics WHERE id = sessions.topic_id);
+",
 ];
 
 pub struct Store {
@@ -124,6 +140,33 @@ impl Store {
         Ok(MachineId(id))
     }
 
+    /// The name someone gave this machine, if they did.
+    pub fn machine_name(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'machine_name'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// `None` forgets the name, so the machine goes back to its hostname.
+    pub fn set_machine_name(&self, name: Option<&str>) -> Result<()> {
+        match name {
+            Some(name) => self.conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('machine_name', ?1)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [name],
+            )?,
+            None => self
+                .conn
+                .execute("DELETE FROM meta WHERE key = 'machine_name'", [])?,
+        };
+        Ok(())
+    }
+
     pub fn load_state(&self, machine: Machine) -> Result<DaemonState> {
         let mut workspaces = self.collect(
             "SELECT id, name, path FROM workspaces ORDER BY rowid",
@@ -139,49 +182,13 @@ impl Store {
         )?;
         for workspace in &mut workspaces {
             workspace.topics = self.collect(
-                "SELECT id, name FROM topics
-                 WHERE workspace_id = ?1 AND deleted_at_ms IS NULL ORDER BY rowid",
+                "SELECT id, name, worktree_id FROM topics
+                 WHERE workspace_id = ?1 AND archived_at_ms IS NULL ORDER BY rowid",
                 [&workspace.id.0],
-                |row| {
-                    Ok(Topic {
-                        id: TopicId(row.get(0)?),
-                        name: row.get(1)?,
-                        worktrees: vec![],
-                        sessions: vec![],
-                    })
-                },
+                topic_row,
             )?;
             for topic in &mut workspace.topics {
-                topic.worktrees = self.collect(
-                    "SELECT id, path, branch FROM worktrees WHERE topic_id = ?1 ORDER BY rowid",
-                    [&topic.id.0],
-                    |row| {
-                        Ok(Worktree {
-                            id: WorktreeId(row.get(0)?),
-                            path: row.get(1)?,
-                            branch: row.get(2)?,
-                        })
-                    },
-                )?;
-                topic.sessions = self.collect(
-                    "SELECT id, worktree_id, agent, mode, model, status, title, effort
-                     FROM sessions WHERE topic_id = ?1 AND closed_at_ms IS NULL ORDER BY rowid",
-                    [&topic.id.0],
-                    |row| {
-                        let mode: String = row.get(3)?;
-                        let status: String = row.get(5)?;
-                        Ok(Session {
-                            id: SessionId(row.get(0)?),
-                            worktree_id: WorktreeId(row.get(1)?),
-                            agent: row.get(2)?,
-                            mode: from_column::<PermissionMode>(&mode),
-                            model: row.get(4)?,
-                            effort: row.get(7)?,
-                            status: from_column::<SessionStatus>(&status),
-                            title: row.get(6)?,
-                        })
-                    },
-                )?;
+                self.fill_topic(topic)?;
             }
         }
         let providers: Vec<String> =
@@ -197,7 +204,109 @@ impl Store {
                 .map(|provider| serde_json::from_str(provider))
                 .collect::<Result<_, _>>()?,
             drafts: self.drafts()?,
+            settings: self.device_settings()?,
         })
+    }
+
+    /// Like drafts, a value a newer version wrote that doesn't parse falls back to the defaults.
+    fn device_settings(&self) -> Result<DeviceSettings> {
+        let stored: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'settings'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(stored
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default())
+    }
+
+    pub fn set_device_settings(&self, settings: &DeviceSettings) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('settings', ?1)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [serde_json::to_string(settings)?],
+        )?;
+        Ok(())
+    }
+
+    fn fill_topic(&self, topic: &mut Topic) -> Result<()> {
+        topic.worktrees = self.collect(
+            "SELECT id, path, branch FROM worktrees WHERE topic_id = ?1 ORDER BY rowid",
+            [&topic.id.0],
+            |row| {
+                Ok(Worktree {
+                    id: WorktreeId(row.get(0)?),
+                    path: row.get(1)?,
+                    branch: row.get(2)?,
+                })
+            },
+        )?;
+        topic.sessions = self.collect(
+            "SELECT id, agent, mode, model, status, title, effort, unread
+             FROM sessions WHERE topic_id = ?1 AND closed_at_ms IS NULL ORDER BY rowid",
+            [&topic.id.0],
+            |row| {
+                let mode: String = row.get(2)?;
+                let status: String = row.get(4)?;
+                Ok(Session {
+                    id: SessionId(row.get(0)?),
+                    agent: row.get(1)?,
+                    mode: from_column::<PermissionMode>(&mode),
+                    model: row.get(3)?,
+                    effort: row.get(6)?,
+                    status: from_column::<SessionStatus>(&status),
+                    title: row.get(5)?,
+                    unread: row.get(7)?,
+                })
+            },
+        )?;
+        Ok(())
+    }
+
+    /// An archived topic with its tabs and the workspace it's in.
+    pub fn archived_topic(&self, id: &TopicId) -> Result<Option<(WorkspaceId, Topic)>> {
+        let found = self
+            .conn
+            .query_row(
+                "SELECT id, name, worktree_id, workspace_id FROM topics
+                 WHERE id = ?1 AND archived_at_ms IS NOT NULL",
+                [&id.0],
+                |row| Ok((topic_row(row)?, WorkspaceId(row.get(3)?))),
+            )
+            .optional()?;
+        let Some((mut topic, workspace_id)) = found else {
+            return Ok(None);
+        };
+        self.fill_topic(&mut topic)?;
+        Ok(Some((workspace_id, topic)))
+    }
+
+    /// Newest first.
+    pub fn archived_topics(&self) -> Result<Vec<ArchivedTopic>> {
+        self.collect(
+            "SELECT id, workspace_id, name, archived_at_ms FROM topics
+             WHERE archived_at_ms IS NOT NULL ORDER BY archived_at_ms DESC, rowid DESC",
+            [],
+            |row| {
+                Ok(ArchivedTopic {
+                    id: TopicId(row.get(0)?),
+                    workspace_id: WorkspaceId(row.get(1)?),
+                    name: row.get(2)?,
+                    archived_at_ms: row.get(3)?,
+                })
+            },
+        )
+    }
+
+    /// The branch each of a topic's worktrees was made with, which is the one tectr owns.
+    /// What's checked out there now can differ.
+    pub fn made_branches(&self, topic_id: &TopicId) -> Result<Vec<(WorktreeId, String)>> {
+        self.collect(
+            "SELECT id, branch FROM worktrees WHERE topic_id = ?1 ORDER BY rowid",
+            [&topic_id.0],
+            |row| Ok((WorktreeId(row.get(0)?), row.get(1)?)),
+        )
     }
 
     /// A value written by a newer version might not parse. Losing drafts is better than
@@ -270,6 +379,35 @@ impl Store {
                 params![worktree.id.0, topic.id.0, worktree.path, worktree.branch],
             )?;
         }
+        // Set after its worktrees, because it points at one of them.
+        tx.execute(
+            "UPDATE topics SET worktree_id = ?2 WHERE id = ?1",
+            params![topic.id.0, topic.worktree_id.0],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// `branch` is the one it's made with, which tectr owns unless it's the repo's own folder.
+    pub fn insert_worktree(&self, topic_id: &TopicId, worktree: &Worktree) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO worktrees (id, topic_id, path, branch) VALUES (?1, ?2, ?3, ?4)",
+            params![worktree.id.0, topic_id.0, worktree.path, worktree.branch],
+        )?;
+        Ok(())
+    }
+
+    /// Moves the topic and all its tabs to one of its worktrees.
+    pub fn set_topic_worktree(&self, topic_id: &TopicId, worktree_id: &WorktreeId) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE topics SET worktree_id = ?2 WHERE id = ?1",
+            params![topic_id.0, worktree_id.0],
+        )?;
+        tx.execute(
+            "UPDATE sessions SET worktree_id = ?2 WHERE topic_id = ?1",
+            params![topic_id.0, worktree_id.0],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -292,29 +430,45 @@ impl Store {
         Ok(changed > 0)
     }
 
-    /// Takes a topic out of the app. As with a closed session, its sessions' events stay.
-    pub fn delete_topic(&self, id: &TopicId, at_ms: i64) -> Result<()> {
-        self.conn.execute(
-            "UPDATE topics SET deleted_at_ms = ?2 WHERE id = ?1",
+    /// Takes a topic out of the app, keeping its tabs and their events. Only the folder its
+    /// tabs work in is remembered, because that's the one restoring makes again.
+    pub fn archive_topic(&self, id: &TopicId, at_ms: i64) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE topics SET archived_at_ms = ?2 WHERE id = ?1",
             params![id.0, at_ms],
+        )?;
+        tx.execute(
+            "DELETE FROM worktrees WHERE topic_id = ?1
+             AND id IS NOT (SELECT worktree_id FROM topics WHERE id = ?1)",
+            [&id.0],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn restore_topic(&self, id: &TopicId) -> Result<()> {
+        self.conn.execute(
+            "UPDATE topics SET archived_at_ms = NULL WHERE id = ?1",
+            [&id.0],
         )?;
         Ok(())
     }
 
     pub fn insert_session(&self, topic_id: &TopicId, session: &Session) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, topic_id, worktree_id, agent, mode, model, status, title, effort)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO sessions (id, topic_id, worktree_id, agent, mode, model, status, title, effort, unread)
+             VALUES (?1, ?2, (SELECT worktree_id FROM topics WHERE id = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 session.id.0,
                 topic_id.0,
-                session.worktree_id.0,
                 session.agent,
                 to_column(&session.mode),
                 session.model,
                 to_column(&session.status),
                 session.title,
                 session.effort,
+                session.unread,
             ],
         )?;
         Ok(())
@@ -338,7 +492,7 @@ impl Store {
 
     pub fn update_session(&self, session: &Session) -> Result<()> {
         self.conn.execute(
-            "UPDATE sessions SET status = ?2, title = ?3, mode = ?4, model = ?5, effort = ?6
+            "UPDATE sessions SET status = ?2, title = ?3, mode = ?4, model = ?5, effort = ?6, unread = ?7
              WHERE id = ?1",
             params![
                 session.id.0,
@@ -347,6 +501,7 @@ impl Store {
                 to_column(&session.mode),
                 session.model,
                 session.effort,
+                session.unread,
             ],
         )?;
         Ok(())
@@ -366,6 +521,23 @@ impl Store {
         self.conn.execute(
             "UPDATE sessions SET agent_session_id = ?2 WHERE id = ?1",
             params![session_id.0, agent_id],
+        )?;
+        Ok(())
+    }
+
+    /// The folder the agent last heard it was working in, so it can be told when that changes.
+    pub fn agent_cwd(&self, session_id: &SessionId) -> Result<Option<String>> {
+        Ok(self.conn.query_row(
+            "SELECT agent_cwd FROM sessions WHERE id = ?1",
+            [&session_id.0],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn set_agent_cwd(&self, session_id: &SessionId, cwd: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET agent_cwd = ?2 WHERE id = ?1",
+            params![session_id.0, cwd],
         )?;
         Ok(())
     }
@@ -445,6 +617,16 @@ impl Store {
     }
 }
 
+fn topic_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Topic> {
+    Ok(Topic {
+        id: TopicId(row.get(0)?),
+        name: row.get(1)?,
+        worktree_id: WorktreeId(row.get(2)?),
+        worktrees: vec![],
+        sessions: vec![],
+    })
+}
+
 fn to_column<T: serde::Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
         Ok(serde_json::Value::String(text)) => text,
@@ -473,6 +655,17 @@ mod tests {
     }
 
     #[test]
+    fn machine_name_can_be_set_and_forgotten() {
+        let store = store();
+        assert_eq!(store.machine_name().unwrap(), None);
+        store.set_machine_name(Some("Desk")).unwrap();
+        store.set_machine_name(Some("Laptop")).unwrap();
+        assert_eq!(store.machine_name().unwrap().as_deref(), Some("Laptop"));
+        store.set_machine_name(None).unwrap();
+        assert_eq!(store.machine_name().unwrap(), None);
+    }
+
+    #[test]
     fn machine_id_is_stable() {
         let store = store();
         assert_eq!(store.machine_id().unwrap(), store.machine_id().unwrap());
@@ -483,17 +676,18 @@ mod tests {
         let store = store();
         let session = Session {
             id: "s".into(),
-            worktree_id: "wt".into(),
             agent: "claude".into(),
             mode: PermissionMode::Auto,
             model: Some("haiku".into()),
             effort: None,
-            status: SessionStatus::WaitingForYou,
+            status: SessionStatus::Done,
             title: None,
+            unread: true,
         };
         let topic = Topic {
             id: "t".into(),
             name: "topic".into(),
+            worktree_id: "wt".into(),
             worktrees: vec![Worktree {
                 id: "wt".into(),
                 path: "/wt".into(),
@@ -528,6 +722,7 @@ mod tests {
         let topic = Topic {
             id: "t".into(),
             name: "topic".into(),
+            worktree_id: "wt".into(),
             worktrees: vec![Worktree {
                 id: "wt".into(),
                 path: "/wt".into(),
@@ -540,13 +735,13 @@ mod tests {
         for id in ["s1", "s2"] {
             let session = Session {
                 id: id.into(),
-                worktree_id: "wt".into(),
                 agent: "a".into(),
                 mode: PermissionMode::Auto,
                 model: None,
                 effort: None,
                 status: SessionStatus::Done,
                 title: None,
+                unread: false,
             };
             store.insert_session(&topic.id, &session).unwrap();
         }
@@ -566,10 +761,16 @@ mod tests {
     }
 
     fn stored_topic(store: &Store, id: &str, auto_named: bool) -> Topic {
+        let worktree = Worktree {
+            id: format!("{id}-wt").as_str().into(),
+            path: format!("/wt/{id}"),
+            branch: format!("tectr/{id}"),
+        };
         let topic = Topic {
             id: id.into(),
             name: "Topic #1".into(),
-            worktrees: vec![],
+            worktree_id: worktree.id.clone(),
+            worktrees: vec![worktree],
             sessions: vec![],
         };
         store.insert_topic(&"w".into(), &topic, auto_named).unwrap();
@@ -611,22 +812,54 @@ mod tests {
     }
 
     #[test]
-    fn a_deleted_topic_stays_gone() {
+    fn an_archived_topic_stays_gone_until_restored_with_only_its_folder() {
         let store = with_workspace();
         stored_topic(&store, "kept", false);
-        stored_topic(&store, "gone", false);
+        let mut topic = stored_topic(&store, "gone", false);
+        let left = Worktree {
+            id: "left".into(),
+            path: "/wt/left".into(),
+            branch: "tectr/left".into(),
+        };
+        store.insert_worktree(&topic.id, &left).unwrap();
+        store.set_topic_worktree(&topic.id, &left.id).unwrap();
+        let session = Session {
+            id: "s".into(),
+            agent: "a".into(),
+            mode: PermissionMode::Auto,
+            model: None,
+            effort: None,
+            status: SessionStatus::Done,
+            title: None,
+            unread: false,
+        };
+        store.insert_session(&topic.id, &session).unwrap();
 
-        store.delete_topic(&"gone".into(), 1).unwrap();
-
+        store.archive_topic(&topic.id, 7).unwrap();
         let state = store.load_state(machine()).unwrap();
         let ids: Vec<_> = state.topics().map(|t| t.id.0.as_str()).collect();
         assert_eq!(ids, ["kept"]);
+        let archived = store.archived_topics().unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].id, topic.id);
+        assert_eq!(archived[0].archived_at_ms, 7);
+
+        store.restore_topic(&topic.id).unwrap();
+        let state = store.load_state(machine()).unwrap();
+        topic.worktree_id = left.id.clone();
+        topic.worktrees = vec![left];
+        topic.sessions = vec![session];
+        assert_eq!(state.topic(&topic.id), Some(&topic));
+        assert!(store.archived_topics().unwrap().is_empty());
     }
 
     #[test]
     fn upgrading_names_only_the_topics_nobody_named() {
         let conn = Connection::open_in_memory().unwrap();
-        let before_naming = MIGRATIONS.len() - 1;
+        let before_naming = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("auto_named"))
+            .unwrap();
         for migration in &MIGRATIONS[..before_naming] {
             conn.execute_batch(migration).unwrap();
         }
@@ -653,6 +886,9 @@ mod tests {
         let state = store.load_state(machine()).unwrap();
         let names: Vec<_> = state.topics().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["The first tab", "Topic #2", "Fix login"]);
+        // Each topic works in the folder its tabs were in.
+        let folders: Vec<_> = state.topics().map(|t| t.worktree_id.0.as_str()).collect();
+        assert_eq!(folders, ["a", "b", "c"]);
         assert!(store.auto_name_topic(&"untitled".into(), "Later").unwrap());
         assert!(!store.auto_name_topic(&"chosen".into(), "Later").unwrap());
     }
@@ -670,6 +906,7 @@ mod tests {
         let topic = Topic {
             id: "t".into(),
             name: "topic".into(),
+            worktree_id: "wt".into(),
             worktrees: vec![Worktree {
                 id: "wt".into(),
                 path: "/wt".into(),
@@ -684,13 +921,13 @@ mod tests {
                 &topic.id,
                 &Session {
                     id: session_id.clone(),
-                    worktree_id: "wt".into(),
                     agent: "a".into(),
                     mode: PermissionMode::Auto,
                     model: None,
                     effort: None,
                     status: SessionStatus::Ready,
                     title: None,
+                    unread: false,
                 },
             )
             .unwrap();

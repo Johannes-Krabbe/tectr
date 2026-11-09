@@ -219,6 +219,14 @@ async fn run_turn(
             _ => None,
         })
         .collect();
+    // A note from the daemon comes first. Repeating it lets tests see it arrived.
+    let text = match text.split_once("\n\n") {
+        Some((note, script)) if note.starts_with("[tectr]") => {
+            say(connection, &session_id, note)?;
+            script.to_owned()
+        }
+        _ => text,
+    };
     let mut words = text.split_whitespace();
 
     match words.next().unwrap_or_default() {

@@ -8,8 +8,7 @@ import {
 } from "./engine";
 import { act, type ActionId, titled } from "./keybinds";
 import { inSidebar } from "./keys";
-import { effortForModel, modelLabel } from "./model";
-import { MODES } from "./Sheets";
+import { effortForModel, modelLabel, MODES } from "./model";
 import { hint, type Hint } from "./shortcuts";
 import { Choice, Picker } from "./ui/Picker";
 

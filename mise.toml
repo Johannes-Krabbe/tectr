@@ -34,8 +34,12 @@ description = "Regenerate design tokens and icons for both apps"
 run = "node design/tokens/build.mjs"
 
 [tasks."tokens:test"]
-description = "Check tokens, contrast, fixtures, and that app code has no raw colors"
-run = "node --test design/tokens/tokens.test.mjs"
+description = "Check tokens, contrast, fixtures, logo files, and that app code has no raw colors"
+run = "node --test design/tokens/tokens.test.mjs design/logo/logo.test.mjs"
+
+[tasks.logo]
+description = "Regenerate the logo files in design/logo and copy the app icons into both apps"
+run = "node design/logo/build.mjs"
 
 [tasks.tectr]
 description = "Run the CLI, for example: mise run tectr status"

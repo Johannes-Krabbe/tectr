@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table};
 
-const SUBTABLES: &[&str] = &["text", "code", "layout", "transcript"];
+const SUBTABLES: &[&str] = &["text", "code", "layout", "transcript", "vim"];
 const THEMES_KEY: &str = "themes";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -126,6 +126,10 @@ pub const GROUPS: &[FieldGroup] = &[
         id: "transcript",
         title: "Transcript",
     },
+    FieldGroup {
+        id: "vim",
+        title: "Vim",
+    },
 ];
 
 const DEFAULT_DARK_THEME: &str = "tectr-dark";
@@ -165,6 +169,36 @@ const STEPS: &[Choice] = &[
     Choice {
         value: "shown",
         label: "All shown",
+    },
+];
+
+const VIM_MODES: &[Choice] = &[
+    Choice {
+        value: "insert",
+        label: "Insert",
+    },
+    Choice {
+        value: "normal",
+        label: "Normal",
+    },
+];
+
+const VIM_ESCAPES: &[Choice] = &[
+    Choice {
+        value: "",
+        label: "Only Esc",
+    },
+    Choice {
+        value: "jk",
+        label: "jk",
+    },
+    Choice {
+        value: "kj",
+        label: "kj",
+    },
+    Choice {
+        value: "jj",
+        label: "jj",
     },
 ];
 
@@ -350,6 +384,14 @@ const FIELDS: &[Field] = &[
         kind: Kind::Toggle,
     },
     Field {
+        id: "layout.animate_status",
+        group: "layout",
+        label: "Moving status icons",
+        about: "The working icon turns, and icons move from one state to the next. Reduce Motion in the system keeps them still too",
+        default: DefaultValue::Flag(true),
+        kind: Kind::Toggle,
+    },
+    Field {
         id: "layout.remote_path_delay",
         group: "layout",
         label: "Remote path suggestions delay",
@@ -375,6 +417,40 @@ const FIELDS: &[Field] = &[
         group: "transcript",
         label: "Animations",
         about: "The sweep over what an agent is working on, messages typing out as they stream, and scrolling easing into place",
+        default: DefaultValue::Flag(true),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "vim.enabled",
+        group: "vim",
+        label: "Vim keys",
+        about: "Normal, insert and visual mode in the message box and the new topic box",
+        default: DefaultValue::Flag(false),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "vim.start",
+        group: "vim",
+        label: "Starts in",
+        about: "The mode a box is in when you go to it",
+        default: DefaultValue::Text("insert"),
+        kind: Kind::Choice { options: VIM_MODES },
+    },
+    Field {
+        id: "vim.escape",
+        group: "vim",
+        label: "Leave insert mode with",
+        about: "Two letters typed quickly, as well as Esc. How quickly is keybinds.sequence_timeout_ms",
+        default: DefaultValue::Text(""),
+        kind: Kind::Choice {
+            options: VIM_ESCAPES,
+        },
+    },
+    Field {
+        id: "vim.system_clipboard",
+        group: "vim",
+        label: "Use the system clipboard",
+        about: "Yanking and deleting copy to it, and p pastes from it. Off keeps vim's register to itself",
         default: DefaultValue::Flag(true),
         kind: Kind::Toggle,
     },
@@ -579,6 +655,7 @@ const TOKENS: &[&str] = &[
     "status.waiting-border",
     "status.failed",
     "status.done",
+    "status.read",
     "status.idle",
     "status.stale",
     "status.online",
@@ -649,7 +726,8 @@ fn complete(scheme: Scheme, mut colors: Colors) -> Colors {
         ("status.waiting-border", &|c| {
             with_alpha(&color(c, "status.waiting"), 0x47)
         }),
-        ("status.done", &|c| color(c, "text.tertiary")),
+        ("status.done", &|c| color(c, "status.online")),
+        ("status.read", &|c| color(c, "text.tertiary")),
         ("status.idle", &|c| color(c, "text.tertiary")),
         ("status.stale", &|c| color(c, "text.tertiary")),
         ("diff.add-bg", &|c| {
@@ -1419,6 +1497,42 @@ mod tests {
         let (values, problems) = parsed("[appearance.layout]\nshow_shortcuts = true\n");
         assert_eq!(problems, Vec::<String>::new());
         assert_eq!(shown(&values), Some(Value::Flag(true)));
+    }
+
+    #[test]
+    fn vim_is_off_until_the_file_turns_it_on_and_shares_the_clipboard_once_on() {
+        let defaults = Values::default();
+        assert_eq!(value(&defaults, "vim.enabled"), Value::Flag(false));
+        assert_eq!(
+            value(&defaults, "vim.start"),
+            Value::Text("insert".to_owned())
+        );
+        assert_eq!(value(&defaults, "vim.escape"), Value::Text(String::new()));
+        assert_eq!(value(&defaults, "vim.system_clipboard"), Value::Flag(true));
+        let (values, problems) = parsed(
+            "[appearance.vim]\nenabled = true\nstart = \"normal\"\nescape = \"jk\"\nsystem_clipboard = false\n",
+        );
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(value(&values, "vim.enabled"), Value::Flag(true));
+        assert_eq!(
+            value(&values, "vim.start"),
+            Value::Text("normal".to_owned())
+        );
+        assert_eq!(value(&values, "vim.escape"), Value::Text("jk".to_owned()));
+        assert_eq!(value(&values, "vim.system_clipboard"), Value::Flag(false));
+        let (_, problems) = parsed("[appearance.vim]\nstart = \"visual\"\nescape = \"qq\"\n");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+    }
+
+    #[test]
+    fn status_icons_move_until_the_file_stills_them() {
+        assert_eq!(
+            value(&Values::default(), "layout.animate_status"),
+            Value::Flag(true)
+        );
+        let (values, problems) = parsed("[appearance.layout]\nanimate_status = false\n");
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(value(&values, "layout.animate_status"), Value::Flag(false));
     }
 
     #[test]

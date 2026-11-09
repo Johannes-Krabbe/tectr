@@ -60,7 +60,8 @@ function sidebarHints(place: KeyboardPlace): Hint[] {
         hint("Open", "sidebar.confirm", "sidebar.open"),
         hint("Add topic", "sidebar.add"),
         hint("Rename", "sidebar.rename"),
-        hint("Delete", "sidebar.delete"),
+        hint("Archive", "sidebar.archive"),
+        hint("Read, unread", "sidebar.toggle_unread"),
         hint("Workspace", "sidebar.parent"),
         ...SIDEBAR_MOVES,
       ];
@@ -126,7 +127,7 @@ export function globalHints(now: {
   interrupt: boolean;
   tabs: number;
   closeTab: boolean;
-  newAgent: boolean;
+  newTab: boolean;
   newTopic: boolean;
   newWorkspace: boolean;
   topics: number;
@@ -141,7 +142,7 @@ export function globalHints(now: {
     hints.push(hint("Previous, next tab", "global.prev_tab", "global.next_tab"));
   }
   if (now.closeTab) hints.push(hint("Close tab", "global.close_tab"));
-  if (now.newAgent) hints.push(hint("New agent", "global.new_agent"));
+  if (now.newTab) hints.push(hint("New tab", "global.new_tab"));
   if (now.newTopic) hints.push(hint("New topic", "global.new_topic"));
   if (now.newWorkspace) hints.push(hint("Add workspace", "global.new_workspace"));
   if (now.topics > 1) hints.push(hint("Topic", "global.prev_topic", "global.next_topic"));

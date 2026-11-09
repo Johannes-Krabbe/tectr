@@ -92,6 +92,10 @@ window.TECTR = {
       },
       "color.status.done": {
         "type": "color",
+        "value": "#5cc99a"
+      },
+      "color.status.read": {
+        "type": "color",
         "value": "#8a8896"
       },
       "color.status.idle": {
@@ -269,6 +273,10 @@ window.TECTR = {
         "value": "#c2332a"
       },
       "color.status.done": {
+        "type": "color",
+        "value": "#0f6e4f"
+      },
+      "color.status.read": {
         "type": "color",
         "value": "#66636f"
       },
@@ -513,6 +521,10 @@ window.TECTR = {
       "motion.sweep": {
         "type": "duration",
         "value": 1600
+      },
+      "motion.turn": {
+        "type": "duration",
+        "value": 1100
       }
     },
     "ios": {
@@ -711,6 +723,10 @@ window.TECTR = {
       "motion.sweep": {
         "type": "duration",
         "value": 1600
+      },
+      "motion.turn": {
+        "type": "duration",
+        "value": 1100
       }
     }
   },
@@ -718,9 +734,10 @@ window.TECTR = {
     "done": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 14 14\"><path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M7 0a7 7 0 1 1 0 14A7 7 0 0 1 7 0ZM4.73 6.67 3.67 7.73l2.56 2.56 4.13-4.59-1.12-1L6.17 8.11Z\"/></svg>",
     "failed": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 14 14\"><path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M7 0a7 7 0 1 1 0 14A7 7 0 0 1 7 0ZM4.93 3.87 3.87 4.93 5.94 7 3.87 9.07l1.06 1.06L7 8.06l2.07 2.07 1.06-1.06L8.06 7l2.07-2.07-1.06-1.06L7 5.94Z\"/></svg>",
     "idle": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 14 14\"><circle cx=\"7\" cy=\"7\" r=\"6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/></svg>",
+    "read": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 14 14\"><circle cx=\"7\" cy=\"7\" r=\"6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/><path d=\"M4.1 7.15 6.2 9.25 9.9 5.15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>",
     "stale": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 14 14\"><circle cx=\"7\" cy=\"7\" r=\"6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-dasharray=\"2 2.2\"/></svg>",
     "waiting": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 14 14\"><path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M7 0a7 7 0 1 1 0 14A7 7 0 0 1 7 0ZM5.2 4a.6.6 0 0 0-.6.6v4.8a.6.6 0 0 0 .6.6h.5a.6.6 0 0 0 .6-.6V4.6a.6.6 0 0 0-.6-.6Zm3.1 0a.6.6 0 0 0-.6.6v4.8a.6.6 0 0 0 .6.6h.5a.6.6 0 0 0 .6-.6V4.6a.6.6 0 0 0-.6-.6Z\"/></svg>",
-    "working": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 14 14\"><circle cx=\"7\" cy=\"7\" r=\"6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/><path d=\"M7 3.5a3.5 3.5 0 0 1 0 7z\" fill=\"currentColor\"/></svg>"
+    "working": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 14 14\"><circle cx=\"7\" cy=\"7\" r=\"6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" opacity=\".28\"/><circle class=\"arc\" cx=\"7\" cy=\"7\" r=\"6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" pathLength=\"100\" stroke-dasharray=\"26 74\"/></svg>"
   },
   "board": {
     "devices": [

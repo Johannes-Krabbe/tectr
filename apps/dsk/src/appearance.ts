@@ -214,6 +214,9 @@ function paint() {
   const scheme = schemeOf(shown, systemIsDark(), preview);
   const root = document.documentElement;
   root.dataset.theme = scheme;
+  // Reduce Motion is handled in CSS, so it applies even before the settings arrive.
+  root.dataset.statusMotion =
+    reader(shown, preview)("layout.animate_status") === false ? "off" : "on";
   for (const [name, value] of Object.entries(cssVariables(shown, scheme, preview))) {
     root.style.setProperty(name, value);
   }

@@ -3,7 +3,7 @@ We don't care about backwards compatibility, this app is only used by me and i a
 **Hard rules:**
 
 - **Writing:** no em dashes, ellipsis characters, middots, arrows or decorative unicode anywhere (chat, code, docs, commits, UI copy). Use plain ASCII, `...` and `->`. Exception: platform key glyphs like the Cmd symbol in the UI.
-- **Commits:** commit to the current branch, usually main. Stage only the requested change. Never open a PR unless asked.
+- **Commits:** only commit when I specifically ask. Then commit to the current branch, usually main, and stage only the requested change. Never open a PR unless asked.
 - **No services unless asked:** don't start the daemon, the app or simulators. Stop anything you started.
 - **Never validate visually on your own.** Only do it if I ask, or ask me to do it.
 
@@ -59,10 +59,11 @@ mise run lint         # fmt check + clippy
 mise run dsk:test     # desktop app tests
 mise run tokens:test  # tokens, contrast, no raw colors
 mise run tokens       # regenerate tokens and icons
+mise run logo         # regenerate logo files and app icons
 mise run release:build  # build the release app, CLI and daemon locally, publishing nothing
 ```
 
-Builds from source are the dev channel (port 7768, `tectr-dev` folders) and never touch the installed release. Run `mise run release <version>` only when asked: it publishes.
+Builds from source are the dev channel (port 7769, `tectr-dev` folders) and never touch the installed release. Run `mise run release <version>` only when asked: it publishes.
 
 Avoid `cargo --workspace`: it includes the desktop app, which needs its frontend built first.
 

@@ -22,12 +22,21 @@ import {
   toggleSteps,
 } from "./keybinds";
 import { inPane } from "./keys";
-import { foldTranscript, liveStepLabel, sessionState, transcriptTiming } from "./model";
+import {
+  foldState,
+  foldTranscript,
+  liveStepLabel,
+  NO_FOLDS,
+  sessionState,
+  transcriptTiming,
+} from "./model";
 import { FOLLOW_WITHIN, keepFollowing, newScroller } from "./motion";
 import { sessionPickerHints, SessionPickers } from "./SessionPickers";
 import { hint, type Hint, optionNumbersHint, useHints } from "./shortcuts";
 import { useSyncedText } from "./syncedText";
-import { Keys, StatusIcon, StopIcon } from "./ui/StatusIcon";
+import { Icon } from "./ui/Icon";
+import { Keys, StatusIcon } from "./ui/StatusIcon";
+import { useVim, VimModeLabel } from "./VimBox";
 
 /** How far one press scrolls the transcript, in pixels. */
 const SCROLL_STEP = 90;
@@ -147,7 +156,6 @@ export function AgentPane({
   online,
   approvals,
   draft,
-  compose,
   worktree,
   onInterrupt,
 }: {
@@ -158,8 +166,6 @@ export function AgentPane({
   approvals: Approval[];
   /** What's typed for this session but not sent yet, which any client can carry on with. */
   draft: string;
-  /** A new agent has nothing to read yet, so it opens ready for a message. */
-  compose: boolean;
   worktree: Worktree | undefined;
   /** Only there while the session has a turn to interrupt. */
   onInterrupt: (() => void) | undefined;
@@ -174,6 +180,7 @@ export function AgentPane({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const vim = useVim(input);
   const log = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -189,17 +196,13 @@ export function AgentPane({
 
   const animate = motionAllowed();
   const stepsShown = showsSteps();
-  // Activities unfolded or folded by hand, against what the setting says. Changing the
-  // setting starts over, so that it always means what it says.
-  const [flipped, setFlipped] = useState<ReadonlySet<number>>(new Set());
-  useEffect(() => setFlipped(new Set()), [stepsShown]);
-  const isOpen = (key: number) => stepsShown !== flipped.has(key);
-  const flip = (key: number) =>
-    setFlipped((previous) => {
-      const next = new Set(previous);
-      if (!next.delete(key)) next.add(key);
-      return next;
-    });
+  // Changing the setting starts over, so that it always means what it says.
+  const [folds, setFolds] = useState(NO_FOLDS);
+  useEffect(() => setFolds(NO_FOLDS), [stepsShown]);
+  const fold = foldState(items, folds, stepsShown);
+  // The key handler is set up once, so it reaches this render's folds through a ref.
+  const toggleTurn = useRef(() => {});
+  toggleTurn.current = () => setFolds(fold.toggleTurn());
 
   const state = sessionState(session, online);
   const live = state === "working" || state === "waiting";
@@ -212,6 +215,7 @@ export function AgentPane({
     ...answers,
     hint("Write", "pane.compose"),
     hint(stepsShown ? "Fold steps" : "Show steps", "pane.toggle_steps"),
+    ...(live ? [hint(fold.turnOpen ? "Fold this turn" : "Watch", "pane.toggle_turn")] : []),
     ...SCROLL_HINTS,
     ...pickers,
     hint("Sidebar", "pane.back"),
@@ -240,10 +244,6 @@ export function AgentPane({
       scroller.stop();
     };
   }, []);
-
-  useEffect(() => {
-    if (compose && !pending) input.current?.focus();
-  }, [compose]);
 
   // The transcript has the keyboard, so single keys work. This never takes focus from
   // anything holding it: the composer mid-sentence, the sidebar, or a sheet.
@@ -281,6 +281,7 @@ export function AgentPane({
         toggleSteps().catch((reason) => setError(errorText(reason)));
       });
       if (toggled) return;
+      if (act(event, "pane.toggle_turn", () => toggleTurn.current())) return;
       // In a text box, Ctrl+D and the like edit the text. Scrolling is for the transcript.
       if (!isTextField(event.target)) commands.some(([id, run]) => act(event, id, run));
     };
@@ -363,8 +364,8 @@ export function AgentPane({
                     activity={item}
                     live={item === liveActivity}
                     fresh={isFresh(item.key)}
-                    open={isOpen(item.key)}
-                    onToggle={() => flip(item.key)}
+                    open={fold.isOpen(item.key)}
+                    onToggle={() => setFolds(fold.flip(item.key))}
                   />
                 );
               case "note":
@@ -380,8 +381,8 @@ export function AgentPane({
               label={liveStepLabel(session, liveActivity)}
               waiting={state === "waiting"}
               animate={animate}
-              open={liveActivity !== null && isOpen(liveActivity.key)}
-              onToggle={liveActivity ? () => flip(liveActivity.key) : undefined}
+              open={fold.turnOpen}
+              onToggle={() => toggleTurn.current()}
             />
           )}
         </div>
@@ -408,7 +409,9 @@ export function AgentPane({
             autoCorrect="off"
             autoCapitalize="off"
             onChange={(event) => message.change(event.target.value)}
-            onKeyDown={(event) =>
+            {...vim.props}
+            onKeyDown={(event) => {
+              if (vim.onKeyDown(event)) return;
               textBoxKey(
                 event,
                 [
@@ -420,8 +423,8 @@ export function AgentPane({
                 ],
                 "composer.newline",
                 ["composer.blur", () => log.current?.focus()],
-              )
-            }
+              );
+            }}
           />
           <div className="composer-foot">
             <SessionPickers
@@ -434,6 +437,7 @@ export function AgentPane({
               onError={setError}
             />
             <div className="composer-context">
+              <VimModeLabel mode={vim.shown} />
               {worktree && (
                 <span className="composer-branch code" title={worktree.path}>
                   {worktree.branch}
@@ -449,7 +453,7 @@ export function AgentPane({
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={onInterrupt}
                 >
-                  <StopIcon />
+                  <Icon name="stop" />
                 </button>
               )}
             </div>

@@ -24,6 +24,7 @@ import { inPane } from "./keys";
 import { hint, SETTINGS_MOVES, useHints } from "./shortcuts";
 import { Choice, Picker } from "./ui/Picker";
 import { SettingsPage } from "./ui/SettingsPage";
+import { Icon } from "./ui/Icon";
 import { Keys } from "./ui/StatusIcon";
 
 // Reading the fonts takes a moment and they rarely change, so once per run is enough.
@@ -328,7 +329,7 @@ function Control({
           onMouseDown={keepFocus}
           onClick={() => onStep(-1)}
         >
-          −
+          <Icon name="lower" />
         </button>
         <span className="stepper-value">{formatValue(field)}</span>
         <button
@@ -339,7 +340,7 @@ function Control({
           onMouseDown={keepFocus}
           onClick={() => onStep(1)}
         >
-          +
+          <Icon name="raise" />
         </button>
       </span>
     );

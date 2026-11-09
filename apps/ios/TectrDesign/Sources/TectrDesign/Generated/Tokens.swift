@@ -38,7 +38,8 @@ public extension Color {
     static let statusWaitingTintStrong = Color(light: 0xf0b64d40, dark: 0xf0b64d26)
     static let statusWaitingBorder = Color(light: 0x8f5a0047, dark: 0xf0b64d47)
     static let statusFailed = Color(light: 0xc2332aff, dark: 0xf0766eff)
-    static let statusDone = Color(light: 0x66636fff, dark: 0x8a8896ff)
+    static let statusDone = Color(light: 0x0f6e4fff, dark: 0x5cc99aff)
+    static let statusRead = Color(light: 0x66636fff, dark: 0x8a8896ff)
     static let statusIdle = Color(light: 0x66636fff, dark: 0x8a8896ff)
     static let statusStale = Color(light: 0x66636fff, dark: 0x8a8896ff)
     static let statusOnline = Color(light: 0x0f6e4fff, dark: 0x5cc99aff)
@@ -81,6 +82,7 @@ public extension ShapeStyle where Self == Color {
     static var statusWaitingBorder: Color { Color.statusWaitingBorder }
     static var statusFailed: Color { Color.statusFailed }
     static var statusDone: Color { Color.statusDone }
+    static var statusRead: Color { Color.statusRead }
     static var statusIdle: Color { Color.statusIdle }
     static var statusStale: Color { Color.statusStale }
     static var statusOnline: Color { Color.statusOnline }
@@ -143,6 +145,7 @@ public enum Tokens {
         public static let normal: Double = 0.3
         public static let fade: Double = 0.4
         public static let sweep: Double = 1.6
+        public static let turn: Double = 1.1
     }
 }
 
@@ -150,6 +153,7 @@ public enum StatusGlyph: String, CaseIterable, Sendable {
     case done
     case failed
     case idle
+    case read
     case stale
     case waiting
     case working

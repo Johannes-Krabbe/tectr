@@ -707,16 +707,16 @@ mod tests {
         );
         // pane.up shares Y with permission.allow_once, and both are live at once.
         assert!(problems.contains("permission.allow_once"), "{problems}");
-        // sheet.mode_1 and global.tab_1 share a key by default, but a sheet takes the keyboard.
-        assert!(!problems.contains("sheet.mode_1"), "{problems}");
+        // new_tab.agent and sidebar.add share A by default, but they're never live at once.
+        assert!(!problems.contains("new_tab.agent"), "{problems}");
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn keys_the_macos_menu_takes_are_flagged() {
-        let (_folder, store) = store_with("[keybinds.global]\nnew_agent = \"cmd+q\"\n");
+        let (_folder, store) = store_with("[keybinds.global]\nnew_tab = \"cmd+q\"\n");
         let problems = store.settings().problems.join("\n");
-        assert!(problems.contains("cmd+q on global.new_agent"), "{problems}");
+        assert!(problems.contains("cmd+q on global.new_tab"), "{problems}");
     }
 
     fn appearance_value(store: &Store, id: &str) -> Value {

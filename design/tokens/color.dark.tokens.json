@@ -32,7 +32,8 @@
       "waiting-tint-strong": { "$value": "#f0b64d26" },
       "waiting-border": { "$value": "#f0b64d47" },
       "failed": { "$value": "#f0766e" },
-      "done": { "$value": "{color.text.tertiary}" },
+      "done": { "$value": "{color.status.online}" },
+      "read": { "$value": "{color.text.tertiary}" },
       "idle": { "$value": "{color.text.tertiary}" },
       "stale": { "$value": "{color.text.tertiary}" },
       "online": { "$value": "#5cc99a" }

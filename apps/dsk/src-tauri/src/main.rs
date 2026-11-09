@@ -159,6 +159,26 @@ fn open_url(url: String) -> Result<(), String> {
     open::that_detached(parsed.as_str()).map_err(|error| error.to_string())
 }
 
+/// The system clipboard's text, for vim's p. WebKit asks before letting a page read it,
+/// with a Paste button for every read, so it comes through here instead. Anything that
+/// isn't text reads as empty.
+#[tauri::command]
+fn read_clipboard() -> Result<String, String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
+    match clipboard.get_text() {
+        Ok(text) => Ok(text),
+        Err(arboard::Error::ContentNotAvailable) => Ok(String::new()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Puts what vim yanked on the system clipboard, next to reading it, so both go one way.
+#[tauri::command]
+fn write_clipboard(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
+    clipboard.set_text(text).map_err(|error| error.to_string())
+}
+
 /// Applies the settings file whenever something else saves it. Saving usually replaces
 /// the file, so this watches its folder. If it's a symlink, the folder it points into too.
 fn watch_settings(app: AppHandle, store: SharedSettings) -> notify::Result<RecommendedWatcher> {
@@ -515,7 +535,9 @@ fn main() {
             try_window_theme,
             installed_fonts,
             highlight_code,
-            open_url
+            open_url,
+            read_clipboard,
+            write_clipboard
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the tectr desktop app");

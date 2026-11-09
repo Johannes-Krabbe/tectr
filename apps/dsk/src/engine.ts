@@ -17,28 +17,64 @@ export type SessionStatus =
   | "stopped"
   | "unknown";
 
+/** One agent run, in its topic's folder. */
 export interface Session {
   id: string;
-  worktree_id: string;
   agent: string;
   mode: PermissionMode;
   model: string | null;
   effort?: string | null;
   status: SessionStatus;
   title: string | null;
+  /** A turn finished and nobody has looked at it yet, on any client. */
+  unread?: boolean;
 }
 
 export interface Worktree {
   id: string;
   path: string;
+  /** What it has checked out now, which an agent can change. `HEAD` when that's no branch. */
   branch: string;
 }
 
+/** All its tabs work in one folder at a time. */
 export interface Topic {
   id: string;
   name: string;
+  /** The folder its tabs work in, one of `worktrees`. */
+  worktree_id: string;
+  /** Every folder it has worked in and still has. One at the repo's own path is the repo. */
   worktrees: Worktree[];
   sessions: Session[];
+}
+
+export type MoveTarget =
+  | { kind: "new_worktree" }
+  | { kind: "root" }
+  | { kind: "worktree"; worktree_id: string };
+
+/** What archiving a topic would lose. */
+export interface ArchiveRisk {
+  /** Agents starting, working or waiting, which archiving stops. */
+  running: number;
+  /** Only worktrees with something to lose. */
+  worktrees: WorktreeRisk[];
+}
+
+export interface WorktreeRisk {
+  path: string;
+  /** The branch tectr made for the worktree, which archiving deletes. */
+  branch: string;
+  uncommitted: number;
+  /** Commits that no other branch or remote has. */
+  unpushed: number;
+}
+
+export interface ArchivedTopic {
+  id: string;
+  workspace_id: string;
+  name: string;
+  archived_at_ms: number;
 }
 
 export interface Workspace {
@@ -111,6 +147,14 @@ export interface DaemonState {
   providers?: Provider[];
   /** What's typed for each session but not sent yet. */
   drafts?: Record<string, string>;
+  /** Left out while every value is its default. */
+  settings?: DeviceSettings;
+}
+
+/** A device's own settings. A field left out keeps its default. */
+export interface DeviceSettings {
+  /** Defaults to on. */
+  keep_awake?: boolean;
 }
 
 export type Connection =
@@ -156,11 +200,13 @@ export type Command =
   | { command: "list_folders"; path: string }
   | { command: "create_topic"; workspace_id: string; name: string | null; at_root: boolean }
   | { command: "rename_topic"; topic_id: string; name: string }
-  | { command: "delete_topic"; topic_id: string; force?: boolean }
+  | { command: "archive_topic"; topic_id: string; force?: boolean }
+  | { command: "restore_topic"; topic_id: string }
+  | { command: "list_archived_topics" }
+  | { command: "move_topic"; topic_id: string; to: MoveTarget; force?: boolean }
   | {
       command: "start_session";
       topic_id: string;
-      worktree_id: string;
       agent: string;
       mode: PermissionMode;
       model: string | null;
@@ -169,6 +215,8 @@ export type Command =
   | { command: "send_prompt"; session_id: string; text: string }
   | { command: "cancel_turn"; session_id: string }
   | { command: "answer_approval"; approval_id: string; option_id: string }
+  | { command: "rename_machine"; name: string }
+  | { command: "set_device_settings"; settings: DeviceSettings }
   | { command: "detect_providers" }
   | { command: "add_provider"; agent: string }
   | { command: "remove_provider"; agent: string }
@@ -185,6 +233,7 @@ export type Command =
       model: string | null;
       effort: string | null;
     }
+  | { command: "set_unread"; session_id: string; unread: boolean }
   | { command: "set_draft"; session_id: string; text: string }
   | { command: "close_session"; session_id: string; force?: boolean };
 
@@ -195,6 +244,8 @@ export type CommandOutput =
   | { output: "provider_candidates"; candidates: ProviderCandidate[] }
   | { output: "provider"; provider: Provider }
   | { output: "folders"; folders: Folder[] }
+  | { output: "archive_risk"; risk: ArchiveRisk }
+  | { output: "archived_topics"; topics: ArchivedTopic[] }
   | { output: "done" }
   | { output: "unknown" };
 

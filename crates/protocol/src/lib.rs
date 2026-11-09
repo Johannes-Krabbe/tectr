@@ -51,7 +51,7 @@ impl Channel {
     pub fn default_port(self) -> u16 {
         match self {
             Self::Release => 7767,
-            Self::Dev => 7768,
+            Self::Dev => 7769,
         }
     }
 
@@ -205,20 +205,34 @@ pub enum Command {
         topic_id: TopicId,
         name: String,
     },
-    /// Stop the topic's agents and remove it. Its worktree goes too, unless it has uncommitted
-    /// changes or is the repo's own folder, and its branch goes only if it's fully merged. Fails
-    /// with [`ErrorCode::Busy`] while an agent is starting, working or waiting, unless `force`
-    /// says the person has confirmed. `force` never discards anything in git.
-    DeleteTopic {
+    /// Stop the topic's agents, take it out of the app and remove its worktrees and the branches
+    /// tectr made for them, uncommitted work and unpushed commits included. The repo's own folder
+    /// is never touched. Without `force`, nothing happens if that would lose something, and the
+    /// answer is an [`CommandOutput::ArchiveRisk`] saying what, so a person can confirm it.
+    ArchiveTopic {
         topic_id: TopicId,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
     },
-    /// Start an agent in one of the topic's worktrees. It returns as soon as
-    /// the session exists. Follow its events to see it become ready.
+    /// Bring an archived topic back with its tabs. Its folder is made again at the same path,
+    /// on its branch if that still exists here or on a remote, and otherwise on a new one.
+    RestoreTopic {
+        topic_id: TopicId,
+    },
+    ListArchivedTopics,
+    /// Move every tab of a topic to another folder. Agents stop and pick up in the new folder
+    /// when next prompted, told that they moved. Fails with [`ErrorCode::Busy`] while an agent
+    /// is starting, working or waiting, unless `force` says the person has confirmed.
+    MoveTopic {
+        topic_id: TopicId,
+        to: MoveTarget,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
+    },
+    /// Start an agent in the topic's folder. It returns as soon as the session exists. Follow
+    /// its events to see it become ready.
     StartSession {
         topic_id: TopicId,
-        worktree_id: WorktreeId,
         agent: String,
         mode: PermissionMode,
         /// The agent's own model name. `None` keeps the agent's default.
@@ -243,6 +257,10 @@ pub enum Command {
         approval_id: ApprovalId,
         option_id: String,
     },
+    /// Give this device the name clients show. Empty goes back to its hostname.
+    RenameMachine {
+        name: String,
+    },
     /// Check which agents this device could run. Nothing is started.
     DetectProviders,
     /// Start the agent once and remember what it offers on this device. Adding
@@ -260,6 +278,10 @@ pub enum Command {
         model: Option<String>,
         effort: Option<String>,
     },
+    /// Replace this device's settings.
+    SetDeviceSettings {
+        settings: DeviceSettings,
+    },
     /// Change what a session runs with. A running agent changes straight away, even during
     /// a turn, and the session only reports the change once the agent has made it. A stopped
     /// agent gets these when it next starts. They're sent together because the efforts on
@@ -269,6 +291,12 @@ pub enum Command {
         mode: PermissionMode,
         model: Option<String>,
         effort: Option<String>,
+    },
+    /// Mark what a session last finished as seen or not. Only a finished session
+    /// can be unread.
+    SetUnread {
+        session_id: SessionId,
+        unread: bool,
     },
     /// Keep what's typed for a session but not sent yet.
     SetDraft {
@@ -309,9 +337,59 @@ pub enum CommandOutput {
     Folders {
         folders: Vec<Folder>,
     },
+    /// Archiving would lose this, so it waits for `force`.
+    ArchiveRisk {
+        risk: ArchiveRisk,
+    },
+    /// Newest first.
+    ArchivedTopics {
+        topics: Vec<ArchivedTopic>,
+    },
     Done,
     #[serde(other)]
     Unknown,
+}
+
+/// Where [`Command::MoveTopic`] takes a topic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MoveTarget {
+    /// A fresh worktree on a new branch, starting from the commit the topic is on now.
+    NewWorktree,
+    /// The repo's own folder, on whatever it has checked out.
+    Root,
+    /// A worktree the topic was in before.
+    Worktree { worktree_id: WorktreeId },
+    #[serde(other)]
+    Unknown,
+}
+
+/// What archiving a topic would lose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveRisk {
+    /// Agents starting, working or waiting, which archiving stops.
+    pub running: u32,
+    /// Only worktrees with something to lose.
+    pub worktrees: Vec<WorktreeRisk>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeRisk {
+    pub path: String,
+    /// The branch tectr made for this worktree, which archiving deletes.
+    pub branch: String,
+    /// Changed and untracked files, ignored ones aside.
+    pub uncommitted: u32,
+    /// Commits on the branch that no other branch or remote has.
+    pub unpushed: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedTopic {
+    pub id: TopicId,
+    pub workspace_id: WorkspaceId,
+    pub name: String,
+    pub archived_at_ms: i64,
 }
 
 /// A folder on a daemon's machine.
@@ -348,6 +426,28 @@ pub struct Machine {
     pub name: String,
 }
 
+/// What a device does, kept by its daemon so that every client sees the same. A field a
+/// message leaves out keeps its default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeviceSettings {
+    /// Stop the machine sleeping while it's idle and an agent is starting or working, so
+    /// a locked screen doesn't pause a turn. Closing a laptop's lid still sleeps.
+    pub keep_awake: bool,
+}
+
+impl Default for DeviceSettings {
+    fn default() -> Self {
+        Self { keep_awake: true }
+    }
+}
+
+impl DeviceSettings {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Everything a daemon knows that clients show, so that every client sees the same. What
 /// each client is looking at is its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,6 +459,8 @@ pub struct DaemonState {
     /// The agents added to this device, part of its settings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<Provider>,
+    #[serde(default, skip_serializing_if = "DeviceSettings::is_default")]
+    pub settings: DeviceSettings,
     /// What's typed for each session but not sent yet.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drafts: BTreeMap<SessionId, String>,
@@ -369,6 +471,9 @@ impl DaemonState {
     /// has no further effect.
     pub fn apply(&mut self, change: &StateChange) {
         match change {
+            StateChange::MachineRenamed { name } => {
+                self.machine.name = name.clone();
+            }
             StateChange::WorkspaceAdded { workspace } => {
                 upsert(&mut self.workspaces, workspace.clone(), |w| &w.id);
             }
@@ -389,6 +494,16 @@ impl DaemonState {
             StateChange::TopicRemoved { topic_id } => {
                 for workspace in &mut self.workspaces {
                     workspace.topics.retain(|t| &t.id != topic_id);
+                }
+            }
+            StateChange::WorktreesChanged {
+                topic_id,
+                worktree_id,
+                worktrees,
+            } => {
+                if let Some(topic) = self.topic_mut(topic_id) {
+                    topic.worktree_id = worktree_id.clone();
+                    topic.worktrees = worktrees.clone();
                 }
             }
             StateChange::SessionAdded { topic_id, session } => {
@@ -412,6 +527,9 @@ impl DaemonState {
             }
             StateChange::ProviderRemoved { agent } => {
                 self.providers.retain(|p| &p.agent != agent);
+            }
+            StateChange::DeviceSettingsChanged { settings } => {
+                self.settings = settings.clone();
             }
             StateChange::SessionRemoved { session_id } => {
                 for topic in self.workspaces.iter_mut().flat_map(|w| &mut w.topics) {
@@ -484,28 +602,37 @@ pub struct Workspace {
     pub topics: Vec<Topic>,
 }
 
-/// A feature or task inside a workspace.
+/// A feature or task inside a workspace. All its tabs work in one folder at a time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Topic {
     pub id: TopicId,
     pub name: String,
+    /// The folder its tabs work in, one of `worktrees`.
+    pub worktree_id: WorktreeId,
+    /// Every folder it has worked in and still has. One at the repo's own path is the repo.
     pub worktrees: Vec<Worktree>,
     pub sessions: Vec<Session>,
+}
+
+impl Topic {
+    /// The folder its tabs work in.
+    pub fn worktree(&self) -> Option<&Worktree> {
+        self.worktrees.iter().find(|w| w.id == self.worktree_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worktree {
     pub id: WorktreeId,
     pub path: String,
+    /// What it has checked out now, which an agent can change. `HEAD` when that's no branch.
     pub branch: String,
 }
 
-/// One agent run. It points at a worktree without owning it, so nothing here
-/// decides yet whether agents may share a worktree.
+/// One agent run, in its topic's folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     pub id: SessionId,
-    pub worktree_id: WorktreeId,
     pub agent: String,
     pub mode: PermissionMode,
     pub model: Option<String>,
@@ -513,6 +640,10 @@ pub struct Session {
     pub effort: Option<String>,
     pub status: SessionStatus,
     pub title: Option<String>,
+    /// A turn finished and nobody has looked at it yet. It's about the person, not a
+    /// client, so reading it anywhere reads it everywhere. Starting work clears it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unread: bool,
 }
 
 /// An agent this device knows how to run. It may not be installed.
@@ -627,6 +758,9 @@ pub enum SessionStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "change", rename_all = "snake_case")]
 pub enum StateChange {
+    MachineRenamed {
+        name: String,
+    },
     WorkspaceAdded {
         workspace: Workspace,
     },
@@ -638,10 +772,16 @@ pub enum StateChange {
         topic_id: TopicId,
         name: String,
     },
-    /// It was deleted, along with its tabs. Any open approvals and drafts of its sessions are
-    /// reported as resolved and emptied before this.
+    /// It was archived, along with its tabs. Any open approvals and drafts of its sessions are
+    /// reported as resolved and emptied before this. Restoring it adds it again.
     TopicRemoved {
         topic_id: TopicId,
+    },
+    /// It moved to another folder, gained or lost one, or a folder's branch changed.
+    WorktreesChanged {
+        topic_id: TopicId,
+        worktree_id: WorktreeId,
+        worktrees: Vec<Worktree>,
     },
     SessionAdded {
         topic_id: TopicId,
@@ -661,6 +801,9 @@ pub enum StateChange {
     },
     ProviderRemoved {
         agent: String,
+    },
+    DeviceSettingsChanged {
+        settings: DeviceSettings,
     },
     /// Its tab was closed and its agent stopped.
     SessionRemoved {
@@ -840,7 +983,7 @@ mod tests {
         assert_eq!(Channel::current(), Channel::Dev);
         assert_ne!(Channel::Dev.default_port(), Channel::Release.default_port());
         assert_ne!(Channel::Dev.dir_name(), Channel::Release.dir_name());
-        assert_eq!(local_daemon_url(), "ws://127.0.0.1:7768");
+        assert_eq!(local_daemon_url(), "ws://127.0.0.1:7769");
     }
 
     #[test]
@@ -889,6 +1032,7 @@ mod tests {
             approvals: vec![],
             providers: vec![],
             drafts: BTreeMap::new(),
+            settings: DeviceSettings::default(),
         };
         let change = StateChange::WorkspaceAdded {
             workspace: Workspace {

@@ -4,9 +4,11 @@ import type { Session, SessionEvent, SessionEventKind } from "./engine";
 import {
   type Activity,
   activitySummary,
+  foldState,
   foldTranscript,
   formatWorked,
   liveStepLabel,
+  NO_FOLDS,
   transcriptTiming,
   type TranscriptItem,
 } from "./model.ts";
@@ -187,4 +189,59 @@ test("the first event after opening starts streaming, and only new items are fre
   // The message that was already going stays as it was, and only its growth is new.
   assert.equal(isFresh(2), false);
   assert.equal(isFresh(5), true);
+});
+
+test("watching a turn unfolds its activities, including ones that start later", () => {
+  const before = foldTranscript(events(prompt("go"), tool("a", "Read a"), said("next")));
+  const watched = foldState(before, NO_FOLDS, false).toggleTurn();
+  const after = foldTranscript(
+    events(prompt("go"), tool("a", "Read a"), said("next"), tool("b", "Read b")),
+  );
+  const fold = foldState(after, watched, false);
+  assert.equal(fold.turnOpen, true);
+  assert.deepEqual(
+    activities(after).map((a) => fold.isOpen(a.key)),
+    [true, true],
+  );
+});
+
+test("an activity pressed by hand wins over its watched turn", () => {
+  const items = foldTranscript(events(prompt("go"), tool("a", "Read a")));
+  const watched = foldState(items, NO_FOLDS, false).toggleTurn();
+  const [only] = activities(items);
+  const folded = foldState(items, watched, false).flip(only.key);
+  assert.equal(foldState(items, folded, false).isOpen(only.key), false);
+  // Pressing the turn again makes the whole turn agree.
+  const again = foldState(items, folded, false).toggleTurn();
+  assert.equal(foldState(items, again, false).isOpen(only.key), false);
+  const open = foldState(items, again, false).toggleTurn();
+  assert.equal(foldState(items, open, false).isOpen(only.key), true);
+});
+
+test("a watched turn stays unfolded after the next prompt, while the new one follows the setting", () => {
+  const first = foldTranscript(events(prompt("one"), tool("a", "Read a")));
+  const watched = foldState(first, NO_FOLDS, false).toggleTurn();
+  const both = foldTranscript(
+    events(prompt("one"), tool("a", "Read a"), prompt("two"), tool("b", "Read b")),
+  );
+  const fold = foldState(both, watched, false);
+  assert.deepEqual(
+    activities(both).map((a) => fold.isOpen(a.key)),
+    [true, false],
+  );
+  assert.equal(fold.turnOpen, false);
+  // Watching the new turn keeps the old one as it was.
+  const next = foldState(both, foldState(both, watched, false).toggleTurn(), false);
+  assert.deepEqual(
+    activities(both).map((a) => next.isOpen(a.key)),
+    [true, true],
+  );
+});
+
+test("with steps shown, the live line folds the turn", () => {
+  const items = foldTranscript(events(prompt("go"), tool("a", "Read a")));
+  const fold = foldState(items, NO_FOLDS, true);
+  assert.equal(fold.turnOpen, true);
+  const folded = foldState(items, fold.toggleTurn(), true);
+  assert.equal(folded.isOpen(activities(items)[0].key), false);
 });

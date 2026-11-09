@@ -125,6 +125,9 @@ async fn drive(
                                             .map(|response| stop_reason_from_acp(response.stop_reason))
                                             .map_err(|error| error.to_string()),
                                     );
+                                    // The turn may have switched branches. Git is asked
+                                    // elsewhere, because this runs in the dispatch loop.
+                                    tokio::spawn(core.refresh_branches(Some(id)));
                                     Ok(())
                                 })?;
                         }

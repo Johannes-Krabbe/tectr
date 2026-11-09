@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   chooseTab,
+  closeNewTab,
   goTo,
-  landingAfterDeleting,
+  landingAfterArchiving,
   landingIn,
   type Navigation,
+  NEW_TAB,
+  openNewTab,
   parseNavigation,
   shownTab,
+  topicTabs,
   type View,
 } from "./navigation.ts";
 
@@ -100,11 +104,45 @@ test("a tab closed while nothing was watching falls back to the newest", () => {
   assert.equal(shownTab(["a", "b"], "gone", []), "b");
 });
 
-test("deleting the shown topic lands next to it, and on a new topic when it was the last", () => {
+test("archiving the shown topic lands next to it, and on a new topic when it was the last", () => {
   const workspace = { id: "w", topics: [{ id: "a" }, { id: "b" }, { id: "c" }] };
   const landing = (topicId: string, topics = workspace.topics) =>
-    landingAfterDeleting("m", { id: "w", topics }, topicId);
+    landingAfterArchiving("m", { id: "w", topics }, topicId);
   assert.deepEqual(landing("b"), { kind: "topic", machineId: "m", topicId: "c" });
   assert.deepEqual(landing("c"), { kind: "topic", machineId: "m", topicId: "b" });
   assert.deepEqual(landing("a", [{ id: "a" }]), newTopic);
+});
+
+test("a topic with no sessions always has a new tab", () => {
+  assert.deepEqual(topicTabs(empty, "t", []), [NEW_TAB]);
+  assert.deepEqual(topicTabs(closeNewTab(openNewTab(empty, "t"), "t"), "t", []), [NEW_TAB]);
+});
+
+test("a new tab opens after the sessions and is shown", () => {
+  const navigation = openNewTab(empty, "t");
+  const tabs = topicTabs(navigation, "t", ["a", "b"]);
+  assert.deepEqual(tabs, ["a", "b", NEW_TAB]);
+  assert.equal(shownTab(tabs, navigation.tabs.t, ["a", "b"]), NEW_TAB);
+  assert.deepEqual(topicTabs(navigation, "other", ["c"]), ["c"]);
+});
+
+test("opening the new tab again goes back to the same one", () => {
+  const navigation = openNewTab(chooseTab(openNewTab(empty, "t"), "t", "a"), "t");
+  assert.deepEqual(navigation.newTabs, ["t"]);
+  assert.equal(navigation.tabs.t, NEW_TAB);
+});
+
+test("closing the new tab shows the tab before it", () => {
+  const opened = openNewTab(empty, "t");
+  const closed = closeNewTab(opened, "t");
+  const tabs = topicTabs(closed, "t", ["a", "b"]);
+  assert.deepEqual(tabs, ["a", "b"]);
+  assert.equal(shownTab(tabs, closed.tabs.t, ["a", "b", NEW_TAB]), "b");
+});
+
+test("an agent started from the new tab takes its place", () => {
+  const started = chooseTab(closeNewTab(openNewTab(empty, "t"), "t"), "t", "c");
+  const tabs = topicTabs(started, "t", ["a", "c"]);
+  assert.deepEqual(tabs, ["a", "c"]);
+  assert.equal(shownTab(tabs, started.tabs.t, ["a", NEW_TAB]), "c");
 });

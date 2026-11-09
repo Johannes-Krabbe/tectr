@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tectr - topic status icons</title>
+<link rel="stylesheet" href="../tokens/generated/tokens.css">
+<style>
+/* Proposed tokens. In the real change these go in design/tokens/color.*.tokens.json. */
+:root, [data-theme="dark"] {
+  --p-done: #5cc99a;
+  --p-done-read: var(--color-text-tertiary);
+}
+[data-theme="light"] { --p-done: #16875f; }
+@media (prefers-color-scheme: light) { :root:not([data-theme]) { --p-done: #16875f; } }
+
+:root { --spin: 1.1s; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--color-surface-base);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+
+.page { max-width: 1080px; margin: 0 auto; padding: 40px 32px 96px; }
+header.top { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 36px; }
+h1 { font: var(--text-title); margin: 0 0 6px; }
+h2 { font: var(--text-heading); margin: 0 0 6px; }
+.lede { color: var(--color-text-secondary); margin: 0; max-width: 62ch; }
+.sub { color: var(--color-text-secondary); margin: 0 0 18px; max-width: 70ch; }
+section { margin-top: 56px; }
+
+.controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.seg { display: inline-flex; background: var(--color-surface-control); border-radius: var(--radius-sm); padding: 2px; }
+.seg button { padding: 3px 10px; border-radius: var(--radius-xs); color: var(--color-text-secondary); font: var(--text-meta); }
+.seg button[aria-pressed="true"] { background: var(--color-surface-control-hover); color: var(--color-text-primary); }
+.btn { padding: 5px 11px; border-radius: var(--radius-sm); background: var(--color-surface-control); color: var(--color-text-primary); font: var(--text-meta); }
+.btn:hover { background: var(--color-surface-control-hover); }
+.label { color: var(--color-text-tertiary); font: var(--text-meta); }
+.kbd { display: inline-flex; align-items: center; height: 17px; padding: 0 4px; border-radius: var(--radius-xs); background: var(--color-surface-control); color: var(--color-text-secondary); font: var(--text-meta); }
+
+.card { background: var(--color-surface-panel); border: 1px solid var(--color-line-subtle); border-radius: var(--radius-lg); }
+
+/* ---------- The glyph: one SVG per row that morphs between states ---------- */
+.g { width: var(--size-icon); height: var(--size-icon); flex: none; overflow: visible; color: var(--color-status-idle); transition: color var(--motion-fade) ease; }
+.g .track, .g .w, .g .disc, .g .tick, .g .wait, .g .fail, .g .stale { opacity: 0; transition: opacity var(--motion-normal) ease; }
+
+.g .track, .g .stale, .g .pie-ring, .g .v-arc circle, .g .v-comet circle { fill: none; stroke: currentColor; stroke-width: 1.5; }
+.g .stale { stroke-dasharray: 2 2.2; }
+.g .v-orbit circle, .g .v-pie path, .g .breath, .g .disc, .g .wait, .g .fail { fill: currentColor; }
+.g .wait, .g .fail { fill-rule: evenodd; }
+.g .tick { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transform-box: view-box; transform-origin: 7px 7px; }
+.g .cut { fill: none; stroke: #000; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset 220ms ease-out; }
+
+.g .v { display: none; }
+.g[data-w="arc"] .v-arc, .g[data-w="comet"] .v-comet, .g[data-w="pie"] .v-pie,
+.g[data-w="orbit"] .v-orbit, .g[data-w="breathe"] .v-breathe { display: inline; }
+
+.g .v-arc circle { stroke-linecap: round; stroke-dasharray: 26 74; transition: stroke-dasharray 240ms cubic-bezier(.3, 0, .2, 1); }
+.g .spin { transform-box: view-box; transform-origin: 7px 7px; animation: spin var(--spin) linear infinite; }
+.g .breath { transform-box: fill-box; transform-origin: center; animation: breathe calc(var(--spin) * 1.6) ease-in-out infinite alternate; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes breathe { from { transform: scale(.5); opacity: .45; } to { transform: scale(1); opacity: 1; } }
+
+.g .disc { transform: scale(.4); transform-box: fill-box; transform-origin: center; transition: opacity 180ms ease, transform 260ms cubic-bezier(.2, .8, .3, 1.1); }
+
+/* working */
+.g[data-s="working"] { color: var(--color-status-working); }
+.g[data-s="working"] .track { opacity: .28; }
+.g[data-s="working"][data-w="pie"] .track { opacity: 0; }
+.g[data-s="working"] .w { opacity: 1; }
+
+/* done, unread: the arc closes into the ring, then it fills and the check is cut out */
+.g[data-s="done"] { color: var(--p-done); }
+.g[data-s="done"] .track { opacity: 1; }
+.g[data-s="done"] .w { opacity: 0; transition-delay: 240ms; }
+.g[data-s="done"] .v-arc circle, .g[data-s="read"] .v-arc circle { stroke-dasharray: 100 0; }
+.g[data-s="done"] .disc { opacity: 1; transform: scale(1); transition-delay: 200ms; }
+.g[data-s="done"] .cut { stroke-dashoffset: 0; transition-delay: 320ms; }
+.g[data-s="read"] .cut { stroke-dashoffset: 0; transition: none; }
+
+/* done, read */
+.g[data-s="read"] { color: var(--p-done-read); }
+.g[data-s="read"] .track { opacity: 1; }
+.g[data-s="read"] .disc { transform: scale(1); transition: opacity var(--motion-fade) ease; }
+.g[data-s="read"][data-r="outline"] .tick { opacity: 1; }
+.g[data-s="read"][data-r="filled"] .disc { opacity: 1; }
+.g[data-s="read"][data-r="bare"] .tick { opacity: 1; transform: scale(1.25); }
+.g[data-s="read"][data-r="bare"] .track { opacity: 0; }
+
+/* the rest, unchanged from today */
+.g[data-s="waiting"] { color: var(--color-status-waiting); }
+.g[data-s="waiting"] .wait { opacity: 1; }
+.g[data-s="failed"] { color: var(--color-status-failed); }
+.g[data-s="failed"] .fail { opacity: 1; }
+.g[data-s="idle"] .track { opacity: 1; }
+.g[data-s="stale"] { color: var(--color-status-stale); }
+.g[data-s="stale"] .stale { opacity: 1; }
+
+body.reduced .g .spin, body.reduced .g .breath { animation: none; }
+body.reduced .g, body.reduced .g * { transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .g .spin, .g .breath { animation: none; }
+  .g, .g * { transition: none !important; }
+}
+
+/* The icons as they are today */
+.now { width: var(--size-icon); height: var(--size-icon); display: inline-flex; }
+.now svg { width: 100%; height: 100%; }
+
+/* ---------- Sidebar replica, after apps/dsk/src/ui/app.css ---------- */
+.side { width: 272px; background: var(--color-surface-panel); border-right: 1px solid var(--color-line-subtle); padding: var(--space-sm); user-select: none; outline: none; }
+.row { display: flex; align-items: center; gap: var(--space-sm); width: 100%; height: var(--size-row); padding: 0 var(--space-sm); border-radius: var(--radius-sm); color: var(--color-text-secondary); font: var(--text-label); text-align: left; }
+.row .name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.row.device { color: var(--color-text-primary); font-weight: 600; }
+.row.device + .row, .row.device:first-child { margin-top: 0; }
+.row.device:not(:first-child) { margin-top: var(--space-md); }
+.row.device.off .name { color: var(--color-text-tertiary); }
+.row.workspace { padding-left: var(--space-lg); }
+.row.topic { padding-left: var(--space-xl); color: var(--color-text-primary); font: var(--text-body); }
+.row.topic:hover { background: var(--color-surface-raised); }
+.row.topic.current { background: var(--color-surface-control); }
+.side:focus .row.topic.focus { background: var(--color-accent-tint); }
+.row.topic[data-s="read"] .name, .row.topic[data-s="stale"] .name, .row.topic[data-s="idle"] .name { color: var(--color-text-tertiary); transition: color var(--motion-fade) ease; }
+.row.topic[data-s="waiting"] { background: var(--color-status-waiting-tint); }
+.row.topic[data-s="waiting"]:hover, .row.topic[data-s="waiting"].current { background: var(--color-status-waiting-tint-strong); }
+.meta { flex: none; color: var(--color-text-tertiary); font: var(--text-meta); }
+.meta.alert { color: var(--color-status-waiting); }
+.meta.bad { color: var(--color-status-failed); }
+.dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--color-status-online); }
+.dot.off { background: none; box-shadow: inset 0 0 0 1.5px var(--color-text-tertiary); }
+
+.app { display: flex; overflow: hidden; height: 470px; }
+.mainpane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.mainpane .head { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 16px; border-bottom: 1px solid var(--color-line-subtle); font: var(--text-label); }
+.mainpane .body { flex: 1; padding: 18px 20px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 14px; overflow: auto; }
+.mainpane .body p { margin: 0; max-width: 56ch; }
+.mainpane .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.legend { display: grid; grid-template-columns: 18px 1fr; gap: 8px 10px; align-items: center; font: var(--text-meta); color: var(--color-text-secondary); }
+.legend .g { justify-self: center; }
+
+/* ---------- Comparison table ---------- */
+table.cmp { border-collapse: collapse; width: 100%; }
+table.cmp th, table.cmp td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--color-line-subtle); vertical-align: middle; }
+table.cmp th { color: var(--color-text-tertiary); font: var(--text-meta); font-weight: 500; }
+table.cmp td.ic { width: 120px; }
+table.cmp td.ic .g, table.cmp td.ic .now { width: 28px; height: 28px; }
+table.cmp td.what { color: var(--color-text-secondary); }
+table.cmp tr:last-child td { border-bottom: 0; }
+
+/* ---------- Option cards ---------- */
+.grid { display: grid; gap: 12px; }
+.grid.five { grid-template-columns: repeat(5, 1fr); }
+.grid.three { grid-template-columns: repeat(3, 1fr); }
+.opt { padding: 16px; display: flex; flex-direction: column; gap: 12px; text-align: left; cursor: pointer; transition: border-color var(--motion-fast) ease; }
+.opt:hover { border-color: var(--color-line-strong); }
+.opt[aria-pressed="true"] { border-color: var(--color-accent-ring); box-shadow: 0 0 0 1px var(--color-accent-ring); }
+.opt .spec { display: flex; align-items: center; justify-content: center; gap: 22px; height: 76px; background: var(--color-surface-base); border-radius: var(--radius-md); }
+.opt .spec .g { width: 44px; height: 44px; }
+.opt .t { font: var(--text-label); color: var(--color-text-primary); display: flex; gap: 6px; align-items: center; }
+.opt .d { font: var(--text-meta); color: var(--color-text-secondary); margin: 0; }
+.rec { font: var(--text-meta); color: var(--color-accent-text); background: var(--color-accent-tint); padding: 0 6px; border-radius: var(--radius-xs); }
+.opt .minirow { display: flex; align-items: center; gap: 8px; height: var(--size-row); padding: 0 8px; border-radius: var(--radius-sm); background: var(--color-surface-base); font: var(--text-body); }
+
+.toolbar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin: 14px 0 0; }
+.toolbar input[type="range"] { width: 140px; accent-color: var(--color-accent-solid); }
+
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.many { padding: 8px; }
+.many .row.topic { padding-left: var(--space-sm); }
+.replay { padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.replay .big { display: flex; align-items: center; gap: 28px; }
+.replay .big .g { width: 64px; height: 64px; }
+.replay .steps { display: flex; gap: 6px; font: var(--text-meta); color: var(--color-text-tertiary); }
+.replay .steps span.on { color: var(--color-text-primary); }
+
+/* ---------- Rules ---------- */
+.rules { padding: 6px 22px; }
+.rules dl { margin: 0; display: grid; grid-template-columns: 180px 1fr; }
+.rules dt, .rules dd { padding: 14px 0; border-bottom: 1px solid var(--color-line-subtle); margin: 0; }
+.rules dt { font: var(--text-label); color: var(--color-text-primary); }
+.rules dd { color: var(--color-text-secondary); font: var(--text-body); line-height: 1.55; }
+.rules dt:nth-last-child(2), .rules dd:last-child { border-bottom: 0; }
+code { font: var(--text-code-small); color: var(--color-text-primary); background: var(--color-surface-control); padding: 1px 4px; border-radius: var(--radius-xs); }
+</style>
+</head>
+<body data-work="arc" data-read="outline">
+<div class="page">
+
+<header class="top">
+  <div>
+    <h1>Topic status icons</h1>
+    <p class="lede">Working moves, done is green until you've seen it, then it goes gray. Everything below is live: open topics in the sidebar, switch options, and the whole page follows.</p>
+  </div>
+  <div class="controls">
+    <div class="seg" id="theme">
+      <button data-v="dark" aria-pressed="true">Dark</button>
+      <button data-v="light" aria-pressed="false">Light</button>
+    </div>
+    <button class="btn" id="reduced" aria-pressed="false">Reduced motion: off</button>
+  </div>
+</header>
+
+<!-- 1. In context -->
+<section style="margin-top:0">
+  <h2>In the sidebar</h2>
+  <p class="sub">Click a topic, or focus the sidebar and use <span class="kbd">j</span> <span class="kbd">k</span> to move and <span class="kbd">Enter</span> to open. Moving focus doesn't mark anything read, opening does. <span class="kbd">u</span> toggles unread on the focused row. Working topics finish on their own after a few seconds.</p>
+  <div class="card app">
+    <div class="side" id="side" tabindex="0"></div>
+    <div class="mainpane">
+      <div class="head" id="head"></div>
+      <div class="body">
+        <p id="mainText"></p>
+        <div class="actions">
+          <button class="btn" id="prompt">Send a prompt here</button>
+          <button class="btn" id="finish">Finish the next working topic</button>
+          <button class="btn" id="readall">Mark all read</button>
+          <button class="btn" id="reset">Reset</button>
+        </div>
+        <div class="legend" id="legend"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 2. Now vs proposed -->
+<section>
+  <h2>Today and proposed</h2>
+  <p class="sub">Only working and done change. Waiting, failed, idle and offline keep their shapes and colors, and every icon is still one color on any surface.</p>
+  <div class="card" style="padding:4px 8px">
+    <table class="cmp" id="cmp">
+      <tr><th>State</th><th>Today</th><th>Proposed</th><th>What changes</th></tr>
+    </table>
+  </div>
+</section>
+
+<!-- 3. Working motion -->
+<section>
+  <h2>Working: how it moves</h2>
+  <p class="sub">Pick one and the page follows. The column on the left below is the real test: a dozen working topics in a row should read as one quiet signal, not a crowd.</p>
+  <div class="grid five" id="workOpts"></div>
+  <div class="toolbar">
+    <span class="label">Turn time</span>
+    <input type="range" id="speed" min="0.6" max="2.4" step="0.1" value="1.1">
+    <span class="label" id="speedVal">1.1s</span>
+    <div class="seg" id="lockstep">
+      <button data-v="on" aria-pressed="true">Lockstep</button>
+      <button data-v="off" aria-pressed="false">Each on its own</button>
+    </div>
+  </div>
+  <div class="split">
+    <div class="card many" id="many"></div>
+    <div class="card replay">
+      <div class="steps" id="steps"><span data-k="working">Working</span><span>-&gt;</span><span data-k="done">Done, unread</span><span>-&gt;</span><span data-k="read">Opened</span></div>
+      <div class="big" id="replayBig"></div>
+      <p class="d" style="margin:0;color:var(--color-text-secondary);font:var(--text-meta)">When the turn ends the arc runs on into a full ring, fills green and the check is cut out of it (about half a second). Opening the topic drains the fill over <code>motion.fade</code>, leaving a gray check. Working and done feel like one object changing, not two icons swapping.</p>
+      <div><button class="btn" id="replayBtn">Replay</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- 4. Read -->
+<section>
+  <h2>Done, after you've read it</h2>
+  <p class="sub">Each card shows unread and read side by side.</p>
+  <div class="grid three" id="readOpts"></div>
+</section>
+
+<!-- 5. Rules -->
+<section>
+  <h2>How it should behave</h2>
+  <div class="card rules">
+    <dl>
+      <dt>What counts as read</dt>
+      <dd>A session turns unread when a turn finishes. Opening its topic in a focused window marks it read. Focus moving through the sidebar doesn't count, only the topic shown in the main panel. If you're already looking at the topic when it finishes, you get the green check for about a second and then it fades. If the window isn't focused, it stays green until you come back.</dd>
+
+      <dt>Topic order</dt>
+      <dd>A topic shows its most urgent session: waiting, failed, <b>unread done</b>, working, read done, idle, offline. Today working comes before done. An unread result is something for you to do and working isn't, so it moves up. The cost: a topic with one tab still working and one finished shows the green check, not the spinner.</dd>
+
+      <dt>Failed</dt>
+      <dd>No read state. It stays red until you retry or close the tab, because it's broken, not new.</dd>
+
+      <dt>Where it lives</dt>
+      <dd>Read state is about you, not one window, so it goes in the daemon next to the session: an <code>unread</code> flag set when a turn ends, and a <code>mark_read</code> / <code>mark_unread</code> action. Read it on the phone and it goes gray on the desktop, and the push relay can use it for badges later. Keeping it in each client would be smaller but every client would disagree.</dd>
+
+      <dt>Keys</dt>
+      <dd>New actions <b>Mark unread</b> and <b>Mark all read</b>, each with a rebindable key and a palette entry.</dd>
+
+      <dt>Motion and speed</dt>
+      <dd>One CSS rotation per working icon, on the compositor, with no JavaScript per frame. The animation only exists while the state is working. Every spinner is pinned to the document timeline (<code>animation.startTime = 0</code>), so they all turn in lockstep no matter when a row appeared. Reduced motion, from the system or a new <code>appearance.status.animate</code> setting, shows the arc standing still, which still reads differently from idle.</dd>
+
+      <dt>Tokens and files</dt>
+      <dd><code>status.done</code> becomes green (dark <code>#5cc99a</code>, the same as <code>status.online</code>; light <code>#16875f</code>). New <code>status.done-read</code> aliases <code>text.tertiary</code>. <code>working.svg</code> becomes a faint ring plus an arc, rotated in CSS. New <code>done-read.svg</code> is the outline check. iOS rotates the arc layer with a SwiftUI animation.</dd>
+    </dl>
+  </div>
+</section>
+
+</div>
+
+<script>
+const CHECK = "M4.1 7.15 6.2 9.25 9.9 5.15";
+const WAIT = "M7 0a7 7 0 1 1 0 14A7 7 0 0 1 7 0ZM5.2 4a.6.6 0 0 0-.6.6v4.8a.6.6 0 0 0 .6.6h.5a.6.6 0 0 0 .6-.6V4.6a.6.6 0 0 0-.6-.6Zm3.1 0a.6.6 0 0 0-.6.6v4.8a.6.6 0 0 0 .6.6h.5a.6.6 0 0 0 .6-.6V4.6a.6.6 0 0 0-.6-.6Z";
+const FAIL = "M7 0a7 7 0 1 1 0 14A7 7 0 0 1 7 0ZM4.93 3.87 3.87 4.93 5.94 7 3.87 9.07l1.06 1.06L7 8.06l2.07 2.07 1.06-1.06L8.06 7l2.07-2.07-1.06-1.06L7 5.94Z";
+
+// Today's icons, verbatim from design/icons.
+const NOW = {
+  working: ['<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7 3.5a3.5 3.5 0 0 1 0 7z" fill="currentColor"/></svg>', "var(--color-status-working)"],
+  done: ['<svg viewBox="0 0 14 14"><path fill="currentColor" fill-rule="evenodd" d="M7 0a7 7 0 1 1 0 14A7 7 0 0 1 7 0ZM4.73 6.67 3.67 7.73l2.56 2.56 4.13-4.59-1.12-1L6.17 8.11Z"/></svg>', "var(--color-status-done)"],
+  waiting: [`<svg viewBox="0 0 14 14"><path fill="currentColor" fill-rule="evenodd" d="${WAIT}"/></svg>`, "var(--color-status-waiting)"],
+  failed: [`<svg viewBox="0 0 14 14"><path fill="currentColor" fill-rule="evenodd" d="${FAIL}"/></svg>`, "var(--color-status-failed)"],
+  idle: ['<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>', "var(--color-status-idle)"],
+  stale: ['<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2.2"/></svg>', "var(--color-status-stale)"],
+};
+const now = (k) => `<span class="now" style="color:${NOW[k][1]}">${NOW[k][0]}</span>`;
+
+const COMET = [1, .7, .5, .34, .2, .1].map((o, i) =>
+  `<circle cx="7" cy="7" r="6" pathLength="100" stroke-dasharray="8 92" stroke-dashoffset="${i * 8}" opacity="${o}" stroke-linecap="${i ? "butt" : "round"}"/>`
+).join("");
+
+let gid = 0;
+let work = "arc", read = "outline", lockstep = true;
+
+function glyph(state, opts = {}) {
+  const id = `cut${gid++}`;
+  const fixed = opts.w || opts.r ? ' data-fixed=""' : "";
+  return `<svg class="g" data-s="${state}" data-w="${opts.w || work}" data-r="${opts.r || read}"${fixed} viewBox="0 0 14 14" aria-hidden="true">
+<defs><mask id="${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="14" height="14"><rect width="14" height="14" fill="#fff"/><path class="cut" d="${CHECK}" pathLength="1"/></mask></defs>
+<circle class="track" cx="7" cy="7" r="6"/>
+<g class="w">
+<g class="v v-arc"><g class="spin"><circle cx="7" cy="7" r="6" pathLength="100"/></g></g>
+<g class="v v-comet"><g class="spin">${COMET}</g></g>
+<g class="v v-pie"><circle class="pie-ring" cx="7" cy="7" r="6"/><g class="spin"><path d="M7 3.5a3.5 3.5 0 0 1 0 7z"/></g></g>
+<g class="v v-orbit"><g class="spin"><circle cx="7" cy="1" r="1.9"/></g></g>
+<g class="v v-breathe"><circle class="breath" cx="7" cy="7" r="2.75"/></g>
+</g>
+<circle class="disc" cx="7" cy="7" r="7" mask="url(#${id})"/>
+<path class="tick" d="${CHECK}"/>
+<path class="wait" d="${WAIT}"/>
+<path class="fail" d="${FAIL}"/>
+<circle class="stale" cx="7" cy="7" r="6"/>
+</svg>`;
+}
+
+// Pin every spinner to the document timeline so they turn together.
+function sync() {
+  requestAnimationFrame(() => {
+    for (const a of document.getAnimations()) {
+      if (typeof CSSAnimation !== "undefined" && !(a instanceof CSSAnimation)) continue;
+      a.startTime = lockstep ? 0 : -Math.random() * 5000;
+    }
+  });
+}
+
+function applyStyle() {
+  for (const g of document.querySelectorAll(".g:not([data-fixed])")) {
+    g.dataset.w = work;
+    g.dataset.r = read;
+  }
+  for (const b of document.querySelectorAll("#workOpts .opt")) b.setAttribute("aria-pressed", String(b.dataset.v === work));
+  for (const b of document.querySelectorAll("#readOpts .opt")) b.setAttribute("aria-pressed", String(b.dataset.v === read));
+  sync();
+}
+
+/* ---------- Sidebar simulation ---------- */
+const LABEL = { working: "Working", waiting: "Waiting", failed: "Failed", done: "Done, unread", read: "Done", idle: "Idle", stale: "Offline" };
+const SEED = [
+  { device: "studio", on: true, ws: [
+    { name: "tectr", topics: [
+      ["Status icons redesign", "working", 6],
+      ["Pairing handshake", "waiting"],
+      ["Release 0.4 notes", "done"],
+      ["Refactor the store", "working", 14],
+      ["Token contrast check", "read"],
+      ["Push relay spike", "failed"],
+    ]},
+    { name: "website", topics: [
+      ["Landing page copy", "working", 10],
+      ["Changelog page", "done"],
+      ["Old experiment", "idle"],
+    ]},
+  ]},
+  { device: "laptop", on: false, ws: [
+    { name: "dotfiles", topics: [["zsh cleanup", "stale"]] },
+  ]},
+];
+
+let topics = [], current = null, focus = 0, timers = [];
+const side = document.getElementById("side");
+
+function build() {
+  timers.forEach(clearTimeout); timers = [];
+  topics = []; side.innerHTML = "";
+  for (const d of SEED) {
+    side.insertAdjacentHTML("beforeend", `<div class="row device ${d.on ? "" : "off"}"><span class="dot ${d.on ? "" : "off"}"></span><span class="name">${d.device}</span></div>`);
+    for (const w of d.ws) {
+      side.insertAdjacentHTML("beforeend", `<div class="row workspace"><span class="name">${w.name}</span></div>`);
+      for (const [name, s, finishIn] of w.topics) {
+        const el = document.createElement("div");
+        el.className = "row topic";
+        el.dataset.s = s;
+        el.innerHTML = `${glyph(s)}<span class="name">${name}</span><span class="meta"></span>`;
+        const t = { name, s, el, g: el.querySelector(".g"), meta: el.querySelector(".meta") };
+        el.addEventListener("click", () => { focus = topics.indexOf(t); open(t); });
+        side.appendChild(el);
+        topics.push(t);
+        paint(t);
+        if (finishIn) timers.push(setTimeout(() => finish(t), finishIn * 1000));
+      }
+    }
+  }
+  current = null; focus = 0;
+  open(topics[1]);
+  sync();
+}
+
+function paint(t) {
+  t.el.dataset.s = t.s;
+  t.g.dataset.s = t.s;
+  t.meta.textContent = t.s === "waiting" ? "Waiting" : t.s === "failed" ? "Failed" : "";
+  t.meta.className = `meta ${t.s === "waiting" ? "alert" : t.s === "failed" ? "bad" : ""}`;
+  t.el.classList.toggle("current", t === current);
+  t.el.classList.toggle("focus", topics[focus] === t);
+}
+
+function set(t, s) {
+  const wasWorking = t.s === "working";
+  t.s = s; paint(t);
+  if (s === "working" && !wasWorking) sync();
+  if (t === current) renderMain();
+}
+
+function finish(t) {
+  if (t.s !== "working") return;
+  set(t, "done");
+  // Watching it finish: a moment of green, then it counts as read.
+  if (t === current && document.hasFocus()) timers.push(setTimeout(() => t === current && t.s === "done" && set(t, "read"), 1200));
+}
+
+function open(t) {
+  current = t;
+  if (t.s === "done") set(t, "read");
+  topics.forEach(paint);
+  renderMain();
+}
+
+function renderMain() {
+  const t = current;
+  document.getElementById("head").innerHTML = `${glyph(t.s)}<span>${t.name}</span><span class="meta">${LABEL[t.s]}</span>`;
+  const text = {
+    working: "The agent is working. Stay here and the icon goes green for a moment when it finishes, then gray, since you saw it. Open another topic first and it stays green.",
+    waiting: "Waiting for you. Unchanged from today.",
+    failed: "Failed. Stays red, there's no read state for failures.",
+    read: "Done and read. Send a prompt to start it again.",
+    done: "Done.",
+    idle: "Nothing running.",
+    stale: "This device is offline, so this is the last known state.",
+  }[t.s];
+  document.getElementById("mainText").textContent = text;
+  sync();
+}
+
+side.addEventListener("keydown", (e) => {
+  const k = e.key;
+  if (k === "j" || k === "ArrowDown") focus = Math.min(topics.length - 1, focus + 1);
+  else if (k === "k" || k === "ArrowUp") focus = Math.max(0, focus - 1);
+  else if (k === "Enter") open(topics[focus]);
+  else if (k === "u") {
+    const t = topics[focus];
+    if (t.s === "read") set(t, "done"); else if (t.s === "done") set(t, "read");
+  } else return;
+  e.preventDefault();
+  topics.forEach(paint);
+});
+
+document.getElementById("prompt").onclick = () => {
+  const t = current;
+  if (t.s === "stale") return;
+  set(t, "working");
+  timers.push(setTimeout(() => finish(t), 4000));
+};
+document.getElementById("finish").onclick = () => {
+  const t = topics.find((x) => x.s === "working");
+  if (t) finish(t);
+};
+document.getElementById("readall").onclick = () => topics.forEach((t) => t.s === "done" && set(t, "read"));
+document.getElementById("reset").onclick = build;
+
+document.getElementById("legend").innerHTML =
+  ["working", "done", "read", "waiting", "failed", "idle", "stale"].map((s) => `${glyph(s)}<span>${LABEL[s]}</span>`).join("");
+
+/* ---------- Comparison ---------- */
+const CMP = [
+  ["Working", now("working"), "working", "The half-filled circle is replaced by an arc that circles the ring."],
+  ["Done, unread", now("done"), "done", "Green, so a finished result stands out until you've opened it."],
+  ["Done, read", now("done"), "read", "Gray outline check. Today there's only one done, and it's always gray."],
+  ["Waiting", now("waiting"), "waiting", "No change."],
+  ["Failed", now("failed"), "failed", "No change."],
+  ["Idle", now("idle"), "idle", "No change."],
+  ["Offline", now("stale"), "stale", "No change."],
+];
+document.getElementById("cmp").insertAdjacentHTML("beforeend",
+  CMP.map(([label, n, s, what]) => `<tr><td>${label}</td><td class="ic">${n}</td><td class="ic">${glyph(s)}</td><td class="what">${what}</td></tr>`).join(""));
+
+/* ---------- Working options ---------- */
+const WORK = [
+  ["arc", "Arc", true, "A short arc circling a faint ring. Clear at 14px, and when the turn ends it closes into the ring and fills to the check."],
+  ["comet", "Comet", false, "An arc with a fading tail. Smoother, but the tail turns to mush at 14px on a non-retina screen."],
+  ["pie", "Spinning half", false, "Today's icon, turning. Keeps the shape, but it reads like a clock or a loading pie."],
+  ["orbit", "Orbit", false, "A dot circling the ring. Lightest, but a 4px dot is easy to miss next to waiting and failed."],
+  ["breathe", "Breathe", false, "A dot pulsing inside the ring. Calmest, but pulsing says live or recording more than working."],
+];
+document.getElementById("workOpts").innerHTML = WORK.map(([v, t, rec, d]) => `
+  <button class="card opt" data-v="${v}" aria-pressed="false">
+    <div class="spec">${glyph("working", { w: v })}</div>
+    <div class="minirow">${glyph("working", { w: v })}<span>Refactor the store</span></div>
+    <div class="t">${t}${rec ? '<span class="rec">Recommended</span>' : ""}</div>
+    <p class="d">${d}</p>
+  </button>`).join("");
+for (const b of document.querySelectorAll("#workOpts .opt")) b.onclick = () => { work = b.dataset.v; applyStyle(); };
+
+const MANY = ["Refactor the store", "Landing page copy", "Status icons redesign", "Migrate settings", "Fix flaky test", "Split engine crate", "Docs pass", "Bump deps", "Profile startup", "Ask about pairing", "Diff viewer spike", "Retry policy"];
+document.getElementById("many").innerHTML = MANY.map((n, i) => {
+  const s = i === 3 ? "waiting" : i === 6 ? "done" : i === 9 ? "read" : "working";
+  return `<div class="row topic" data-s="${s}">${glyph(s)}<span class="name">${n}</span>${s === "waiting" ? '<span class="meta alert">Waiting</span>' : ""}</div>`;
+}).join("");
+
+document.getElementById("speed").oninput = (e) => {
+  document.documentElement.style.setProperty("--spin", `${e.target.value}s`);
+  document.getElementById("speedVal").textContent = `${e.target.value}s`;
+};
+for (const b of document.querySelectorAll("#lockstep button")) b.onclick = () => {
+  lockstep = b.dataset.v === "on";
+  for (const x of document.querySelectorAll("#lockstep button")) x.setAttribute("aria-pressed", String(x === b));
+  sync();
+};
+
+/* ---------- Replay ---------- */
+const big = document.getElementById("replayBig");
+big.innerHTML = `${glyph("working")}<div class="row topic" style="width:260px;background:var(--color-surface-base)" data-s="working">${glyph("working")}<span class="name">Status icons redesign</span></div>`;
+let replayTimers = [];
+function replay() {
+  replayTimers.forEach(clearTimeout); replayTimers = [];
+  const setAll = (s) => {
+    for (const g of big.querySelectorAll(".g")) g.dataset.s = s;
+    big.querySelector(".row").dataset.s = s;
+    for (const sp of document.querySelectorAll("#steps span[data-k]")) sp.classList.toggle("on", sp.dataset.k === s);
+  };
+  setAll("working"); sync();
+  replayTimers.push(setTimeout(() => setAll("done"), 2600));
+  replayTimers.push(setTimeout(() => setAll("read"), 5000));
+  replayTimers.push(setTimeout(replay, 7600));
+}
+document.getElementById("replayBtn").onclick = replay;
+
+/* ---------- Read options ---------- */
+const READ = [
+  ["outline", "Outline check", true, "The fill drains and a gray check stays. Read rows lose weight, so green and amber stand out in a long list, and it still differs from idle's empty ring."],
+  ["filled", "Gray disc", false, "Today's done icon, unchanged. Smallest change, but a gray disc weighs as much as the green one, so a column of read rows stays heavy."],
+  ["bare", "Bare check", false, "Lightest. Losing the ring breaks the column of circles, which looks ragged."],
+];
+document.getElementById("readOpts").innerHTML = READ.map(([v, t, rec, d]) => `
+  <button class="card opt" data-v="${v}" aria-pressed="false">
+    <div class="spec">${glyph("done", { r: v })}${glyph("read", { r: v })}</div>
+    <div class="minirow" data-s="read">${glyph("read", { r: v })}<span style="color:var(--color-text-tertiary)">Token contrast check</span></div>
+    <div class="t">${t}${rec ? '<span class="rec">Recommended</span>' : ""}</div>
+    <p class="d">${d}</p>
+  </button>`).join("");
+for (const b of document.querySelectorAll("#readOpts .opt")) b.onclick = () => { read = b.dataset.v; applyStyle(); };
+
+/* ---------- Page controls ---------- */
+for (const b of document.querySelectorAll("#theme button")) b.onclick = () => {
+  document.documentElement.dataset.theme = b.dataset.v;
+  for (const x of document.querySelectorAll("#theme button")) x.setAttribute("aria-pressed", String(x === b));
+};
+document.documentElement.dataset.theme = "dark";
+document.getElementById("reduced").onclick = (e) => {
+  const on = document.body.classList.toggle("reduced");
+  e.target.setAttribute("aria-pressed", String(on));
+  e.target.textContent = `Reduced motion: ${on ? "on" : "off"}`;
+};
+
+build();
+applyStyle();
+replay();
+</script>
+</body>
+</html>

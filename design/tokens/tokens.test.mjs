@@ -118,7 +118,7 @@ for (const [mode, tokens] of Object.entries(MODES)) {
 
 test('status icons are one color and share a grid', () => {
   const icons = loadIcons();
-  assert.deepEqual(Object.keys(icons).sort(), ['done', 'failed', 'idle', 'stale', 'waiting', 'working']);
+  assert.deepEqual(Object.keys(icons).sort(), ['done', 'failed', 'idle', 'read', 'stale', 'waiting', 'working']);
   for (const [name, svg] of Object.entries(icons)) {
     assert.match(svg, /viewBox="0 0 14 14"/, name);
     assert.match(svg, /currentColor/, name);
