@@ -68,7 +68,7 @@ pub const GROUPS: &[Group] = &[
     Group {
         id: "device",
         title: "Device settings",
-        about: "In a device's providers settings.",
+        about: "In a device's settings.",
     },
     Group {
         id: "mcp",
@@ -316,6 +316,21 @@ pub const ACTIONS: &[Action] = &[
     once("composer.send", "Send", &["enter"]),
     once("composer.newline", "New line", &["shift+enter"]),
     follows("composer.blur", "Leave the message box", "nav.back"),
+    follows(
+        "composer.command_up",
+        "Move up the agent's slash commands",
+        "nav.input_up",
+    ),
+    follows(
+        "composer.command_down",
+        "Move down the agent's slash commands",
+        "nav.input_down",
+    ),
+    once(
+        "composer.complete_command",
+        "Complete the slash command",
+        &["tab"],
+    ),
     once("permission.allow_once", "Allow once", &["y"]),
     once("permission.allow_always", "Always allow", &["a"]),
     once("permission.reject", "Deny", &["n"]),
@@ -353,6 +368,11 @@ pub const ACTIONS: &[Action] = &[
     ),
     follows("sheet.submit", "Submit", "nav.confirm"),
     follows("sheet.cancel", "Cancel", "nav.back"),
+    once(
+        "sheet.confirm",
+        "Confirm what can't be undone, where Enter cancels",
+        &["y"],
+    ),
     follows("sheet.up", "Move up the suggestions", "nav.input_up"),
     follows("sheet.down", "Move down the suggestions", "nav.input_down"),
     once("sheet.complete", "Complete the path", &["tab"]),
@@ -366,17 +386,11 @@ pub const ACTIONS: &[Action] = &[
     follows("picker.last", "Go to the last choice", "nav.input_last"),
     follows("picker.confirm", "Choose", "nav.confirm"),
     follows("picker.cancel", "Close", "nav.back"),
-    follows("device.up", "Move up", "nav.up"),
-    follows("device.down", "Move down", "nav.down"),
-    follows("device.first", "Go to the first provider", "nav.first"),
-    follows("device.last", "Go to the last provider", "nav.last"),
-    follows("device.center", "Center the current provider", "nav.center"),
     follows(
         "device.confirm",
         "Add or refresh the provider",
         "nav.confirm",
     ),
-    follows("device.back", "Back to the sections", "nav.back"),
     once(
         "device.remove",
         "Remove the provider",
@@ -394,13 +408,8 @@ pub const ACTIONS: &[Action] = &[
     follows("mcp.down", "Move down", "nav.down"),
     follows("mcp.first", "Go to the first server", "nav.first"),
     follows("mcp.last", "Go to the last server", "nav.last"),
-    follows("mcp.center", "Center the current server", "nav.center"),
     follows("mcp.edit", "Edit the server", "nav.confirm"),
-    follows(
-        "mcp.back",
-        "Back to the sections, or close the sheet",
-        "nav.back",
-    ),
+    follows("mcp.back", "Close the topic's servers", "nav.back"),
     once("mcp.add", "Add a server", &["a", "o"]),
     once("mcp.remove", "Remove the server", &["d d", "backspace"]),
     once(

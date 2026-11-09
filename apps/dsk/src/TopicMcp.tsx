@@ -10,10 +10,12 @@ import {
   mcpAuthLabel,
   mcpSummary,
   ownServers,
+  takenNames,
   topicGets,
   topicMcpChoice,
   topicMcpLabel,
 } from "./mcp";
+import { McpAddSheet } from "./McpAdd";
 import { actOnServer, McpServerSheet, serverActions, useMcpRequests } from "./McpServers";
 import { hint, useHints } from "./shortcuts";
 import { Keys } from "./ui/StatusIcon";
@@ -221,12 +223,21 @@ export function TopicMcpSheet({
               <Keys action="mcp.back" />
             </Dialog.Close>
           </div>
-          {form && (
+          {form?.server && (
             <McpServerSheet
               machineId={machineId}
               server={form.server}
               topicId={topic.id}
-              where={form.server ? `Edit ${form.server.name} in ${topic.name}` : `New MCP server for ${topic.name}`}
+              where={`Edit ${form.server.name} in ${topic.name}`}
+              onClose={() => setForm(null)}
+            />
+          )}
+          {form && !form.server && (
+            <McpAddSheet
+              machineId={machineId}
+              topicId={topic.id}
+              taken={takenNames(state.mcp_servers ?? [], topic.id)}
+              where={`New MCP server for ${topic.name}`}
               onClose={() => setForm(null)}
             />
           )}

@@ -10,7 +10,7 @@ export type View =
  * remembers: losing it only means opening on the empty state. */
 export interface Navigation {
   view: View | null;
-  /** Where cancelling goes from the new topic screen. */
+  /** The topic cancelling the new topic screen goes back to. Without one, it goes to the sidebar. */
   beforeNewTopic: View | null;
   /** Where closing goes from settings. */
   beforeSettings: View | null;
@@ -67,9 +67,14 @@ export function goTo(navigation: Navigation, next: View | null, workspaceId?: st
   return {
     ...navigation,
     view: next,
-    // Moving within these screens doesn't change where leaving them goes back to.
+    // Moving within these screens doesn't change where leaving them goes back to, and neither
+    // does a trip to settings and back.
     beforeNewTopic:
-      next?.kind === "new_topic" && from?.kind !== "new_topic" ? from : navigation.beforeNewTopic,
+      next?.kind === "new_topic" && from?.kind !== "new_topic" && !isSettings(from)
+        ? from?.kind === "topic"
+          ? from
+          : null
+        : navigation.beforeNewTopic,
     beforeSettings: isSettings(next) && !isSettings(from) ? from : navigation.beforeSettings,
     settingsSection: next?.kind === "app_settings" ? next.section : navigation.settingsSection,
     lastTopics:

@@ -30,6 +30,14 @@ export interface Session {
   unread?: boolean;
 }
 
+/** A slash command an agent offers. Sending `/name`, and anything after it, runs it. */
+export interface AgentCommand {
+  name: string;
+  description: string;
+  /** What to type after it, for a command that takes input. */
+  hint?: string | null;
+}
+
 export interface Worktree {
   id: string;
   path: string;
@@ -150,6 +158,8 @@ export interface DaemonState {
   providers?: Provider[];
   /** What's typed for each session but not sent yet. */
   drafts?: Record<string, string>;
+  /** The slash commands each session's agent last said it has. */
+  commands?: Record<string, AgentCommand[]>;
   /** Left out while every value is its default. */
   settings?: DeviceSettings;
   /** The MCP servers agents on this device get, device-wide and per topic. */

@@ -9,15 +9,15 @@ use std::time::Duration;
 use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion};
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    CancelNotification, ContentBlock, EnvVariable, InitializeRequest, InitializeResponse,
-    McpServer, McpServerHttp, McpServerStdio, Meta, NewSessionRequest, PermissionOption,
-    PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind,
-    SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
-    SessionConfigSelect, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
-    SessionModeState, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionModeRequest, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallLocation,
-    ToolCallStatus, ToolCallUpdateFields, ToolKind,
+    AvailableCommandInput, CancelNotification, ContentBlock, EnvVariable, InitializeRequest,
+    InitializeResponse, McpServer, McpServerHttp, McpServerStdio, Meta, NewSessionRequest,
+    PermissionOption, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigOptionValue, SessionConfigSelect, SessionConfigSelectOption,
+    SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, TextContent, ToolCall,
+    ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
 use anyhow::{Result, anyhow, bail};
@@ -643,6 +643,21 @@ fn handle_update(core: &Core, id: &tp::SessionId, update: SessionUpdate) {
             },
         ),
         // A missing title means "unchanged", and only an explicit null clears it.
+        SessionUpdate::AvailableCommandsUpdate(update) => core.commands_changed(
+            id,
+            update
+                .available_commands
+                .into_iter()
+                .map(|command| tp::AgentCommand {
+                    hint: match command.input {
+                        Some(AvailableCommandInput::Unstructured(input)) => Some(input.hint),
+                        _ => None,
+                    },
+                    name: command.name,
+                    description: command.description,
+                })
+                .collect(),
+        ),
         SessionUpdate::SessionInfoUpdate(info) => match info.title {
             MaybeUndefined::Value(title) => core.title_changed(id, Some(title)),
             MaybeUndefined::Null => core.title_changed(id, None),

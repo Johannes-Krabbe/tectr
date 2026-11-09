@@ -146,6 +146,8 @@ export function App() {
   // Each topic's new tab, kept while you look elsewhere. Topic ID to state.
   const [newTabStates, setNewTabStates] = useState<Record<string, NewTabState>>({});
   const [sheet, setSheet] = useState<SheetRequest | null>(null);
+  // The device whose name is being edited in place, in its settings.
+  const [renamingDevice, setRenamingDevice] = useState<string | null>(null);
   const [palette, setPalette] = useState(false);
   const [picker, setPicker] = useState<Picker | null>(null);
   // The topic whose MCP servers are being chosen. It reads the topic live, so changes show.
@@ -300,10 +302,20 @@ export function App() {
     setSheet({ kind: "workspace", machineId: id, deviceName: name, local: isLoopback(device.url) });
   };
 
+  // Editing a name in place ends once its device's General settings aren't showing.
+  useEffect(() => {
+    const showing =
+      view?.kind === "device_settings" &&
+      view.machineId === renamingDevice &&
+      (view.section ?? "general") === "general";
+    if (renamingDevice && !showing) setRenamingDevice(null);
+  }, [view, renamingDevice]);
+
   const renameDevice = (device: Device) => {
     if (!device.state || !isOnline(device)) return;
-    const { id, name } = device.state.machine;
-    setSheet({ kind: "rename_device", machineId: id, name });
+    const { id } = device.state.machine;
+    preview({ kind: "device_settings", machineId: id, section: "general" });
+    setRenamingDevice(id);
   };
 
   const openSettings = (machineId: string, section?: string) => {
@@ -929,7 +941,9 @@ export function App() {
           onSection={(section) => {
             if (view?.kind === "device_settings") show({ ...view, section });
           }}
+          renaming={renamingDevice === settingsDevice.state?.machine.id}
           onRename={() => renameDevice(settingsDevice)}
+          onRenameEnd={() => setRenamingDevice(null)}
           onClose={closeSettings}
         />
       ) : (
@@ -946,8 +960,17 @@ export function App() {
               }
               onSettings={openSettings}
               onCancel={() => {
+                const back = navigation.beforeNewTopic;
+                const gone =
+                  back?.kind !== "topic" ||
+                  !topics.some((t) => t.machineId === back.machineId && t.topic.id === back.topicId);
+                // With no topic to go back to, the screen stays and keeps its draft.
+                if (gone) {
+                  focusSidebar();
+                  return;
+                }
                 setNewTopicForm({});
-                open(navigation.beforeNewTopic);
+                open(back);
               }}
               onStarted={onTopicStarted}
               onStalled={onTopicStalled}
@@ -991,6 +1014,7 @@ export function App() {
                   online={isOnline(entry.device)}
                   approvals={approvals}
                   draft={entry.device.state?.drafts?.[session.id] ?? ""}
+                  commands={entry.device.state?.commands?.[session.id]}
                   worktree={topicWorktree(entry.topic)}
                   onInterrupt={isActive(session) ? interrupt : undefined}
                 />

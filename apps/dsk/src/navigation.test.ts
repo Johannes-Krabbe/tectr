@@ -72,6 +72,22 @@ test("leaving the new topic screen goes back to what was open before it", () => 
   assert.deepEqual(navigation.beforeNewTopic, topic);
 });
 
+test("a trip to settings doesn't change where the new topic screen goes back to", () => {
+  let navigation: Navigation = goTo(empty, topic, "w");
+  navigation = goTo(navigation, newTopic);
+  navigation = goTo(navigation, settings("general"));
+  navigation = goTo(navigation, newTopic);
+  assert.deepEqual(navigation.beforeNewTopic, topic);
+});
+
+test("the new topic screen has nothing to go back to when no topic was open", () => {
+  let navigation: Navigation = goTo(empty, settings("general"));
+  navigation = goTo(navigation, newTopic);
+  assert.equal(navigation.beforeNewTopic, null);
+  navigation = goTo(goTo(empty, device), newTopic);
+  assert.equal(navigation.beforeNewTopic, null);
+});
+
 test("settings reopens at the last section", () => {
   const navigation = goTo(goTo(empty, settings("keybinds")), topic, "w");
   assert.equal(navigation.settingsSection, "keybinds");

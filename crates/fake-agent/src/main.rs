@@ -5,6 +5,8 @@
 //! - `echo a b c`: streams each word as a separate chunk.
 //! - `burst N`: streams N chunks as fast as possible.
 //! - `title a b c`: reports `a b c` as the session's title.
+//! - `commands a b:hint`: reports the slash commands `a` and `b`, where `b` takes input
+//!   described by `hint`. With nothing after it, reports that there are none.
 //! - `write`: runs a tool that creates `fake-output.txt` in the session's
 //!   directory. In the `default` mode it asks for permission first.
 //! - `abandon`: asks for permission from background work, then ends the turn
@@ -22,15 +24,17 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, Implementation,
-    InitializeRequest, InitializeResponse, McpCapabilities, McpServer, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+    AgentCapabilities, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
+    CancelNotification, ContentBlock, ContentChunk, Implementation, InitializeRequest,
+    InitializeResponse, McpCapabilities, McpServer, NewSessionRequest, NewSessionResponse,
+    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
     RequestPermissionOutcome, RequestPermissionRequest, ResumeSessionRequest,
     ResumeSessionResponse, SessionCapabilities, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOption, SessionId, SessionInfoUpdate, SessionMode, SessionModeState,
     SessionNotification, SessionResumeCapabilities, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
     TextContent, ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    UnstructuredCommandInput,
 };
 use agent_client_protocol::{
     Agent, Client, Error, Stdio, on_receive_notification, on_receive_request,
@@ -254,6 +258,27 @@ async fn run_turn(
             for n in 0..count {
                 say(connection, &session_id, &n.to_string())?;
             }
+        }
+        "commands" => {
+            let commands = words
+                .map(|word| {
+                    let (name, hint) = match word.split_once(':') {
+                        Some((name, hint)) => (name, Some(hint)),
+                        None => (word, None),
+                    };
+                    let command = AvailableCommand::new(name, format!("Runs {name}"));
+                    match hint {
+                        Some(hint) => command.input(AvailableCommandInput::Unstructured(
+                            UnstructuredCommandInput::new(hint),
+                        )),
+                        None => command,
+                    }
+                })
+                .collect();
+            connection.send_notification(SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(commands)),
+            ))?;
         }
         "title" => {
             let title = words.collect::<Vec<_>>().join(" ");

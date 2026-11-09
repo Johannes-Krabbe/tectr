@@ -258,3 +258,348 @@ export function importLines(added: string[], skipped: string[]): string[] {
   const lines = [added.length > 0 ? `Added ${added.join(", ")}` : "Nothing new to add"];
   return [...lines, ...skipped.map((reason) => `Skipped ${reason}`)];
 }
+
+// Reading a server from whatever a README hands you: an address, a command, a `claude mcp add`
+// or `codex mcp add` line, or a JSON block in the format most docs show.
+
+/** A server found in what was pasted, not added yet. */
+export interface Found {
+  name: string;
+  transport: McpTransport;
+  /** Env variables and headers whose value is still a placeholder to fill in. */
+  blanks: Blank[];
+}
+
+export interface Blank {
+  in: "env" | "headers";
+  key: string;
+}
+
+export type Pasted = { found: Found[] } | { error: string } | { empty: true };
+
+/** What a value still to be filled in looks like in docs: `<token>`, `YOUR_KEY`, `xxx`, or
+ * nothing at all. A `${NAME}` is a real value: the daemon fills it in from its environment. */
+export function isBlank(value: string): boolean {
+  return value.trim() === "" || /<[^>]+>|\byour[_-]|\bxxx+\b|\.\.\./i.test(value);
+}
+
+/** Letters, digits, `-` and `_`, the way agents need a server's name. */
+export function cleanName(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 64);
+}
+
+const HOST_NOISE = new Set(["mcp", "api", "www", "server", "app", "remote"]);
+
+/** `https://mcp.linear.app/mcp` is linear: the host without its top level and its generic
+ * labels. */
+export function nameFromUrl(url: string): string {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return "server";
+  }
+  const labels = host.split(".");
+  const named = labels.length > 1 ? labels.slice(0, -1) : labels;
+  const meaningful = named.filter((label) => !HOST_NOISE.has(label));
+  return cleanName(meaningful.at(-1) ?? named[0] ?? host) || "server";
+}
+
+const RUNNERS = new Set(["npx", "bunx", "uvx", "pipx", "dlx", "deno", "node", "python", "python3"]);
+
+/** `npx -y @modelcontextprotocol/server-github` is github: the package without its scope,
+ * version and the words every MCP package has. */
+export function nameFromCommand(command: string, args: string[]): string {
+  const base = command.split("/").at(-1) ?? command;
+  const words = RUNNERS.has(base) || base === "pnpm" || base === "docker" ? args : [base];
+  const target = words.find((word) => !word.startsWith("-") && !["dlx", "run", "x"].includes(word));
+  if (!target) return cleanName(base) || "server";
+  const withoutVersion = target.replace(/(.)@[^/]*$/, "$1");
+  const [scope, name = scope] = withoutVersion.replace(/^@/, "").split("/");
+  const stripped = name
+    .replace(/^(mcp-server-|server-|mcp-)/, "")
+    .replace(/(-mcp-server|-server|-mcp|\.py|\.js)$/, "");
+  // `@playwright/mcp` says nothing in its name, so its scope is the name.
+  const pick = stripped === "" || stripped === "mcp" ? scope : stripped;
+  return cleanName(pick) || "server";
+}
+
+function blanksOf(transport: McpTransport): Blank[] {
+  const blanks: Blank[] = [];
+  if (transport.type === "stdio") {
+    for (const [key, value] of Object.entries(transport.env ?? {})) {
+      if (isBlank(value)) blanks.push({ in: "env", key });
+    }
+  }
+  if (transport.type === "http") {
+    for (const [key, value] of Object.entries(transport.headers ?? {})) {
+      if (isBlank(value)) blanks.push({ in: "headers", key });
+    }
+  }
+  return blanks;
+}
+
+function found(name: string, transport: McpTransport): Found {
+  return { name, transport, blanks: blanksOf(transport) };
+}
+
+const isUrl = (text: string) => /^https?:\/\/\S+$/i.test(text);
+
+function stringRecord(value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, inner] of Object.entries(value)) {
+    if (typeof inner === "string") out[key] = inner;
+    else if (typeof inner === "number" || typeof inner === "boolean") out[key] = String(inner);
+  }
+  return out;
+}
+
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** One server's entry, in the shapes Claude, Cursor, VS Code, Codex and OpenCode use. */
+function fromEntry(name: string | undefined, entry: Record<string, unknown>): Found | string {
+  const type = typeof entry.type === "string" ? entry.type : undefined;
+  const url = [entry.url, entry.serverUrl, entry.httpUrl].find((u) => typeof u === "string");
+  if (type === "sse") return `${name ?? "This server"} uses SSE, which tectr doesn't support`;
+  if (typeof url === "string") {
+    return found(name ?? nameFromUrl(url), {
+      type: "http",
+      url,
+      headers: stringRecord(entry.headers),
+    });
+  }
+  // OpenCode keeps the program and its arguments in one list.
+  const command = Array.isArray(entry.command) ? strings(entry.command) : [];
+  const program = typeof entry.command === "string" ? entry.command : command[0];
+  if (!program) return `${name ?? "This server"} has neither a command nor a url`;
+  const args = typeof entry.command === "string" ? strings(entry.args) : command.slice(1);
+  const env = { ...stringRecord(entry.env), ...stringRecord(entry.environment) };
+  return found(name ?? nameFromCommand(program, args), { type: "stdio", command: program, args, env });
+}
+
+const SERVER_LISTS = ["mcpServers", "servers", "mcp", "context_servers", "mcp_servers"];
+
+function fromJson(value: unknown): Pasted {
+  if (!isRecord(value)) return { error: "That JSON isn't an MCP server or a list of them" };
+  const list = SERVER_LISTS.map((key) => value[key]).find(isRecord);
+  const looksLikeEntry = "command" in value || "url" in value || "serverUrl" in value;
+  const entries: [string | undefined, unknown][] = list
+    ? Object.entries(list)
+    : looksLikeEntry
+      ? [[undefined, value]]
+      : Object.entries(value);
+  const servers: Found[] = [];
+  const problems: string[] = [];
+  for (const [name, entry] of entries) {
+    if (!isRecord(entry)) continue;
+    const result = fromEntry(name === undefined ? undefined : cleanName(name) || undefined, entry);
+    if (typeof result === "string") problems.push(result);
+    else servers.push(result);
+  }
+  if (servers.length > 0) return { found: servers };
+  return { error: problems[0] ?? "That JSON has no MCP servers in it" };
+}
+
+/** Docs paste JSON with comments and trailing commas, which JSON.parse refuses. */
+function parseLooseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const loose = text
+      .replace(/("(?:\\.|[^"\\])*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (_, string) => string ?? "")
+      .replace(/("(?:\\.|[^"\\])*")|,(\s*[}\]])/g, (_, string, close) => string ?? close);
+    return JSON.parse(loose);
+  }
+}
+
+function pairOf(text: string, separator: "=" | ":"): [string, string] | null {
+  const at = text.indexOf(separator);
+  if (at <= 0) return null;
+  return [text.slice(0, at).trim(), text.slice(at + 1).trim()];
+}
+
+/** `claude mcp add [options] NAME COMMAND_OR_URL [ARGS]`, and `add-json NAME JSON`. */
+function fromClaude(words: string[]): Pasted {
+  if (words[0] === "add-json") {
+    const [name, json] = words.slice(1);
+    if (!name || !json) return { error: "claude mcp add-json needs a name and the JSON" };
+    try {
+      const value = parseLooseJson(json);
+      if (!isRecord(value)) return { error: "That JSON isn't an MCP server" };
+      const result = fromEntry(cleanName(name), value);
+      return typeof result === "string" ? { error: result } : { found: [result] };
+    } catch {
+      return { error: "The JSON after claude mcp add-json doesn't parse" };
+    }
+  }
+  let transport = "stdio";
+  const env: Record<string, string> = {};
+  const headers: Record<string, string> = {};
+  const rest: string[] = [];
+  let index = 1;
+  for (; index < words.length; index++) {
+    const word = words[index];
+    const next = words[index + 1];
+    if (word === "--") {
+      rest.push(...words.slice(index + 1));
+      break;
+    } else if ((word === "--transport" || word === "-t") && next) {
+      transport = next;
+      index++;
+    } else if ((word === "--env" || word === "-e") && next) {
+      const pair = pairOf(next, "=");
+      if (pair) env[pair[0]] = pair[1];
+      index++;
+    } else if ((word === "--header" || word === "-H") && next) {
+      const pair = pairOf(next, ":");
+      if (pair) headers[pair[0]] = pair[1];
+      index++;
+    } else if ((word === "--scope" || word === "-s" || word === "--client-id") && next) {
+      index++;
+    } else if (word.startsWith("--transport=")) {
+      transport = word.slice("--transport=".length);
+    } else if (word.startsWith("-") && rest.length < 2) {
+      // Flags tectr has no use for, like --callback-port, are skipped.
+    } else {
+      rest.push(word);
+    }
+  }
+  const [name, target, ...args] = rest;
+  if (!name || !target) return { error: "claude mcp add needs a name and a command or url" };
+  if (transport === "sse") return { error: `${name} uses SSE, which tectr doesn't support` };
+  if (transport === "http" || isUrl(target)) {
+    return { found: [found(cleanName(name), { type: "http", url: target, headers })] };
+  }
+  return {
+    found: [found(cleanName(name), { type: "stdio", command: target, args, env })],
+  };
+}
+
+/** `codex mcp add NAME [--env K=V] -- COMMAND [ARGS]`, or `codex mcp add NAME --url URL`. */
+function fromCodex(words: string[]): Pasted {
+  const name = words[1];
+  if (!name) return { error: "codex mcp add needs a name" };
+  const env: Record<string, string> = {};
+  const headers: Record<string, string> = {};
+  let url: string | undefined;
+  const command: string[] = [];
+  for (let index = 2; index < words.length; index++) {
+    const word = words[index];
+    const next = words[index + 1];
+    if (word === "--") {
+      command.push(...words.slice(index + 1));
+      break;
+    } else if (word === "--url" && next) {
+      url = next;
+      index++;
+    } else if (word === "--env" && next) {
+      const pair = pairOf(next, "=");
+      if (pair) env[pair[0]] = pair[1];
+      index++;
+    } else if (word === "--bearer-token-env-var" && next) {
+      headers.Authorization = `Bearer \${${next}}`;
+      index++;
+    } else if (!word.startsWith("-")) {
+      command.push(...words.slice(index));
+      break;
+    }
+  }
+  if (url) return { found: [found(cleanName(name), { type: "http", url, headers })] };
+  const [program, ...args] = command;
+  if (!program) return { error: "codex mcp add needs a command after -- or a --url" };
+  return { found: [found(cleanName(name), { type: "stdio", command: program, args, env })] };
+}
+
+/** What was pasted, as servers to add. */
+export function readPasted(text: string): Pasted {
+  const trimmed = text.trim();
+  if (trimmed === "") return { empty: true };
+  if (trimmed.startsWith("{") || trimmed.startsWith('"')) {
+    try {
+      return fromJson(parseLooseJson(trimmed.startsWith("{") ? trimmed : `{${trimmed}}`));
+    } catch {
+      return { error: "That looks like JSON but doesn't parse yet" };
+    }
+  }
+  if (isUrl(trimmed)) {
+    return { found: [found(nameFromUrl(trimmed), { type: "http", url: trimmed, headers: {} })] };
+  }
+  // A command copied from a README often goes on over several lines.
+  const split = splitArgs(trimmed.replace(/\\\r?\n/g, " "));
+  if ("error" in split) return { error: split.error };
+  const words = split.args;
+  if (words[0] === "claude" && words[1] === "mcp" && words[2]?.startsWith("add")) {
+    return fromClaude(words.slice(2));
+  }
+  if (words[0] === "codex" && words[1] === "mcp" && words[2] === "add") {
+    return fromCodex(words.slice(2));
+  }
+  // `KEY=value npx ...`, the way a shell passes environment to a command.
+  const env: Record<string, string> = {};
+  let start = 0;
+  while (start < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[start])) {
+    const pair = pairOf(words[start], "=");
+    if (pair) env[pair[0]] = pair[1];
+    start++;
+  }
+  const [command, ...args] = words.slice(start);
+  if (!command) return { error: "There's no command to run" };
+  return { found: [found(nameFromCommand(command, args), { type: "stdio", command, args, env })] };
+}
+
+/** A name not taken yet, by adding a number to it the way a file manager does. */
+export function freeName(name: string, taken: Set<string>): string {
+  if (!taken.has(name)) return name;
+  for (let number = 2; ; number++) {
+    const candidate = `${name}-${number}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/** The transport with what was typed for each blank. A blank env variable left empty becomes
+ * `${KEY}`, so the daemon reads it from its environment, which is where secrets belong. */
+export function filledIn(server: Found, values: Record<string, string>): McpTransport {
+  const fill = (where: Blank["in"], record: Record<string, string> | undefined) => {
+    const out = { ...(record ?? {}) };
+    for (const blank of server.blanks) {
+      if (blank.in !== where) continue;
+      const typed = values[blankId(blank)]?.trim() ?? "";
+      out[blank.key] = typed !== "" ? typed : where === "env" ? `\${${blank.key}}` : out[blank.key];
+    }
+    return out;
+  };
+  const transport = server.transport;
+  if (transport.type === "stdio") return { ...transport, env: fill("env", transport.env) };
+  if (transport.type === "http") return { ...transport, headers: fill("headers", transport.headers) };
+  return transport;
+}
+
+export const blankId = (blank: Blank) => `${blank.in}:${blank.key}`;
+
+/** Headers can't fall back to the environment the way env variables can, so each blank one
+ * has to be typed. */
+export function blanksReady(server: Found, values: Record<string, string>): boolean {
+  return server.blanks.every(
+    (blank) => blank.in === "env" || (values[blankId(blank)]?.trim() ?? "") !== "",
+  );
+}
+
+/** The names a new server can't have, as the daemon checks them: a device-wide name has to be
+ * unique on the device, and a topic's own among the device's and that topic's. */
+export function takenNames(servers: McpServer[], topicId?: string): Set<string> {
+  return new Set(
+    servers
+      .filter((server) => !topicId || !server.topic_id || server.topic_id === topicId)
+      .map((server) => server.name),
+  );
+}

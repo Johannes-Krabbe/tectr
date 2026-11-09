@@ -6,10 +6,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use protocol::{
-    Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, Machine, MachineId,
-    McpServer, McpServerId, PermissionMode, Provider, Session, SessionEvent, SessionEventKind,
-    SessionId, SessionRef, SessionStatus, Topic, TopicId, Workspace, WorkspaceId, Worktree,
-    WorktreeId,
+    AgentCommand, Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, Machine,
+    MachineId, McpServer, McpServerId, PermissionMode, Provider, Session, SessionEvent,
+    SessionEventKind, SessionId, SessionRef, SessionStatus, Topic, TopicId, Workspace, WorkspaceId,
+    Worktree, WorktreeId,
 };
 
 use crate::oauth::Login;
@@ -102,6 +102,9 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE mcp_servers (id TEXT PRIMARY KEY, server TEXT NOT NULL);
     CREATE TABLE mcp_logins (server_id TEXT PRIMARY KEY, login TEXT NOT NULL);
     ALTER TABLE topics ADD COLUMN mcp TEXT;
+",
+    "
+    ALTER TABLE sessions ADD COLUMN commands TEXT;
 ",
 ];
 
@@ -218,6 +221,13 @@ impl Store {
                 .map(|provider| serde_json::from_str(provider))
                 .collect::<Result<_, _>>()?,
             drafts: self.drafts()?,
+            commands: self.commands(
+                "SELECT sessions.id, sessions.commands FROM sessions
+                 JOIN topics ON topics.id = sessions.topic_id
+                 WHERE sessions.closed_at_ms IS NULL AND topics.archived_at_ms IS NULL
+                     AND sessions.commands IS NOT NULL",
+                [],
+            )?,
             settings: self.device_settings()?,
             mcp_servers: mcp_servers
                 .iter()
@@ -339,6 +349,51 @@ impl Store {
         Ok(stored
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default())
+    }
+
+    /// The commands of the open tabs `sql` selects, as `(id, commands)`. Like drafts, a list a
+    /// newer version wrote that doesn't parse is lost, and the agent sends it again anyway.
+    fn commands(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<BTreeMap<SessionId, Vec<AgentCommand>>> {
+        let rows: Vec<(String, String)> =
+            self.collect(sql, params, |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, text)| {
+                let mut commands: Vec<AgentCommand> = serde_json::from_str(&text).ok()?;
+                // One stored before tectr took a command over still has it.
+                commands.retain(|command| protocol::tectr_owned_command(&command.name).is_none());
+                Some((SessionId(id), commands))
+            })
+            .collect())
+    }
+
+    /// The commands of an archived topic's open tabs, for restoring it.
+    pub fn topic_commands(
+        &self,
+        topic_id: &TopicId,
+    ) -> Result<BTreeMap<SessionId, Vec<AgentCommand>>> {
+        self.commands(
+            "SELECT id, commands FROM sessions
+             WHERE topic_id = ?1 AND closed_at_ms IS NULL AND commands IS NOT NULL",
+            [&topic_id.0],
+        )
+    }
+
+    pub fn set_session_commands(&self, id: &SessionId, commands: &[AgentCommand]) -> Result<()> {
+        let text = if commands.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(commands)?)
+        };
+        self.conn.execute(
+            "UPDATE sessions SET commands = ?2 WHERE id = ?1",
+            params![id.0, text],
+        )?;
+        Ok(())
     }
 
     pub fn set_drafts(&self, drafts: &BTreeMap<SessionId, String>) -> Result<()> {
@@ -848,11 +903,27 @@ mod tests {
         drafts.insert(SessionId::from("s2"), "half a tho".to_owned());
         store.set_drafts(&drafts).unwrap();
 
+        let command = |name: &str| AgentCommand {
+            name: name.to_owned(),
+            description: String::new(),
+            hint: None,
+        };
+        // Stored before tectr took `model` over, and before s1 closed.
+        for id in ["s1", "s2"] {
+            store
+                .set_session_commands(&id.into(), &[command("usage"), command("model")])
+                .unwrap();
+        }
+
         let state = store.load_state(machine()).unwrap();
         let sessions = &state.workspaces[0].topics[0].sessions;
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, SessionId::from("s2"));
         assert_eq!(state.drafts, drafts);
+        assert_eq!(
+            state.commands,
+            BTreeMap::from([(SessionId::from("s2"), vec![command("usage")])])
+        );
     }
 
     fn stored_topic(store: &Store, id: &str, auto_named: bool) -> Topic {

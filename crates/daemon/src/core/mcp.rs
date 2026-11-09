@@ -12,6 +12,9 @@ use super::{Core, Inner, internal, invalid, not_found};
 use crate::mcp::{self, expand};
 use crate::oauth;
 
+/// How long saving an HTTP server waits to find out whether it wants a login.
+const AUTH_CHECK_WAIT: Duration = Duration::from_secs(5);
+
 /// A browser login that takes longer than this has been given up on.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -98,7 +101,9 @@ impl Core {
         format!("http://localhost:{}/oauth/callback", self.port)
     }
 
-    pub(super) fn save_mcp_server(
+    /// Waits briefly for whether an HTTP server wants a login, so the answer can say so and a
+    /// client can open the browser straight away.
+    pub(super) async fn save_mcp_server(
         self: &Arc<Self>,
         id: Option<McpServerId>,
         name: &str,
@@ -106,6 +111,28 @@ impl Core {
         transport: McpTransport,
         enabled: bool,
     ) -> Result<CommandOutput, CommandError> {
+        let server = self.store_mcp_server(id, name, topic_id, transport, enabled)?;
+        if http_url(&server.transport).is_none() || server.auth == McpAuth::LoggedIn {
+            return Ok(CommandOutput::McpServer { server });
+        }
+        let id = server.id.clone();
+        let asked = tokio::time::timeout(AUTH_CHECK_WAIT, self.ask_mcp_auth(id.clone())).await;
+        if asked.is_err() {
+            // A slow server still gets its answer, just not in this one.
+            self.check_mcp_auth(id.clone());
+        }
+        let server = self.lock().state.mcp_server(&id).cloned().unwrap_or(server);
+        Ok(CommandOutput::McpServer { server })
+    }
+
+    fn store_mcp_server(
+        &self,
+        id: Option<McpServerId>,
+        name: &str,
+        topic_id: Option<TopicId>,
+        transport: McpTransport,
+        enabled: bool,
+    ) -> Result<McpServer, CommandError> {
         let name = name.trim();
         if !mcp::valid_name(name) {
             return Err(invalid(
@@ -162,11 +189,7 @@ impl Core {
         }
         inner.put_mcp_server(server.clone()).map_err(internal)?;
         inner.refresh_mcp_sessions(None);
-        drop(inner);
-        if http_url(&server.transport).is_some() && server.auth != McpAuth::LoggedIn {
-            self.check_mcp_auth(server.id.clone());
-        }
-        Ok(CommandOutput::McpServer { server })
+        Ok(server)
     }
 
     pub(super) fn remove_mcp_server(
@@ -383,43 +406,46 @@ impl Core {
         Ok(CommandOutput::McpImport { added, skipped })
     }
 
-    /// Asks a server whether it wants a login, so the person finds out before an agent does.
+    /// Asks a server in the background whether it wants a login.
     fn check_mcp_auth(self: &Arc<Self>, id: McpServerId) {
         let core = self.clone();
-        tokio::spawn(async move {
-            let (url, headers) = {
-                let inner = core.lock();
-                let Some(server) = inner.state.mcp_server(&id) else {
-                    return;
-                };
-                let McpTransport::Http { url, headers, .. } = &server.transport else {
-                    return;
-                };
-                if server.auth == McpAuth::LoggedIn {
-                    return;
-                }
-                (expand(url), expanded(headers))
+        tokio::spawn(async move { core.ask_mcp_auth(id).await });
+    }
+
+    /// Asks a server whether it wants a login, so the person finds out before an agent does.
+    async fn ask_mcp_auth(&self, id: McpServerId) {
+        let (url, headers) = {
+            let inner = self.lock();
+            let Some(server) = inner.state.mcp_server(&id) else {
+                return;
             };
-            match oauth::challenge(&core.http, &url, &headers).await {
-                // A login can finish while the server is being asked, and that answer is stale.
-                Ok(Some(_)) => {
-                    let mut inner = core.lock();
-                    let logged_in = inner
-                        .store
-                        .mcp_login(&id)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|login| login.access_token.is_some());
-                    if !logged_in {
-                        inner.set_mcp_auth(&id, McpAuth::NeedsLogin);
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::debug!(%id, "couldn't ask an MCP server about logins: {error:#}")
+            let McpTransport::Http { url, headers, .. } = &server.transport else {
+                return;
+            };
+            if server.auth == McpAuth::LoggedIn {
+                return;
+            }
+            (expand(url), expanded(headers))
+        };
+        match oauth::challenge(&self.http, &url, &headers).await {
+            // A login can finish while the server is being asked, and that answer is stale.
+            Ok(Some(_)) => {
+                let mut inner = self.lock();
+                let logged_in = inner
+                    .store
+                    .mcp_login(&id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|login| login.access_token.is_some());
+                if !logged_in {
+                    inner.set_mcp_auth(&id, McpAuth::NeedsLogin);
                 }
             }
-        });
+            Ok(None) => {}
+            Err(error) => {
+                tracing::debug!(%id, "couldn't ask an MCP server about logins: {error:#}")
+            }
+        }
     }
 
     /// Where a request on the proxy goes, if the session behind `secret` got this server.

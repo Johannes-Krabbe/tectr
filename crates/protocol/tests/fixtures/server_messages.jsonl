@@ -41,3 +41,4 @@
 {"type":"state_changed","change":{"change":"topic_mcp_changed","topic_id":"t1","mcp":{"x1":false}}}
 {"type":"response","id":1,"result":{"Ok":{"output":"mcp_login","url":"https://auth.example/authorize?x=1"}}}
 {"type":"response","id":1,"result":{"Ok":{"output":"mcp_import","added":["github"],"skipped":["old: sse servers aren't supported"]}}}
+{"type":"state_changed","change":{"change":"commands_changed","session_id":"s1","commands":[{"name":"usage","description":"Show plan usage limits"},{"name":"review","description":"Review a pull request","hint":"PR number"}]}}

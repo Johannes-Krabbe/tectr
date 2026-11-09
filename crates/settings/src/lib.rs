@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn changing_nav_moves_everything_that_follows_it() {
         let (_folder, store) = store_with("[keybinds.nav]\ndown = \"n\"\n");
-        for id in ["sidebar.down", "pane.down", "device.down"] {
+        for id in ["sidebar.down", "pane.down", "settings.down"] {
             assert_eq!(keys(&store, id), ["n"], "{id}");
         }
         // Typing searches the palette and pickers, so they follow their own default instead.

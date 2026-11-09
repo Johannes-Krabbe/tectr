@@ -13,11 +13,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use protocol::{
-    Approval, ApprovalId, ArchiveRisk, Command, CommandError, CommandOutput, DaemonState,
-    DeviceSettings, ErrorCode, Machine, MachineId, MoveTarget, PermissionMode, PermissionOption,
-    PermissionOutcome, Provider, ProviderCandidate, Session, SessionEvent, SessionEventKind,
-    SessionId, SessionRef, SessionStatus, StateChange, StopReason, ToolCallPatch, Topic, TopicId,
-    Workspace, WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
+    AgentCommand, Approval, ApprovalId, ArchiveRisk, Command, CommandError, CommandOutput,
+    DaemonState, DeviceSettings, ErrorCode, Machine, MachineId, MoveTarget, PermissionMode,
+    PermissionOption, PermissionOutcome, Provider, ProviderCandidate, Session, SessionEvent,
+    SessionEventKind, SessionId, SessionRef, SessionStatus, StateChange, StopReason, ToolCallPatch,
+    Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -271,7 +271,10 @@ impl Core {
                 topic_id,
                 transport,
                 enabled,
-            } => self.save_mcp_server(id, &name, topic_id, transport, enabled),
+            } => {
+                self.save_mcp_server(id, &name, topic_id, transport, enabled)
+                    .await
+            }
             Command::RemoveMcpServer { id } => self.remove_mcp_server(&id),
             Command::SetTopicMcp {
                 topic_id,
@@ -552,10 +555,17 @@ impl Core {
                 inner.store.update_session(session).map_err(internal)?;
             }
         }
+        let commands = inner.store.topic_commands(topic_id).map_err(internal)?;
         inner.emit(StateChange::TopicAdded {
             workspace_id: workspace_id.clone(),
             topic: topic.clone(),
         });
+        for (session_id, commands) in commands {
+            inner.emit(StateChange::CommandsChanged {
+                session_id,
+                commands,
+            });
+        }
         Ok(CommandOutput::Topic {
             workspace_id,
             topic,
@@ -994,6 +1004,9 @@ impl Core {
         if text.trim().is_empty() {
             return Err(invalid("the prompt is empty"));
         }
+        if let Some(reason) = protocol::refused_prompt(&text) {
+            return Err(invalid(reason));
+        }
         let mut inner = self.lock();
         let session = inner
             .state
@@ -1315,6 +1328,22 @@ impl Core {
         if let Some(title) = title {
             inner.name_topic_after(id, title.trim());
         }
+    }
+
+    pub fn commands_changed(&self, id: &SessionId, mut commands: Vec<AgentCommand>) {
+        commands.retain(|command| protocol::tectr_owned_command(&command.name).is_none());
+        let mut inner = self.lock();
+        let current = inner.state.commands.get(id).map_or(&[][..], Vec::as_slice);
+        if current == commands.as_slice() || inner.state.session(id).is_none() {
+            return;
+        }
+        if let Err(error) = inner.store.set_session_commands(id, &commands) {
+            tracing::error!(%id, "failed to store the session's commands: {error:#}");
+        }
+        inner.emit(StateChange::CommandsChanged {
+            session_id: id.clone(),
+            commands,
+        });
     }
 
     pub fn permission_requested(

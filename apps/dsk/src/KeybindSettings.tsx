@@ -18,7 +18,7 @@ import {
 import { formatSequence } from "./keymatch";
 import { inPane } from "./keys";
 import { hint, SETTINGS_MOVES, useHints } from "./shortcuts";
-import { SettingsPage } from "./ui/SettingsPage";
+import { listMoves, SettingsPage } from "./ui/SettingsPage";
 import { Kbd, Keys } from "./ui/StatusIcon";
 
 /** What switching holding on starts with. The file can set any other length. */
@@ -34,13 +34,6 @@ interface Recording {
 }
 
 const MAX_SEQUENCE = 4;
-
-/** Half of however many rows fit, like Ctrl+D and Ctrl+U move half a screen in Vim. */
-export function halfScreen(): number {
-  const height = document.querySelector(".pane.settings")?.clientHeight ?? 0;
-  const row = document.querySelector<HTMLElement>(".keybind")?.offsetHeight || 1;
-  return Math.max(Math.floor(height / row / 2), 1);
-}
 
 /** Every shortcut in the app. What can be done to the selected one stays in a bar at the
  * bottom, so moving through the list never moves the list. */
@@ -151,23 +144,10 @@ export function KeybindSettings({
     if (!active || recording || !row) return;
     const onKey = (event: KeyboardEvent) => {
       if (!inPane(event)) return;
-      const moveBy = (step: number) => () =>
-        setCursor(Math.max(Math.min(selected + step, rows.length - 1), 0));
       const commands: [ActionId, () => void][] = [
-        ["settings.up", moveBy(-1)],
-        ["settings.down", moveBy(1)],
-        ["settings.half_up", () => setCursor(Math.max(selected - halfScreen(), 0))],
-        ["settings.half_down", () => setCursor(Math.min(selected + halfScreen(), rows.length - 1))],
-        ["settings.first", () => setCursor(0)],
-        ["settings.last", () => setCursor(rows.length - 1)],
-        [
-          "settings.center",
-          () => document.querySelector(".keybind.current")?.scrollIntoView({ block: "center" }),
-        ],
+        ...listMoves(selected, rows.length, setCursor, onLeave),
         ["settings.edit", () => setRecording({ mode: "replace", chord: null, at: 0 })],
         ["settings.add", () => setRecording({ mode: "add", chord: null, at: 0 })],
-        ["settings.back", onLeave],
-        ["settings.parent", onLeave],
       ];
       if (hasKeys) {
         commands.push(

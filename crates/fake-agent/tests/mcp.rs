@@ -633,10 +633,11 @@ async fn the_proxy_logs_in_refreshes_and_keeps_tokens_from_the_agent() {
         .save("linear", None, http(&format!("http://{addr}/mcp")), true)
         .await
         .unwrap();
-    wait_for("the server to ask for a login", || {
-        (f.server("linear").auth == McpAuth::NeedsLogin).then_some(())
-    })
-    .await;
+    assert_eq!(
+        server.auth,
+        McpAuth::NeedsLogin,
+        "saving waits to find out, so a client can log in straight away"
+    );
 
     // Plays the browser: the authorization server sends it back to the daemon.
     let CommandOutput::McpLogin { url } = f

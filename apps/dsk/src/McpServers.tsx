@@ -22,13 +22,16 @@ import {
   type McpDraft,
   mcpSummary,
   nameProblem,
+  takenNames,
   transportOf,
   withEnabled,
 } from "./mcp";
+import { McpAddSheet } from "./McpAdd";
 import { isOnline } from "./model";
 import { type PaletteItem, useScreenPaletteItems } from "./Palette";
 import { Sheet } from "./Sheets";
-import { hint, type Hint, useHints } from "./shortcuts";
+import { hint, type Hint, SETTINGS_MOVES, useHints } from "./shortcuts";
+import { listMoves, SettingsPage } from "./ui/SettingsPage";
 import { Keys } from "./ui/StatusIcon";
 
 /** Requests about servers, each one's progress and last error kept by server. */
@@ -358,10 +361,7 @@ export function McpSettings({
       ? [
           ...(online ? [hint("Add", "mcp.add"), hint("Import", "mcp.import")] : []),
           ...(server ? rowActions(server).map(({ label, action }) => hint(label, action)) : []),
-          ...(servers.length > 1
-            ? [hint("Move", "mcp.up", "mcp.down"), hint("First, last", "mcp.first", "mcp.last")]
-            : []),
-          hint("Back", "mcp.back"),
+          ...SETTINGS_MOVES,
         ]
       : null,
   );
@@ -403,25 +403,15 @@ export function McpSettings({
   useScreenPaletteItems(paletteItems);
 
   useEffect(() => {
-    if (active) document.querySelector(".settings-item.current")?.scrollIntoView({ block: "nearest" });
+    if (active) document.querySelector(".keybind.current")?.scrollIntoView({ block: "nearest" });
   }, [selected, active]);
 
   useEffect(() => {
     if (!active || form) return;
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (!inPane(event)) return;
-      const moveTo = (index: number) => () =>
-        setCursor(Math.max(Math.min(index, servers.length - 1), 0));
       const commands: [ActionId, () => void][] = [
-        ["mcp.up", moveTo(selected - 1)],
-        ["mcp.down", moveTo(selected + 1)],
-        ["mcp.first", moveTo(0)],
-        ["mcp.last", moveTo(servers.length - 1)],
-        [
-          "mcp.center",
-          () => document.querySelector(".settings-item.current")?.scrollIntoView({ block: "center" }),
-        ],
-        ["mcp.back", onLeave],
+        ...listMoves(selected, servers.length, setCursor, onLeave),
         ["mcp.add", add],
         ["mcp.import", () => void runImport()],
       ];
@@ -432,80 +422,136 @@ export function McpSettings({
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  const doing = server && requests.busy[server.id];
+  const serverError = server && requests.errors[server.id];
+  const footer = active ? (
+    <>
+      {serverError ? (
+        <span className="settings-actions-what error">{serverError}</span>
+      ) : (
+        <span className="settings-actions-what code">
+          {server ? (doing ?? mcpSummary(server.transport)) : ""}
+        </span>
+      )}
+      {server &&
+        rowActions(server).map(({ label, action, run }) => (
+          <button key={action} className="button" disabled={doing !== undefined} onClick={run}>
+            {label}
+            <Keys action={action} />
+          </button>
+        ))}
+    </>
+  ) : (
+    <span className="settings-actions-what">
+      <Keys action="sections.confirm" /> Change these servers
+    </span>
+  );
+
   return (
-    <div className="pane settings">
-      <div className="settings-in">
-        <div className="settings-row">
-          <span className="name">Topics get the ones that are on, and each topic can change that</span>
-          <button className="button" disabled={!online || importing} onClick={() => void runImport()}>
-            {importing ? "Importing" : "Import"}
-            {active && <Keys action="mcp.import" />}
-          </button>
-          <button className="button" disabled={!online} onClick={add}>
-            Add server
-            {active && <Keys action="mcp.add" />}
-          </button>
-        </div>
-        {!online && <p className="empty settings-error">This device is offline</p>}
-        {importError && <p className="error settings-error">{importError}</p>}
+    <>
+      <SettingsPage error={importError} footer={footer}>
+        {!online && <p className="settings-note">This device is offline</p>}
         {imported?.map((line, index) => (
-          <p key={index} className="settings-note settings-error">
+          <p key={index} className="settings-note">
             {line}
           </p>
         ))}
-        {online && servers.length === 0 && (
-          <p className="empty settings-error">No servers yet. Agents get none of their own.</p>
-        )}
-        {servers.map((target, index) => {
-          const current = active && index === selected;
-          const doing = requests.busy[target.id];
-          const auth = mcpAuthLabel(target);
-          return (
-            <div
-              key={target.id}
-              className={`settings-item ${current ? "current" : ""}`}
-              onMouseMove={(event) => {
-                if (event.movementX === 0 && event.movementY === 0) return;
-                setCursor(index);
-                onActivate();
-              }}
+        <section className="settings-group">
+          {/* What applies to the whole list sits with it. The bar at the bottom is only for
+              the selected server. */}
+          <div className="settings-group-head">
+            <h3 className="settings-group-title">Servers</h3>
+            {/* With nothing set up yet, bringing over what the agents already had is the first step. */}
+            <button
+              className={`button ${servers.length === 0 ? "primary" : ""}`}
+              disabled={!online || importing}
+              onClick={() => void runImport()}
             >
-              <div className="settings-row">
-                <span className="name code">{target.name}</span>
-                {doing && <span className="meta">{doing}</span>}
-                {auth && (
-                  <span className={`meta ${target.auth === "needs_login" ? "alert" : ""}`}>{auth}</span>
-                )}
-                <span className="meta">{target.enabled ? "On" : "Off"}</span>
-                {current &&
-                  rowActions(target).map(({ label, action, run }) => (
-                    <button
-                      key={action}
-                      className="button"
-                      disabled={doing !== undefined}
-                      onClick={run}
-                    >
-                      {label}
-                      <Keys action={action} />
-                    </button>
-                  ))}
-              </div>
-              <p className="settings-detail code">{mcpSummary(target.transport)}</p>
-              {requests.errors[target.id] && (
-                <p className="error settings-error">{requests.errors[target.id]}</p>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      {form && machineId && (
+              {importing ? "Importing" : "Import"}
+              {active && <Keys action="mcp.import" />}
+            </button>
+            <button
+              className={`button ${servers.length === 0 ? "" : "primary"}`}
+              disabled={!online}
+              onClick={add}
+            >
+              Add
+              {active && <Keys action="mcp.add" />}
+            </button>
+          </div>
+          {online && servers.length === 0 && (
+            <p className="settings-note">
+              No servers yet, so agents get none. Import brings over the ones Claude Code, Codex
+              and OpenCode have. Add takes a URL, a command or a config from the docs.
+            </p>
+          )}
+          <div className="keybinds">
+            {servers.map((target, index) => {
+              const current = active && index === selected;
+              const busy = requests.busy[target.id];
+              const auth = mcpAuthLabel(target);
+              return (
+                <div
+                  key={target.id}
+                  className={`keybind ${current ? "current" : ""}`}
+                  // Moving, rather than entering: a row scrolling under a pointer that
+                  // isn't moving must not take the keyboard or the selection.
+                  onMouseMove={(event) => {
+                    if (event.movementX === 0 && event.movementY === 0) return;
+                    setCursor(index);
+                    onActivate();
+                  }}
+                >
+                  <span className="name code">{target.name}</span>
+                  {busy ? (
+                    <span className="meta">{busy}</span>
+                  ) : requests.errors[target.id] ? (
+                    <span className="meta bad">Failed</span>
+                  ) : (
+                    auth && (
+                      <span className={`meta ${target.auth === "needs_login" ? "alert" : ""}`}>
+                        {auth}
+                      </span>
+                    )
+                  )}
+                  <button
+                    className="picker"
+                    tabIndex={-1}
+                    role="switch"
+                    aria-checked={target.enabled}
+                    aria-label={`${target.name} on for topics by default`}
+                    disabled={!online || !canEdit(target)}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => requests.toggle(target)}
+                  >
+                    {target.enabled ? "On" : "Off"}
+                    {current && online && canEdit(target) && <Keys action="mcp.toggle" />}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+        <p className="settings-note settings-group">
+          Topics get the servers that are on, and each topic can change that.
+        </p>
+      </SettingsPage>
+      {form?.server && machineId && (
         <McpServerSheet
           machineId={machineId}
           server={form.server}
-          where={form.server ? `Edit ${form.server.name} on ${deviceName}` : `New MCP server on ${deviceName}`}
+          where={`Edit ${form.server.name} on ${deviceName}`}
           onClose={() => setForm(null)}
         />
       )}
-    </div>
+      {form && !form.server && machineId && state && (
+        <McpAddSheet
+          machineId={machineId}
+          taken={takenNames(state.mcp_servers ?? [])}
+          where={`New MCP server on ${deviceName}`}
+          onClose={() => setForm(null)}
+        />
+      )}
+    </>
   );
 }

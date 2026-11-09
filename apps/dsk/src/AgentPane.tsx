@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityItem, AgentMessage, LiveLine } from "./Activity";
+import { useCommandSuggestions } from "./CommandList";
 import { motionAllowed } from "./appearance";
 import {
+  type AgentCommand,
   type Approval,
   errorText,
   type PermissionOption,
@@ -33,6 +35,7 @@ import {
 import { FOLLOW_WITHIN, keepFollowing, newScroller } from "./motion";
 import { sessionPickerHints, SessionPickers } from "./SessionPickers";
 import { hint, type Hint, optionNumbersHint, useHints } from "./shortcuts";
+import { refusedPrompt } from "./slashCommands";
 import { useSyncedText } from "./syncedText";
 import { Icon } from "./ui/Icon";
 import { Keys, StatusIcon } from "./ui/StatusIcon";
@@ -156,6 +159,7 @@ export function AgentPane({
   online,
   approvals,
   draft,
+  commands,
   worktree,
   onInterrupt,
 }: {
@@ -166,6 +170,8 @@ export function AgentPane({
   approvals: Approval[];
   /** What's typed for this session but not sent yet, which any client can carry on with. */
   draft: string;
+  /** The slash commands the agent last said it has. */
+  commands: AgentCommand[] | undefined;
   worktree: Worktree | undefined;
   /** Only there while the session has a turn to interrupt. */
   onInterrupt: (() => void) | undefined;
@@ -209,6 +215,14 @@ export function AgentPane({
   const last = items[items.length - 1];
   const liveActivity = live && last?.kind === "activity" ? last : null;
 
+  const suggestions = useCommandSuggestions({
+    text: message.text,
+    commands: commands ?? [],
+    vimMode: vim.shown,
+    onChange: message.change,
+    onSend: (text) => void send(text),
+  });
+
   const answers = pending ? requestHints(pending) : [];
   const pickers = sessionPickerHints(provider, session, online);
   useHints("pane", [
@@ -221,7 +235,12 @@ export function AgentPane({
     hint("Sidebar", "pane.back"),
   ]);
   // Keys that type never answer a request from here, and the line leaves those out itself.
-  useHints("typing", [...answers, ...COMPOSER_HINTS, ...pickers]);
+  useHints("typing", [
+    ...answers,
+    ...suggestions.hints,
+    ...COMPOSER_HINTS,
+    ...pickers,
+  ]);
 
   // Stay at the bottom unless the reader has scrolled up. This watches the size, because a
   // message keeps growing as it types out, long after the event that brought its text.
@@ -292,9 +311,14 @@ export function AgentPane({
   // The agent's status moved on, so an error about the old one no longer applies.
   useEffect(() => setError(null), [session.status]);
 
-  const send = async () => {
-    const text = message.text.trim();
+  async function send(typed = message.text) {
+    const text = typed.trim();
     if (!text || sending) return;
+    const refused = refusedPrompt(text);
+    if (refused) {
+      setError(refused);
+      return;
+    }
     setSending(true);
     setError(null);
     // The daemon clears the draft as it accepts this, and a push landing after that would
@@ -311,7 +335,7 @@ export function AgentPane({
     } finally {
       setSending(false);
     }
-  };
+  }
 
   return (
     <div className="pane">
@@ -389,6 +413,7 @@ export function AgentPane({
       </div>
       <div className="dock">
         {pending && <RequestCard machineId={machineId} approval={pending} />}
+        {suggestions.list}
         <form
           className="composer"
           onSubmit={(event) => {
@@ -410,13 +435,16 @@ export function AgentPane({
             autoCapitalize="off"
             onChange={(event) => message.change(event.target.value)}
             {...vim.props}
+            {...suggestions.boxProps(vim.props)}
             onKeyDown={(event) => {
               if (vim.onKeyDown(event)) return;
+              if (suggestions.onKeyDown(event)) return;
               textBoxKey(
                 event,
                 [
                   "composer.send",
                   () => {
+                    if (suggestions.sendChosen()) return;
                     if (message.text.trim()) void send();
                     else log.current?.focus();
                   },

@@ -11,8 +11,8 @@ use daemon::{AgentLauncher, Config, Daemon};
 use engine::{Connection, Engine, EngineError};
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    Approval, ArchiveRisk, ClientMessage, Command, CommandOutput, DaemonState, ErrorCode,
-    MachineId, MoveTarget, PermissionMode, PermissionOutcome, ServerMessage, Session,
+    AgentCommand, Approval, ArchiveRisk, ClientMessage, Command, CommandOutput, DaemonState,
+    ErrorCode, MachineId, MoveTarget, PermissionMode, PermissionOutcome, ServerMessage, Session,
     SessionEventKind, SessionRef, SessionStatus, StopReason, Topic, TopicId, Workspace,
     WorktreeRisk,
 };
@@ -1548,6 +1548,100 @@ async fn closing_answers_a_request_the_agent_is_waiting_on() {
         SessionEventKind::PermissionResolved { approval_id, outcome: PermissionOutcome::Cancelled }
             if approval_id == &approval.id
     )));
+    daemon.shutdown().await;
+}
+
+fn commands_of(engine: &Engine, session: &SessionRef) -> Vec<AgentCommand> {
+    state_of(engine)
+        .commands
+        .get(&session.session_id)
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_slash_commands_reach_every_client_and_stay_with_its_tab() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let port = daemon.addr().port();
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let other = connect(&daemon).await;
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    let wanted = vec![
+        AgentCommand {
+            name: "usage".to_owned(),
+            description: "Runs usage".to_owned(),
+            hint: None,
+        },
+        AgentCommand {
+            name: "review".to_owned(),
+            description: "Runs review".to_owned(),
+            hint: Some("pr".to_owned()),
+        },
+    ];
+
+    // The ones that change what tectr sets are left out.
+    prompt(&engine, &session, "commands usage model review:pr mcp")
+        .await
+        .unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    for client in [&engine, &other] {
+        wait_for("the agent's commands", || {
+            (commands_of(client, &session) == wanted).then_some(())
+        })
+        .await;
+    }
+    let error = prompt(&engine, &session, " /model opus").await.unwrap_err();
+    assert!(
+        matches!(&error, EngineError::Command(e) if e.code == ErrorCode::InvalidInput
+            && e.message.contains("tectr sets the model")),
+        "{error}"
+    );
+    assert_eq!(status(&engine, &session), Some(SessionStatus::Done));
+
+    // The agent isn't running after a restart, and the list is there before it starts again.
+    daemon.shutdown().await;
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    assert_eq!(commands_of(&engine, &session), wanted);
+
+    engine
+        .request(&machine, archive_topic(&topic, false))
+        .await
+        .unwrap();
+    assert!(state_of(&engine).commands.is_empty());
+    engine
+        .request(&machine, restore_topic(&topic))
+        .await
+        .unwrap();
+    assert_eq!(commands_of(&engine, &session), wanted);
+
+    // An agent saying it has none any more clears them.
+    engine.open_session(&session);
+    prompt(&engine, &session, "commands").await.unwrap();
+    wait_for("the commands to go", || {
+        commands_of(&engine, &session).is_empty().then_some(())
+    })
+    .await;
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+
+    prompt(&engine, &session, "commands usage").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    wait_for("the new commands", || {
+        (commands_of(&engine, &session).len() == 1).then_some(())
+    })
+    .await;
+    let close = Command::CloseSession {
+        session_id: session.session_id.clone(),
+        force: false,
+    };
+    engine.request(&machine, close).await.unwrap();
+    assert!(state_of(&engine).commands.is_empty());
+    daemon.shutdown().await;
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    assert!(state_of(&connect(&daemon).await).commands.is_empty());
     daemon.shutdown().await;
 }
 

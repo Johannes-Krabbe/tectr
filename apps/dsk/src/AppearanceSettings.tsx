@@ -19,11 +19,10 @@ import {
   tryAppearance,
   useSettings,
 } from "./keybinds";
-import { halfScreen } from "./KeybindSettings";
 import { inPane } from "./keys";
 import { hint, SETTINGS_MOVES, useHints } from "./shortcuts";
 import { Choice, Picker } from "./ui/Picker";
-import { SettingsPage } from "./ui/SettingsPage";
+import { listMoves, SettingsPage } from "./ui/SettingsPage";
 import { Icon } from "./ui/Icon";
 import { Keys } from "./ui/StatusIcon";
 
@@ -193,24 +192,11 @@ export function AppearanceSettings({
     if (!active || !row) return;
     const onKey = (event: KeyboardEvent) => {
       if (!inPane(event)) return;
-      const moveTo = (index: number) => () =>
-        setCursor(Math.max(Math.min(index, rows.length - 1), 0));
       const commands: [ActionId, () => void][] = [
-        ["settings.up", moveTo(selected - 1)],
-        ["settings.down", moveTo(selected + 1)],
-        ["settings.half_up", () => moveTo(selected - halfScreen())()],
-        ["settings.half_down", () => moveTo(selected + halfScreen())()],
-        ["settings.first", moveTo(0)],
-        ["settings.last", moveTo(rows.length - 1)],
-        [
-          "settings.center",
-          () => document.querySelector(".keybind.current")?.scrollIntoView({ block: "center" }),
-        ],
+        ...listMoves(selected, rows.length, setCursor, onLeave),
         ["settings.edit", () => change(row)],
         ["settings.decrease", () => step(row, -1)],
         ["settings.increase", () => step(row, 1)],
-        ["settings.back", onLeave],
-        ["settings.parent", onLeave],
       ];
       if (row.customized) commands.push(["settings.reset", () => reset(row)]);
       commands.some(([id, run]) => act(event, id, run));

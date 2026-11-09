@@ -3,6 +3,7 @@ import { type Device, errorText, type PermissionMode } from "./engine";
 import { act, type ActionId, textBoxKey, titled } from "./keybinds";
 import { defaultEffort, isOnline, modelLabel, MODES } from "./model";
 import { hint, type Hint, useHints } from "./shortcuts";
+import { refusedPrompt } from "./slashCommands";
 import { Choice, Picker } from "./ui/Picker";
 import { Keys } from "./ui/StatusIcon";
 import { useVim, VimModeLabel } from "./VimBox";
@@ -141,8 +142,15 @@ export function AgentForm({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const start = async () => {
+  async function start() {
     if (!canStart) return;
+    const prompt = text.trim();
+    // Checked before anything is made, so a refused prompt doesn't leave a tab behind.
+    const refused = refusedPrompt(prompt);
+    if (refused) {
+      setError(refused);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -151,14 +159,14 @@ export function AgentForm({
         mode: mode.mode,
         model: model?.id ?? null,
         effort: effort?.id ?? null,
-        text: text.trim(),
+        text: prompt,
       });
     } catch (reason) {
       setError(errorText(reason));
     } finally {
       setBusy(false);
     }
-  };
+  }
 
   return (
     <form

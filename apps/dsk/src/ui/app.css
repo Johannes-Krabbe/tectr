@@ -715,6 +715,27 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 .dock .error { margin-top: var(--space-xs); }
 .dock .request { margin-bottom: var(--space-sm); }
 
+/* In the flow above the message box, so the transcript makes room rather than hiding behind it. */
+.command-list {
+  max-height: min(280px, 40vh);
+  margin-bottom: var(--space-sm);
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+}
+
+.command-list .command-name,
+.command-list .command-hint {
+  flex: none;
+  font: var(--text-code-body);
+  font-variant-ligatures: var(--font-code-ligatures);
+}
+
+.command-list .command-name { color: var(--color-text-primary); }
+
+.command-list .command-hint,
+.command-list .name { color: var(--color-text-tertiary); }
+
 .composer {
   display: flex;
   flex-direction: column;
@@ -802,7 +823,7 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 .button.primary:hover:not(:disabled) { background: var(--color-accent-solid); }
 .button.primary .kbd { background: none; color: var(--color-text-on-accent); }
 
-/* Device settings */
+/* Settings */
 .settings {
   padding: var(--space-xl);
   overflow-y: auto;
@@ -819,58 +840,6 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   align-self: center;
 }
 
-.settings-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-md);
-  min-height: calc(44 * var(--unit));
-  padding: var(--space-xs) var(--space-md);
-  border-radius: var(--radius-md);
-  font: var(--text-label);
-}
-
-.settings-item { border-radius: var(--radius-md); }
-
-.settings-item.current { background: var(--color-surface-raised); }
-
-/* A second line under a row, such as what an MCP server runs. */
-.settings-detail {
-  padding: 0 var(--space-md) var(--space-sm);
-  overflow: hidden;
-  color: var(--color-text-tertiary);
-  font: var(--text-code-small);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.settings-defaults {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-md);
-  padding: 0 var(--space-md) var(--space-sm);
-}
-
-.settings-default {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  color: var(--color-text-tertiary);
-  font: var(--text-meta);
-}
-
-.settings-row .name { flex: 1; min-width: 0; }
-
-.settings-row .meta {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.settings-error { padding: 0 var(--space-md) var(--space-xs); }
-
-/* App settings */
 .settings-note {
   color: var(--color-text-tertiary);
   font: var(--text-meta);
@@ -894,6 +863,14 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 .settings-group:first-child { margin-top: 0; }
 
 .settings-group-title { font: var(--text-label); }
+
+.settings-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.settings-group-head .settings-group-title { flex: 1; min-width: 0; }
 
 .keybinds {
   display: flex;
@@ -945,6 +922,29 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   min-width: 0;
   color: var(--color-text-tertiary);
   font: var(--text-meta);
+}
+
+/* A value typed right in its row, such as a device's name. */
+.settings-input {
+  width: calc(240 * var(--unit));
+  height: calc(24 * var(--unit));
+  padding: 0 var(--space-xs);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-accent-text);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font: var(--text-meta);
+  outline: 0;
+}
+
+.settings-actions-what.error { color: var(--color-status-failed); }
+
+.settings-actions-what.code {
+  display: block;
+  overflow: hidden;
+  font: var(--text-code-small);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .side-settings {
@@ -1201,7 +1201,7 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   font: var(--text-label);
 }
 
-.sheet input:focus-visible { outline: 0; }
+.sheet :is(input, textarea):focus-visible { outline: 0; }
 
 .sheet-name {
   display: block;
@@ -1218,6 +1218,17 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 }
 
 .sheet-name.code { font: var(--text-code-body); }
+
+/* A name box that takes pasted blocks, like an MCP config. One line sits where an input's
+ * would, and a pasted block grows it up to a point instead of hiding behind a scroll. */
+textarea.sheet-name {
+  height: auto;
+  min-height: calc(40 * var(--unit));
+  max-height: calc(160 * var(--unit));
+  padding-block: calc((40 * var(--unit) - 1lh) / 2);
+  field-sizing: content;
+  resize: none;
+}
 
 .sheet-error { padding: var(--space-xs) var(--space-lg); }
 

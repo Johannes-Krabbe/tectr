@@ -94,3 +94,34 @@ export function SettingsPage({
     </>
   );
 }
+
+/** Half of however many rows fit, like Ctrl+D and Ctrl+U move half a screen in Vim. */
+export function halfScreen(): number {
+  const height = document.querySelector(".pane.settings")?.clientHeight ?? 0;
+  const row = document.querySelector<HTMLElement>(".keybind")?.offsetHeight || 1;
+  return Math.max(Math.floor(height / row / 2), 1);
+}
+
+export const centerCurrentRow = () =>
+  document.querySelector(".keybind.current")?.scrollIntoView({ block: "center" });
+
+/** The keys every settings list moves with, and leaves by. */
+export function listMoves(
+  selected: number,
+  count: number,
+  setCursor: (index: number) => void,
+  onLeave: () => void,
+): [ActionId, () => void][] {
+  const moveTo = (index: number) => () => setCursor(Math.max(Math.min(index, count - 1), 0));
+  return [
+    ["settings.up", moveTo(selected - 1)],
+    ["settings.down", moveTo(selected + 1)],
+    ["settings.half_up", () => moveTo(selected - halfScreen())()],
+    ["settings.half_down", () => moveTo(selected + halfScreen())()],
+    ["settings.first", moveTo(0)],
+    ["settings.last", moveTo(count - 1)],
+    ["settings.center", centerCurrentRow],
+    ["settings.back", onLeave],
+    ["settings.parent", onLeave],
+  ];
+}

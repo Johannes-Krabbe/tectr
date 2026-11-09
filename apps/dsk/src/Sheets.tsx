@@ -37,7 +37,6 @@ export type SheetRequest =
   | { kind: "workspace"; machineId: string; deviceName: string; local: boolean }
   | { kind: "close"; machineId: string; session: Session }
   | { kind: "rename"; machineId: string; topic: Topic }
-  | { kind: "rename_device"; machineId: string; name: string }
   | {
       kind: "archive";
       machineId: string;
@@ -62,6 +61,7 @@ export function Sheet({
   onDone,
   onKeyDown,
   focusAction,
+  confirmKey,
   returnsFocus,
   hints = [],
   list,
@@ -79,6 +79,9 @@ export function Sheet({
   onKeyDown?: (event: KeyboardEvent<HTMLFormElement>) => void;
   /** For a sheet with nothing to type in, whose Enter should do what the sheet is for. */
   focusAction?: boolean;
+  /** For a sheet whose action can't be undone. Only this key does it, and Cancel is the primary
+   * button with the focus, so an Enter out of habit cancels. */
+  confirmKey?: ActionId;
   /** For a sheet that changes something in place, so there's no new thing for focus to go to. */
   returnsFocus?: boolean;
   /** The keys only this sheet has, for the shortcut line. */
@@ -91,6 +94,8 @@ export function Sheet({
   children?: ReactNode;
 }) {
   const actionButton = useRef<HTMLButtonElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const submitKey = confirmKey ?? "sheet.submit";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Cancelling goes back to where you were. Read while rendering, because the input's
@@ -102,7 +107,7 @@ export function Sheet({
   useEffect(() => setError(null), [input]);
 
   useHints("overlay", [
-    ...(canSubmit && !busy ? [keyHint(action, "sheet.submit")] : []),
+    ...(canSubmit && !busy ? [keyHint(action, submitKey)] : []),
     ...hints,
     keyHint("Cancel", "sheet.cancel"),
   ]);
@@ -134,7 +139,7 @@ export function Sheet({
         <Dialog.Popup
           className="sheet"
           finalFocus={() => (created.current ? false : opener)}
-          initialFocus={focusAction ? actionButton : undefined}
+          initialFocus={confirmKey ? cancelButton : focusAction ? actionButton : undefined}
           onKeyDownCapture={(event) => remapNative(event, CANCEL_KEY)}
         >
           <form
@@ -142,7 +147,7 @@ export function Sheet({
             onKeyDown={(event) => {
               const form = event.currentTarget;
               // Sending the browser's own submit, because it would ignore a remapped Enter.
-              if (act(event, "sheet.submit", () => form.requestSubmit())) return;
+              if (act(event, submitKey, () => form.requestSubmit())) return;
               if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) {
                 event.preventDefault();
               }
@@ -155,18 +160,18 @@ export function Sheet({
             {list === undefined && (
               <div className="sheet-foot">
                 <span className="sheet-hint">{hint}</span>
-                <Dialog.Close className="button">
+                <Dialog.Close ref={cancelButton} className={`button ${confirmKey ? "primary" : ""}`}>
                   Cancel
                   <Keys action="sheet.cancel" />
                 </Dialog.Close>
                 <button
                   ref={actionButton}
-                  className="button primary"
+                  className={`button ${confirmKey ? "" : "primary"}`}
                   type="submit"
                   disabled={!canSubmit || busy}
                 >
                   {action}
-                  <Keys action="sheet.submit" />
+                  <Keys action={submitKey} />
                 </button>
               </div>
             )}
@@ -445,46 +450,6 @@ function RenameSheet({
   );
 }
 
-function RenameDeviceSheet({
-  sheet,
-  onClose,
-  onDone,
-}: {
-  sheet: Extract<SheetRequest, { kind: "rename_device" }>;
-  onClose: () => void;
-  onDone: (output: CommandOutput) => void;
-}) {
-  const [name, setName] = useState(sheet.name);
-  return (
-    <Sheet
-      where={`Rename ${sheet.name}`}
-      action="Rename"
-      hint="Leave it empty to use the hostname"
-      canSubmit
-      returnsFocus
-      // Confirming the hostname it shows isn't choosing it, so it can go on following it.
-      run={async () =>
-        name.trim() === sheet.name
-          ? { output: "done" }
-          : request(sheet.machineId, { command: "rename_machine", name })
-      }
-      onClose={onClose}
-      onDone={onDone}
-      input={name}
-    >
-      <input
-        className="sheet-name"
-        autoFocus
-        value={name}
-        aria-label="Device name"
-        spellCheck={false}
-        onFocus={(event) => event.target.select()}
-        onChange={(event) => setName(event.target.value)}
-      />
-    </Sheet>
-  );
-}
-
 /** Asks once when archiving stops agents, and twice when it throws away work in git: the second
  * time with exactly what goes. Without either, archiving doesn't ask at all. */
 function ArchiveSheet({
@@ -501,10 +466,10 @@ function ArchiveSheet({
   return (
     <Sheet
       where={sure && losses.length ? `Archiving ${sheet.topic.name} loses this` : `Archive ${sheet.topic.name}`}
-      action={sure ? (losses.length ? "Archive and lose it" : "Archive topic") : "Continue"}
+      action={sure ? (losses.length ? "Archive and lose it" : "Archive topic") : "Confirm"}
       hint={sure && losses.length ? "It can't be brought back." : archiveSummary(sheet.risk)}
       canSubmit
-      focusAction
+      confirmKey="sheet.confirm"
       run={async () => {
         if (!sure) {
           setSure(true);
@@ -583,8 +548,6 @@ export function Sheets({
       return <CloseSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
     case "rename":
       return <RenameSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
-    case "rename_device":
-      return <RenameDeviceSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
     case "archive":
       return <ArchiveSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
     case "move":

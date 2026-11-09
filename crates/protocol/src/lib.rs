@@ -519,6 +519,10 @@ pub struct DaemonState {
     /// What's typed for each session but not sent yet.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drafts: BTreeMap<SessionId, String>,
+    /// The slash commands each session's agent last said it has. Kept apart from `Session`,
+    /// because a long list would otherwise travel with every status change.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub commands: BTreeMap<SessionId, Vec<AgentCommand>>,
     /// The MCP servers agents on this device get, device-wide and per topic.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<McpServer>,
@@ -550,6 +554,13 @@ impl DaemonState {
                 }
             }
             StateChange::TopicRemoved { topic_id } => {
+                if let Some(topic) = self.topic(topic_id) {
+                    let gone: Vec<SessionId> =
+                        topic.sessions.iter().map(|s| s.id.clone()).collect();
+                    for session_id in gone {
+                        self.commands.remove(&session_id);
+                    }
+                }
                 for workspace in &mut self.workspaces {
                     workspace.topics.retain(|t| &t.id != topic_id);
                 }
@@ -590,6 +601,7 @@ impl DaemonState {
                 self.settings = settings.clone();
             }
             StateChange::SessionRemoved { session_id } => {
+                self.commands.remove(session_id);
                 for topic in self.workspaces.iter_mut().flat_map(|w| &mut w.topics) {
                     topic.sessions.retain(|s| &s.id != session_id);
                 }
@@ -599,6 +611,16 @@ impl DaemonState {
                     self.drafts.remove(session_id);
                 } else {
                     self.drafts.insert(session_id.clone(), text.clone());
+                }
+            }
+            StateChange::CommandsChanged {
+                session_id,
+                commands,
+            } => {
+                if commands.is_empty() {
+                    self.commands.remove(session_id);
+                } else {
+                    self.commands.insert(session_id.clone(), commands.clone());
                 }
             }
             StateChange::McpServerChanged { server } => {
@@ -737,6 +759,51 @@ pub struct Session {
     /// client, so reading it anywhere reads it everywhere. Starting work clears it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unread: bool,
+}
+
+/// A slash command an agent offers. Sending `/name`, and anything after it, as a prompt runs it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentCommand {
+    pub name: String,
+    pub description: String,
+    /// What to type after it, for a command that takes input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+/// Agents' slash commands that change what tectr sets itself, with what that is. Running one
+/// would leave tectr showing settings the agent no longer has, so the daemon leaves them out of
+/// the commands it lists and refuses a prompt that runs one. Names, not agents, because the same
+/// name means the same thing in each agent that has it. `apps/dsk/src/slashCommands.ts` lists
+/// the same by hand, which a test checks.
+pub const TECTR_OWNED_COMMANDS: &[(&str, &str)] = &[
+    ("model", "the model"),
+    ("effort", "the effort"),
+    ("permissions", "the permission mode"),
+    ("approvals", "the permission mode"),
+    ("config", "the model and permission mode"),
+    ("mcp", "the MCP servers"),
+];
+
+/// What tectr sets that the command named `name` would change, if it's one of those.
+pub fn tectr_owned_command(name: &str) -> Option<&'static str> {
+    TECTR_OWNED_COMMANDS
+        .iter()
+        .find(|(owned, _)| *owned == name)
+        .map(|(_, what)| *what)
+}
+
+/// Why a prompt can't be sent, when it runs a command that changes what tectr sets.
+pub fn refused_prompt(prompt: &str) -> Option<String> {
+    let name = prompt
+        .trim_start()
+        .strip_prefix('/')?
+        .split_whitespace()
+        .next()?;
+    let what = tectr_owned_command(name)?;
+    Some(format!(
+        "tectr sets {what}, so /{name} can't run here. Change that in tectr instead."
+    ))
 }
 
 /// An MCP server that tectr gives agents. Each agent's own MCP configuration is switched off,
@@ -973,6 +1040,12 @@ pub enum StateChange {
     DraftChanged {
         session_id: SessionId,
         text: String,
+    },
+    /// The session's agent has a new list of slash commands. Empty means it has none. Closing
+    /// or archiving drops a session's list without this.
+    CommandsChanged {
+        session_id: SessionId,
+        commands: Vec<AgentCommand>,
     },
     McpServerChanged {
         server: McpServer,
@@ -1227,6 +1300,7 @@ mod tests {
             approvals: vec![],
             providers: vec![],
             drafts: BTreeMap::new(),
+            commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
             mcp_servers: vec![
                 server("on", None, true),
@@ -1261,6 +1335,7 @@ mod tests {
             approvals: vec![],
             providers: vec![],
             drafts: BTreeMap::new(),
+            commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
             mcp_servers: vec![],
         };
@@ -1275,5 +1350,110 @@ mod tests {
         state.apply(&change);
         state.apply(&change);
         assert_eq!(state.workspaces.len(), 1);
+    }
+
+    #[test]
+    fn a_prompt_running_a_command_tectr_owns_is_refused() {
+        assert_eq!(
+            refused_prompt("  /model opus").as_deref(),
+            Some("tectr sets the model, so /model can't run here. Change that in tectr instead.")
+        );
+        assert!(refused_prompt("/effort").is_some());
+        assert!(refused_prompt("/usage").is_none());
+        assert!(refused_prompt("/models").is_none());
+        assert!(refused_prompt("what /model am I on").is_none());
+        assert!(refused_prompt("/").is_none());
+    }
+
+    /// The app checks before it starts an agent, so a refused first prompt doesn't leave a
+    /// tab behind.
+    #[test]
+    fn the_app_refuses_the_same_commands() {
+        let source = include_str!("../../../apps/dsk/src/slashCommands.ts");
+        let block = source
+            .split_once("export const TECTR_OWNED_COMMANDS")
+            .and_then(|(_, rest)| rest.split_once("};"))
+            .map(|(block, _)| block)
+            .expect("slashCommands.ts declares TECTR_OWNED_COMMANDS");
+        let listed: Vec<(String, String)> = block
+            .lines()
+            .filter_map(|line| {
+                let (name, what) = line.trim().split_once(": \"")?;
+                Some((name.to_owned(), what.strip_suffix("\",")?.to_owned()))
+            })
+            .collect();
+        let owned: Vec<(String, String)> = TECTR_OWNED_COMMANDS
+            .iter()
+            .map(|(name, what)| ((*name).to_owned(), (*what).to_owned()))
+            .collect();
+        assert_eq!(listed, owned);
+    }
+
+    #[test]
+    fn a_sessions_commands_go_with_its_tab_or_its_topic() {
+        let session = |id: &str| Session {
+            id: id.into(),
+            agent: "fake".into(),
+            mode: PermissionMode::Auto,
+            model: None,
+            effort: None,
+            status: SessionStatus::Ready,
+            title: None,
+            unread: false,
+        };
+        let mut state = DaemonState {
+            machine: Machine {
+                id: "m".into(),
+                name: "m".into(),
+            },
+            workspaces: vec![Workspace {
+                id: "w".into(),
+                name: "w".into(),
+                path: "/w".into(),
+                topics: vec![Topic {
+                    id: "t".into(),
+                    name: "t".into(),
+                    worktree_id: "wt".into(),
+                    worktrees: vec![],
+                    sessions: vec![session("a"), session("b"), session("c")],
+                    mcp: BTreeMap::new(),
+                }],
+            }],
+            approvals: vec![],
+            providers: vec![],
+            drafts: BTreeMap::new(),
+            commands: BTreeMap::new(),
+            settings: DeviceSettings::default(),
+            mcp_servers: vec![],
+        };
+        let usage = vec![AgentCommand {
+            name: "usage".into(),
+            description: "Show usage".into(),
+            hint: None,
+        }];
+        for id in ["a", "b", "c"] {
+            state.apply(&StateChange::CommandsChanged {
+                session_id: id.into(),
+                commands: usage.clone(),
+            });
+        }
+        state.apply(&StateChange::CommandsChanged {
+            session_id: "c".into(),
+            commands: vec![],
+        });
+        assert_eq!(state.commands.len(), 2);
+
+        state.apply(&StateChange::SessionRemoved {
+            session_id: "a".into(),
+        });
+        assert_eq!(
+            state.commands.keys().collect::<Vec<_>>(),
+            [&SessionId::from("b")]
+        );
+
+        state.apply(&StateChange::TopicRemoved {
+            topic_id: "t".into(),
+        });
+        assert!(state.commands.is_empty());
     }
 }
