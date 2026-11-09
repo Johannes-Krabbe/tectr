@@ -10,6 +10,7 @@ cask "tectr" do
   homepage "https://github.com/Johannes-Krabbe/tectr"
 
   depends_on arch: :arm64
+  depends_on :macos
 
   app "tectr.app"
   binary "tectr"

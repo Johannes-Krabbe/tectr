@@ -9,6 +9,7 @@ Today this is a daemon, a command-line client, a first version of the desktop ap
 On an Apple Silicon Mac:
 
 ```sh
+brew trust johannes-krabbe/tap    # Homebrew only loads casks from taps you trust
 brew install --cask johannes-krabbe/tap/tectr
 ```
 
