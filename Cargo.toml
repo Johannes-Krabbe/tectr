@@ -20,6 +20,14 @@ highlight = { path = "crates/highlight" }
 
 agent-client-protocol = "5.0.0"
 anyhow = "1"
+base64 = "0.22"
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+# Rustls rather than the system's TLS, so a daemon on Linux needs no OpenSSL.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json", "form"] }
+sha2 = "0.10"
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "7"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

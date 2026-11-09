@@ -8,15 +8,21 @@ import {
   type ProviderModel,
   request,
 } from "./engine";
-import { act } from "./keybinds";
+import { act, type ActionId } from "./keybinds";
 import { inPane } from "./keys";
+import { McpSettings } from "./McpServers";
 import { defaultEffort, isOnline, keepsAwake, modelLabel, withKeepAwakeToggled } from "./model";
 import { hint, type Hint, useHints } from "./shortcuts";
 import { Choice, Picker } from "./ui/Picker";
 import { SettingsLayout } from "./ui/SettingsPage";
 import { Keys } from "./ui/StatusIcon";
 
-const SECTIONS = [{ id: "providers", label: "Providers" }];
+type SectionId = "providers" | "mcp";
+
+const SECTIONS: { id: SectionId; label: string }[] = [
+  { id: "providers", label: "Providers" },
+  { id: "mcp", label: "MCP servers" },
+];
 
 /** A candidate, or a provider this daemon no longer knows how to run. */
 function rowsOf(candidates: ProviderCandidate[], providers: Provider[]): ProviderCandidate[] {
@@ -38,15 +44,108 @@ function describe(provider: Provider): string {
 const defaultModelOf = (provider: Provider): ProviderModel | undefined =>
   provider.models.find((m) => m.id === provider.default_model) ?? provider.models[0];
 
-/** The settings of one device. They live on its daemon, so every client sees the same ones. */
+/** The settings of one device. They live on its daemon, so every client sees the same ones.
+ * Like the app's settings, the list of sections has the keyboard first. */
 export function DeviceSettings({
   device,
+  section: shown,
+  onSection,
   onRename,
   onClose,
 }: {
   device: Device;
+  section: string | undefined;
+  onSection: (section: string) => void;
   onRename: () => void;
   onClose: () => void;
+}) {
+  const section: SectionId = SECTIONS.find((s) => s.id === shown)?.id ?? "providers";
+  // Whether the section has the keyboard, rather than the list of sections.
+  const [inside, setInside] = useState(false);
+
+  useHints(
+    "pane",
+    inside
+      ? null
+      : [
+          hint("Go in", "sections.confirm", "sections.open"),
+          hint("Section", "sections.up", "sections.down"),
+          hint("First, last", "sections.first", "sections.last"),
+          hint("Close", "sections.close"),
+        ],
+  );
+
+  useEffect(() => {
+    if (inside) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!inPane(event)) return;
+      const index = SECTIONS.findIndex((s) => s.id === section);
+      const moveBy = (step: number) => () => {
+        const next = SECTIONS[index + step];
+        if (next) onSection(next.id);
+      };
+      const commands: [ActionId, () => void][] = [
+        ["sections.up", moveBy(-1)],
+        ["sections.down", moveBy(1)],
+        ["sections.first", () => onSection(SECTIONS[0].id)],
+        ["sections.last", () => onSection(SECTIONS[SECTIONS.length - 1].id)],
+        ["sections.open", () => setInside(true)],
+        ["sections.confirm", () => setInside(true)],
+        ["sections.close", onClose],
+      ];
+      commands.some(([id, run]) => act(event, id, run));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  return (
+    <SettingsLayout
+      heading="Device settings"
+      detail={device.state?.machine.name ?? device.url}
+      sections={SECTIONS}
+      section={section}
+      active={!inside}
+      closeKeys={inside ? undefined : "sections.close"}
+      onSelect={(id) => {
+        onSection(id);
+        setInside(false);
+      }}
+      onClose={onClose}
+    >
+      {section === "providers" ? (
+        <Providers
+          device={device}
+          active={inside}
+          onActivate={() => setInside(true)}
+          onLeave={() => setInside(false)}
+          onRename={onRename}
+        />
+      ) : (
+        <McpSettings
+          device={device}
+          active={inside}
+          onActivate={() => setInside(true)}
+          onLeave={() => setInside(false)}
+        />
+      )}
+    </SettingsLayout>
+  );
+}
+
+/** The agents this device runs, and the device's own name and power settings. */
+function Providers({
+  device,
+  active,
+  onActivate,
+  onLeave,
+  onRename,
+}: {
+  device: Device;
+  active: boolean;
+  onActivate: () => void;
+  onLeave: () => void;
+  onRename: () => void;
 }) {
   const machineId = device.state?.machine.id;
   const online = isOnline(device);
@@ -76,16 +175,16 @@ export function DeviceSettings({
   // Checking starts nothing. An agent only starts once it's added.
   useEffect(() => {
     if (!machineId || !online) return;
-    let active = true;
+    let shown = true;
     request(machineId, { command: "detect_providers" })
       .then((output) => {
-        if (active && output.output === "provider_candidates") setCandidates(output.candidates);
+        if (shown && output.output === "provider_candidates") setCandidates(output.candidates);
       })
       .catch((reason) => {
-        if (active) setCheckError(errorText(reason));
+        if (shown) setCheckError(errorText(reason));
       });
     return () => {
-      active = false;
+      shown = false;
     };
   }, [machineId, online]);
 
@@ -140,27 +239,34 @@ export function DeviceSettings({
   } else if (selectedRow && !selectedRow.missing) {
     rowHints.push(hint("Add", "device.confirm"));
   }
-  useHints("pane", [
-    ...(online
+  useHints(
+    "pane",
+    active
       ? [
-          hint("Rename", "device.rename"),
-          hint(keepAwake ? "Let it sleep" : "Keep awake", "device.toggle_keep_awake"),
+          ...(online
+            ? [
+                hint("Rename", "device.rename"),
+                hint(keepAwake ? "Let it sleep" : "Keep awake", "device.toggle_keep_awake"),
+              ]
+            : []),
+          ...rowHints,
+          ...(rows.length > 0
+            ? [
+                hint("Move", "device.up", "device.down"),
+                hint("First, last", "device.first", "device.last"),
+                hint("Center", "device.center"),
+              ]
+            : []),
+          hint("Back", "device.back"),
         ]
-      : []),
-    ...rowHints,
-    ...(rows.length > 0
-      ? [
-          hint("Move", "device.up", "device.down"),
-          hint("First, last", "device.first", "device.last"),
-          hint("Center", "device.center"),
-        ]
-      : []),
-    hint("Close", "device.back"),
-  ]);
+      : null,
+  );
 
   useEffect(() => {
+    if (!active) return;
     const onKey = (event: KeyboardEvent) => {
       if (!inPane(event)) return;
+      if (act(event, "device.back", onLeave)) return;
       if (online && act(event, "device.rename", onRename)) return;
       if (online && act(event, "device.toggle_keep_awake", toggleKeepAwake)) return;
       const moveBy = (step: number) => () =>
@@ -169,7 +275,7 @@ export function DeviceSettings({
       if (act(event, "device.first", () => setCursor(0))) return;
       if (act(event, "device.last", () => setCursor(rows.length - 1))) return;
       const center = () =>
-        document.querySelector(".settings-provider.current")?.scrollIntoView({ block: "center" });
+        document.querySelector(".settings-item.current")?.scrollIntoView({ block: "center" });
       if (act(event, "device.center", center)) return;
       const row = rows[selected];
       if (!row) return;
@@ -191,152 +297,149 @@ export function DeviceSettings({
   });
 
   return (
-    <SettingsLayout
-      heading="Device settings"
-      detail={device.state?.machine.name ?? device.url}
-      sections={SECTIONS}
-      section="providers"
-      closeKeys="device.back"
-      onClose={onClose}
-    >
-      <div className="pane settings">
-        <div className="settings-in">
-          {device.state && (
-            <div className="settings-row">
-              <span className="name">Name</span>
-              <span className="meta">{device.state.machine.name}</span>
-              <button className="button" disabled={!online} onClick={onRename}>
-                Rename
-                <Keys action="device.rename" />
-              </button>
-            </div>
-          )}
-          {device.state && (
-            <div className="settings-row">
-              <span className="name">Keep awake while agents work</span>
-              <span className="meta">{keepAwake ? "On" : "Off"}</span>
-              <button className="button" disabled={!online} onClick={toggleKeepAwake}>
-                {keepAwake ? "Turn off" : "Turn on"}
-                <Keys action="device.toggle_keep_awake" />
-              </button>
-            </div>
-          )}
-          {awakeError && <p className="error settings-error">{awakeError}</p>}
-          {!online && <p className="empty">This device is offline</p>}
-          {online && !candidates && !checkError && <p className="empty">Checking this device</p>}
-          {checkError && <p className="error">{checkError}</p>}
-          {rows.map((row, index) => {
-            const provider = providers.find((p) => p.agent === row.agent);
-            const current = index === selected;
-            const doing = busy[row.agent];
-            const canAdd = !provider && !row.missing;
-            const model = provider && defaultModelOf(provider);
-            const effort = provider && model && defaultEffort(provider, model);
-            return (
-              <div
-                key={row.agent}
-                className={`settings-provider ${current ? "current" : ""}`}
-                onMouseEnter={() => setCursor(index)}
-              >
-                <div className="settings-row">
-                  <span className="name">{row.name}</span>
-                  <span className="meta">
-                    {provider ? describe(provider) : (row.missing ?? "Available")}
-                  </span>
-                  {doing && <span className="meta">{doing}</span>}
-                  {provider && (
-                    <>
-                      <button
-                        className="button"
-                        disabled={doing !== undefined}
-                        onClick={() => void add(row.agent, "Refreshing")}
-                      >
-                        Refresh
-                        {current && <Keys action="device.confirm" />}
-                      </button>
-                      <button
-                        className="button"
-                        disabled={doing !== undefined}
-                        onClick={() => void remove(row.agent)}
-                      >
-                        Remove
-                        {current && <Keys action="device.remove" />}
-                      </button>
-                    </>
-                  )}
-                  {canAdd && (
+    <div className="pane settings">
+      <div className="settings-in">
+        {device.state && (
+          <div className="settings-row">
+            <span className="name">Name</span>
+            <span className="meta">{device.state.machine.name}</span>
+            <button className="button" disabled={!online} onClick={onRename}>
+              Rename
+              {active && <Keys action="device.rename" />}
+            </button>
+          </div>
+        )}
+        {device.state && (
+          <div className="settings-row">
+            <span className="name">Keep awake while agents work</span>
+            <span className="meta">{keepAwake ? "On" : "Off"}</span>
+            <button className="button" disabled={!online} onClick={toggleKeepAwake}>
+              {keepAwake ? "Turn off" : "Turn on"}
+              {active && <Keys action="device.toggle_keep_awake" />}
+            </button>
+          </div>
+        )}
+        {awakeError && <p className="error settings-error">{awakeError}</p>}
+        {!online && <p className="empty">This device is offline</p>}
+        {online && !candidates && !checkError && <p className="empty">Checking this device</p>}
+        {checkError && <p className="error">{checkError}</p>}
+        {rows.map((row, index) => {
+          const provider = providers.find((p) => p.agent === row.agent);
+          const current = active && index === selected;
+          const doing = busy[row.agent];
+          const canAdd = !provider && !row.missing;
+          const model = provider && defaultModelOf(provider);
+          const effort = provider && model && defaultEffort(provider, model);
+          return (
+            <div
+              key={row.agent}
+              className={`settings-item ${current ? "current" : ""}`}
+              onMouseMove={(event) => {
+                if (event.movementX === 0 && event.movementY === 0) return;
+                setCursor(index);
+                onActivate();
+              }}
+            >
+              <div className="settings-row">
+                <span className="name">{row.name}</span>
+                <span className="meta">
+                  {provider ? describe(provider) : (row.missing ?? "Available")}
+                </span>
+                {doing && <span className="meta">{doing}</span>}
+                {provider && (
+                  <>
                     <button
-                      className="button primary"
+                      className="button"
                       disabled={doing !== undefined}
-                      onClick={() => void add(row.agent, "Adding")}
+                      onClick={() => void add(row.agent, "Refreshing")}
                     >
-                      Add
+                      Refresh
                       {current && <Keys action="device.confirm" />}
                     </button>
-                  )}
-                </div>
-                {provider && model && (
-                  <div className="settings-defaults">
+                    <button
+                      className="button"
+                      disabled={doing !== undefined}
+                      onClick={() => void remove(row.agent)}
+                    >
+                      Remove
+                      {current && <Keys action="device.remove" />}
+                    </button>
+                  </>
+                )}
+                {canAdd && (
+                  <button
+                    className="button primary"
+                    disabled={doing !== undefined}
+                    onClick={() => void add(row.agent, "Adding")}
+                  >
+                    Add
+                    {current && <Keys action="device.confirm" />}
+                  </button>
+                )}
+              </div>
+              {provider && model && (
+                <div className="settings-defaults">
+                  <div className="settings-default">
+                    Default model
+                    <Picker
+                      label={`Default model for ${provider.name}`}
+                      className="picker"
+                      value={model.id}
+                      open={current && picking === "model"}
+                      onOpenChange={(open) => {
+                        setCursor(index);
+                        if (open) onActivate();
+                        setPicking(open ? "model" : null);
+                      }}
+                      onChange={(id) => setDefaultModel(provider, id)}
+                      finalFocus={false}
+                      trigger={
+                        <>
+                          {modelLabel(provider, model)}
+                          {current && <Keys action="device.pick_model" />}
+                        </>
+                      }
+                    >
+                      {provider.models.map((m) => (
+                        <Choice key={m.id} value={m.id} label={modelLabel(provider, m)} />
+                      ))}
+                    </Picker>
+                  </div>
+                  {effort && (
                     <div className="settings-default">
-                      Default model
+                      Default effort
                       <Picker
-                        label={`Default model for ${provider.name}`}
+                        label={`Default effort for ${provider.name}`}
                         className="picker"
-                        value={model.id}
-                        open={current && picking === "model"}
+                        value={effort.id}
+                        open={current && picking === "effort"}
                         onOpenChange={(open) => {
                           setCursor(index);
-                          setPicking(open ? "model" : null);
+                          if (open) onActivate();
+                          setPicking(open ? "effort" : null);
                         }}
-                        onChange={(id) => setDefaultModel(provider, id)}
+                        onChange={(id) => setDefaultEffort(provider, id)}
                         finalFocus={false}
                         trigger={
                           <>
-                            {modelLabel(provider, model)}
-                            {current && <Keys action="device.pick_model" />}
+                            {effort.name}
+                            {current && <Keys action="device.pick_effort" />}
                           </>
                         }
                       >
-                        {provider.models.map((m) => (
-                          <Choice key={m.id} value={m.id} label={modelLabel(provider, m)} />
+                        {model.efforts.map((e) => (
+                          <Choice key={e.id} value={e.id} label={e.name} />
                         ))}
                       </Picker>
                     </div>
-                    {effort && (
-                      <div className="settings-default">
-                        Default effort
-                        <Picker
-                          label={`Default effort for ${provider.name}`}
-                          className="picker"
-                          value={effort.id}
-                          open={current && picking === "effort"}
-                          onOpenChange={(open) => {
-                            setCursor(index);
-                            setPicking(open ? "effort" : null);
-                          }}
-                          onChange={(id) => setDefaultEffort(provider, id)}
-                          finalFocus={false}
-                          trigger={
-                            <>
-                              {effort.name}
-                              {current && <Keys action="device.pick_effort" />}
-                            </>
-                          }
-                        >
-                          {model.efforts.map((e) => (
-                            <Choice key={e.id} value={e.id} label={e.name} />
-                          ))}
-                        </Picker>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {errors[row.agent] && <p className="error settings-error">{errors[row.agent]}</p>}
-              </div>
-            );
-          })}
-        </div>
+                  )}
+                </div>
+              )}
+              {errors[row.agent] && <p className="error settings-error">{errors[row.agent]}</p>}
+            </div>
+          );
+        })}
       </div>
-    </SettingsLayout>
+    </div>
   );
 }

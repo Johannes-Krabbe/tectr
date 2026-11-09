@@ -13,6 +13,9 @@
 //! - `crash`: exits immediately with an error.
 //! - `whoami`: reports the session's mode, model, directory, and whether it was
 //!   resumed.
+//! - `mcp`: reports the MCP servers the session was opened with, and its `_meta`.
+//! - `mcp-call NAME`: sends an MCP initialize request to the HTTP server NAME and
+//!   reports the status and body it got back.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -20,12 +23,12 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, Implementation,
-    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PermissionOption,
-    PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities,
-    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption, SessionId,
-    SessionInfoUpdate, SessionMode, SessionModeState, SessionNotification,
-    SessionResumeCapabilities, SessionUpdate, SetSessionConfigOptionRequest,
+    InitializeRequest, InitializeResponse, McpCapabilities, McpServer, NewSessionRequest,
+    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, ResumeSessionRequest,
+    ResumeSessionResponse, SessionCapabilities, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionId, SessionInfoUpdate, SessionMode, SessionModeState,
+    SessionNotification, SessionResumeCapabilities, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
     TextContent, ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
@@ -43,6 +46,8 @@ struct State {
     model: Option<String>,
     effort: Option<String>,
     resumed: bool,
+    mcp: Vec<McpServer>,
+    meta: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Like Claude's list: a default entry naming the real model, then the models.
@@ -117,9 +122,14 @@ async fn main() -> Result<(), Error> {
             async move |request: InitializeRequest, responder, _connection| {
                 responder.respond(
                     InitializeResponse::new(request.protocol_version)
-                        .agent_capabilities(AgentCapabilities::new().session_capabilities(
-                            SessionCapabilities::new().resume(SessionResumeCapabilities::new()),
-                        ))
+                        .agent_capabilities(
+                            AgentCapabilities::new()
+                                .session_capabilities(
+                                    SessionCapabilities::new()
+                                        .resume(SessionResumeCapabilities::new()),
+                                )
+                                .mcp_capabilities(McpCapabilities::new().http(true)),
+                        )
                         .agent_info(Implementation::new("fake-agent", "0.0.0")),
                 )
             },
@@ -129,6 +139,8 @@ async fn main() -> Result<(), Error> {
             async move |request: NewSessionRequest, responder, _connection| {
                 let mut state = on_new.lock().unwrap();
                 state.cwd = request.cwd;
+                state.mcp = request.mcp_servers;
+                state.meta = request.meta;
                 responder.respond(
                     NewSessionResponse::new("fake-session")
                         .modes(mode_state(&state.mode))
@@ -141,6 +153,8 @@ async fn main() -> Result<(), Error> {
             async move |request: ResumeSessionRequest, responder, _connection| {
                 let mut state = on_resume.lock().unwrap();
                 state.cwd = request.cwd;
+                state.mcp = request.mcp_servers;
+                state.meta = request.meta;
                 state.resumed = true;
                 responder.respond(
                     ResumeSessionResponse::new()
@@ -290,6 +304,61 @@ async fn run_turn(
             };
             say(connection, &session_id, &report)?;
         }
+        "mcp" => {
+            let report = {
+                let state = state.lock().unwrap();
+                let servers: Vec<String> = state
+                    .mcp
+                    .iter()
+                    .map(|server| match server {
+                        McpServer::Stdio(stdio) => {
+                            let env: Vec<String> = stdio
+                                .env
+                                .iter()
+                                .map(|var| format!("{}={}", var.name, var.value))
+                                .collect();
+                            format!(
+                                "{}:stdio:{}:{}:{}",
+                                stdio.name,
+                                stdio.command.display(),
+                                stdio.args.join(","),
+                                env.join(",")
+                            )
+                        }
+                        McpServer::Http(http) => {
+                            let headers: Vec<String> = http
+                                .headers
+                                .iter()
+                                .map(|header| format!("{}={}", header.name, header.value))
+                                .collect();
+                            format!("{}:http:{}:{}", http.name, http.url, headers.join(","))
+                        }
+                        _ => "other".to_owned(),
+                    })
+                    .collect();
+                let meta = state
+                    .meta
+                    .clone()
+                    .map_or_else(String::new, |m| serde_json::Value::Object(m).to_string());
+                format!("mcp={} meta={meta}", servers.join(" "))
+            };
+            say(connection, &session_id, &report)?;
+        }
+        "mcp-call" => {
+            let name = words.next().unwrap_or_default();
+            let url = {
+                let state = state.lock().unwrap();
+                state.mcp.iter().find_map(|server| match server {
+                    McpServer::Http(http) if http.name == name => Some(http.url.clone()),
+                    _ => None,
+                })
+            };
+            let report = match url {
+                Some(url) => call_mcp(&url).await,
+                None => format!("no HTTP server called {name}"),
+            };
+            say(connection, &session_id, &report)?;
+        }
         other => say(connection, &session_id, &format!("unknown script: {other}"))?,
     }
     Ok(StopReason::EndTurn)
@@ -365,6 +434,30 @@ fn finish_tool(
             ToolCallUpdateFields::new().status(status),
         )),
     ))
+}
+
+async fn call_mcp(url: &str) -> String {
+    let body = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}});
+    let sent = reqwest::Client::new()
+        .post(url)
+        .header("accept", "application/json, text/event-stream")
+        .json(&body)
+        .send()
+        .await;
+    match sent {
+        Ok(response) => {
+            let status = response.status().as_u16();
+            let session = response
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("none")
+                .to_owned();
+            let text = response.text().await.unwrap_or_default();
+            format!("status={status} session={session} body={text}")
+        }
+        Err(error) => format!("failed: {error}"),
+    }
 }
 
 fn say(connection: &ConnectionTo<Client>, session_id: &SessionId, text: &str) -> Result<(), Error> {

@@ -1,6 +1,6 @@
 import { Autocomplete } from "@base-ui/react/autocomplete";
 import { Dialog } from "@base-ui/react/dialog";
-import { useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { type ActionId, remapNative } from "./keybinds";
 import type { StatusState } from "./model";
 import { hint, useHints } from "./shortcuts";
@@ -27,6 +27,26 @@ const HINTS = [
   hint("Run", "palette.confirm"),
   hint("Close", "palette.cancel"),
 ];
+
+type ItemsRef = { current: PaletteItem[] };
+
+const screens = new Set<ItemsRef>();
+
+/** Adds a screen's own commands to the palette for as long as it's rendered, declared next to
+ * the handlers that run the same things by key. They're read when the palette renders, so
+ * nothing needs to happen when they change. */
+export function useScreenPaletteItems(items: PaletteItem[]) {
+  const ref = useRef(items);
+  ref.current = items;
+  useLayoutEffect(() => {
+    screens.add(ref);
+    return () => {
+      screens.delete(ref);
+    };
+  }, []);
+}
+
+export const screenPaletteItems = (): PaletteItem[] => [...screens].flatMap((ref) => ref.current);
 
 /** Every word typed has to appear somewhere in the item. */
 function matches(item: PaletteItem, query: string): boolean {

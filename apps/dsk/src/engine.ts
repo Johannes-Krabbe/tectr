@@ -46,6 +46,9 @@ export interface Topic {
   /** Every folder it has worked in and still has. One at the repo's own path is the repo. */
   worktrees: Worktree[];
   sessions: Session[];
+  /** The device's MCP servers this topic turns on or off, against their own `enabled`. By
+   * server ID. */
+  mcp?: Record<string, boolean>;
 }
 
 export type MoveTarget =
@@ -149,6 +152,35 @@ export interface DaemonState {
   drafts?: Record<string, string>;
   /** Left out while every value is its default. */
   settings?: DeviceSettings;
+  /** The MCP servers agents on this device get, device-wide and per topic. */
+  mcp_servers?: McpServer[];
+}
+
+/** How agents reach an MCP server. Values may name the daemon's environment as `${NAME}`. */
+export type McpTransport =
+  | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
+  | {
+      type: "http";
+      url: string;
+      headers?: Record<string, string>;
+      /** For a server that doesn't register clients by itself. */
+      oauth_client_id?: string | null;
+    }
+  | { type: "unknown" };
+
+/** Whether the daemon holds a login. Left out while it's `none`. */
+export type McpAuth = "none" | "needs_login" | "logged_in" | "unknown";
+
+/** An MCP server that tectr gives agents, the only ones they get. */
+export interface McpServer {
+  id: string;
+  name: string;
+  /** The topic that has it to itself. Left out for a device-wide server. */
+  topic_id?: string | null;
+  transport: McpTransport;
+  /** Device-wide: whether topics get it unless they turn it off. A topic's own: whether it's on. */
+  enabled: boolean;
+  auth?: McpAuth;
 }
 
 /** A device's own settings. A field left out keeps its default. */
@@ -235,7 +267,24 @@ export type Command =
     }
   | { command: "set_unread"; session_id: string; unread: boolean }
   | { command: "set_draft"; session_id: string; text: string }
-  | { command: "close_session"; session_id: string; force?: boolean };
+  | { command: "close_session"; session_id: string; force?: boolean }
+  | {
+      command: "save_mcp_server";
+      /** Changes the server it names, or else adds one. */
+      id?: string;
+      name: string;
+      /** Left out for a device-wide server. A server can't move between the two. */
+      topic_id?: string;
+      transport: McpTransport;
+      enabled: boolean;
+    }
+  | { command: "remove_mcp_server"; id: string }
+  /** Null follows the server's own `enabled` again. */
+  | { command: "set_topic_mcp"; topic_id: string; server_id: string; on: boolean | null }
+  | { command: "login_mcp_server"; id: string }
+  | { command: "complete_mcp_login"; state: string; code: string }
+  | { command: "logout_mcp_server"; id: string }
+  | { command: "import_mcp_servers" };
 
 export type CommandOutput =
   | { output: "workspace"; workspace: Workspace }
@@ -246,6 +295,11 @@ export type CommandOutput =
   | { output: "folders"; folders: Folder[] }
   | { output: "archive_risk"; risk: ArchiveRisk }
   | { output: "archived_topics"; topics: ArchivedTopic[] }
+  | { output: "mcp_server"; server: McpServer }
+  /** Where the browser has to go to log in. */
+  | { output: "mcp_login"; url: string }
+  /** The names added, and why each one left out was. */
+  | { output: "mcp_import"; added: string[]; skipped: string[] }
   | { output: "done" }
   | { output: "unknown" };
 

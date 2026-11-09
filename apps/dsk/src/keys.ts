@@ -11,6 +11,11 @@ export function overlayOpen(): boolean {
   return document.querySelector(".sheet, .select-popup") !== null;
 }
 
+/** A sheet is open. The palette is one too. */
+export function sheetOpen(): boolean {
+  return document.querySelector(".sheet") !== null;
+}
+
 /** A key meant for the main pane. The sidebar handles its own. */
 export function inPane(event: KeyboardEvent): boolean {
   const { target } = event;

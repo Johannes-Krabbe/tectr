@@ -29,3 +29,12 @@
 {"type":"request","id":42,"command":{"command":"move_topic","topic_id":"t1","to":{"kind":"new_worktree"}}}
 {"type":"request","id":43,"command":{"command":"move_topic","topic_id":"t1","to":{"kind":"root"},"force":true}}
 {"type":"request","id":44,"command":{"command":"move_topic","topic_id":"t1","to":{"kind":"worktree","worktree_id":"wt1"}}}
+{"type":"request","id":1,"command":{"command":"save_mcp_server","name":"github","transport":{"type":"stdio","command":"npx","args":["-y","gh-mcp"],"env":{"TOKEN":"${GITHUB_TOKEN}"}},"enabled":true}}
+{"type":"request","id":1,"command":{"command":"save_mcp_server","id":"x1","name":"linear","topic_id":"t1","transport":{"type":"http","url":"https://mcp.linear.app/mcp"},"enabled":false}}
+{"type":"request","id":1,"command":{"command":"remove_mcp_server","id":"x1"}}
+{"type":"request","id":1,"command":{"command":"set_topic_mcp","topic_id":"t1","server_id":"x1","on":false}}
+{"type":"request","id":1,"command":{"command":"set_topic_mcp","topic_id":"t1","server_id":"x1","on":null}}
+{"type":"request","id":1,"command":{"command":"login_mcp_server","id":"x1"}}
+{"type":"request","id":1,"command":{"command":"complete_mcp_login","state":"s","code":"c"}}
+{"type":"request","id":1,"command":{"command":"logout_mcp_server","id":"x1"}}
+{"type":"request","id":1,"command":{"command":"import_mcp_servers"}}

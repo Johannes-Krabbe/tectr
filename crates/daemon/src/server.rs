@@ -70,6 +70,12 @@ fn reject_browsers(request: &Request, response: Response) -> Result<Response, Er
 }
 
 async fn serve(core: Arc<Core>, stream: TcpStream) -> Result<()> {
+    if crate::http::peek_path(&stream, HELLO_TIMEOUT)
+        .await
+        .is_some()
+    {
+        return crate::http::serve(core, stream).await;
+    }
     let mut socket = tokio_tungstenite::accept_hdr_async(stream, reject_browsers)
         .await
         .context("websocket handshake failed")?;

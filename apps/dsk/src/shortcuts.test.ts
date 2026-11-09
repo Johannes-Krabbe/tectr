@@ -14,6 +14,7 @@ const nothing = {
   tabs: 0,
   closeTab: false,
   newTab: false,
+  topicMcp: false,
   newTopic: false,
   newWorkspace: false,
   topics: 0,

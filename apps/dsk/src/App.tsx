@@ -32,6 +32,7 @@ import {
   overlayOpen,
   pointedRow,
   pressAdd,
+  sheetOpen,
   subscribeKeyboardPlace,
 } from "./keys";
 import {
@@ -65,11 +66,12 @@ import {
 } from "./navigation";
 import { NEW_TAB_STATE, NewTab, type NewTabState } from "./NewTab";
 import { NewTopic, type NewTopicForm } from "./NewTopic";
-import { Palette, type PaletteItem } from "./Palette";
+import { Palette, type PaletteItem, screenPaletteItems } from "./Palette";
 import { isLoopback } from "./pathInput";
 import { Sheets, type SheetRequest } from "./Sheets";
 import { globalHints, pinnedHints, useHints } from "./shortcuts";
 import { Sidebar } from "./Sidebar";
+import { TopicMcpSheet } from "./TopicMcp";
 import { Icon } from "./ui/Icon";
 import { ShortcutBar } from "./ui/ShortcutBar";
 import { Keys, StatusIcon } from "./ui/StatusIcon";
@@ -146,6 +148,8 @@ export function App() {
   const [sheet, setSheet] = useState<SheetRequest | null>(null);
   const [palette, setPalette] = useState(false);
   const [picker, setPicker] = useState<Picker | null>(null);
+  // The topic whose MCP servers are being chosen. It reads the topic live, so changes show.
+  const [mcpTopic, setMcpTopic] = useState<{ machineId: string; topicId: string } | null>(null);
   // The tab just started here, which is chosen before the daemon's news of it arrives.
   const [startedHere, setStartedHere] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -302,8 +306,8 @@ export function App() {
     setSheet({ kind: "rename_device", machineId: id, name });
   };
 
-  const openSettings = (machineId: string) => {
-    preview({ kind: "device_settings", machineId });
+  const openSettings = (machineId: string, section?: string) => {
+    preview({ kind: "device_settings", machineId, section });
   };
 
   const openAppSettings = (section = navigation.settingsSection) => {
@@ -483,6 +487,18 @@ export function App() {
     }
   };
 
+  const openTopicMcp = () => {
+    if (entry?.device.state) setMcpTopic({ machineId: entry.machineId, topicId: entry.topic.id });
+  };
+  const mcpEntry =
+    mcpTopic &&
+    topics.find((t) => t.machineId === mcpTopic.machineId && t.topic.id === mcpTopic.topicId);
+  const mcpGone = mcpTopic !== null && !mcpEntry?.device.state;
+  // Another client can delete the topic, which takes the sheet with it.
+  useEffect(() => {
+    if (mcpGone) setMcpTopic(null);
+  }, [mcpGone]);
+
   const renameTopic = (target: TopicEntry) => {
     if (!isOnline(target.device)) return;
     setSheet({ kind: "rename", machineId: target.machineId, topic: target.topic });
@@ -603,6 +619,13 @@ export function App() {
         run: newTab,
       });
       items.push({
+        id: "topic-mcp",
+        label: `MCP servers for ${entry.topic.name}`,
+        detail: "Topic",
+        keys: keysLabel("global.topic_mcp"),
+        run: openTopicMcp,
+      });
+      items.push({
         id: "rename-topic",
         label: `Rename ${entry.topic.name}`,
         detail: "Topic",
@@ -634,6 +657,7 @@ export function App() {
         run: () => archiveTopic(entry),
       });
     }
+    items.push(...screenPaletteItems());
     if (session && isActive(session)) {
       items.push({
         id: "interrupt",
@@ -749,6 +773,12 @@ export function App() {
           run: () => openSettings(id),
         });
         items.push({
+          id: `mcp/${device.url}`,
+          label: `MCP servers on ${deviceName}`,
+          detail: "Device settings",
+          run: () => openSettings(id, "mcp"),
+        });
+        items.push({
           id: `rename-device/${device.url}`,
           label: `Rename ${deviceName}`,
           keys: device === settingsDevice ? keysLabel("device.rename") : undefined,
@@ -794,6 +824,7 @@ export function App() {
       tabs: tabIds.length,
       closeTab: canClose,
       newTab: entry !== undefined && isOnline(entry.device),
+      topicMcp: entry !== undefined && !inSettings,
       newTopic: view?.kind !== "new_topic" && topicDevice !== undefined && topicWorkspace !== undefined,
       newWorkspace: workspaceDevice !== undefined,
       topics: topics.length,
@@ -807,7 +838,9 @@ export function App() {
   // Registered on every render, so the handlers always see the current state.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (sheet || picker) return; // A sheet or a list to choose from owns the keyboard.
+      // A sheet or a list to choose from owns the keyboard, and so does a screen's own sheet,
+      // which only the palette's own key gets past to close the palette.
+      if (sheet || picker || mcpTopic || (!palette && sheetOpen())) return;
       if (act(event, "global.palette", () => setPalette((shown) => !shown))) return;
       if (palette || overlayOpen()) return; // So does a palette or dropdown, past that key.
 
@@ -834,6 +867,7 @@ export function App() {
         ["global.toggle_vim", () => toggleVim().catch(reportFailure)],
         ["global.move_topic", () => entry && pickFolder(entry)],
         ["global.archived_topics", () => void findArchived().catch(reportFailure)],
+        ["global.topic_mcp", openTopicMcp],
       ];
       TAB_ACTIONS.forEach((id, index) => {
         commands.push([
@@ -858,8 +892,9 @@ export function App() {
       if (inPane(event)) {
         if (act(event, "pane.next_request", nextRequest)) return;
         // Settings decides for itself, because going back there depends on where you are in it.
-        if (view?.kind === "device_settings") act(event, "device.back", closeSettings);
-        else if (view?.kind !== "app_settings") act(event, "pane.back", focusSidebar);
+        if (view?.kind !== "device_settings" && view?.kind !== "app_settings") {
+          act(event, "pane.back", focusSidebar);
+        }
       }
     };
     // Capturing sees the key before a sheet closes on it, so closing can't also leave the pane.
@@ -890,6 +925,10 @@ export function App() {
       ) : settingsDevice ? (
         <DeviceSettings
           device={settingsDevice}
+          section={view?.kind === "device_settings" ? view.section : undefined}
+          onSection={(section) => {
+            if (view?.kind === "device_settings") show({ ...view, section });
+          }}
           onRename={() => renameDevice(settingsDevice)}
           onClose={closeSettings}
         />
@@ -989,6 +1028,14 @@ export function App() {
             if (sheet.kind === "close") focusPane();
             if (sheet.kind === "archive") afterArchiving(sheet);
           }}
+        />
+      )}
+      {mcpEntry?.device.state && (
+        <TopicMcpSheet
+          state={mcpEntry.device.state}
+          topic={mcpEntry.topic}
+          online={isOnline(mcpEntry.device)}
+          onClose={() => setMcpTopic(null)}
         />
       )}
       {palette && <Palette items={paletteItems()} onClose={() => setPalette(false)} />}

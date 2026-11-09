@@ -829,9 +829,19 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   font: var(--text-label);
 }
 
-.settings-provider { border-radius: var(--radius-md); }
+.settings-item { border-radius: var(--radius-md); }
 
-.settings-provider.current { background: var(--color-surface-raised); }
+.settings-item.current { background: var(--color-surface-raised); }
+
+/* A second line under a row, such as what an MCP server runs. */
+.settings-detail {
+  padding: 0 var(--space-md) var(--space-sm);
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font: var(--text-code-small);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 
 .settings-defaults {
   display: flex;
@@ -1218,6 +1228,86 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   color: var(--color-status-failed);
   font: var(--text-body);
   overflow-wrap: anywhere;
+}
+
+/* A sheet with more to fill in than a name: labelled fields under it. */
+.sheet-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-xs) var(--space-md);
+  align-items: center;
+  padding: var(--space-xs) var(--space-lg) var(--space-sm);
+}
+
+.sheet-field { display: contents; }
+
+.sheet-label {
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.sheet-input {
+  width: 100%;
+  padding: var(--space-2xs) var(--space-sm);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  font: var(--text-code-body);
+  resize: none;
+}
+
+textarea.sheet-input {
+  max-height: 160px;
+  field-sizing: content;
+}
+
+.sheet-input:focus { border-color: var(--color-accent-text); outline: 0; }
+
+.sheet-input::placeholder {
+  color: var(--color-text-tertiary);
+  opacity: 1;
+}
+
+.sheet-choices {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.picker[aria-pressed="true"] {
+  background: var(--color-surface-control);
+  color: var(--color-text-primary);
+}
+
+/* The headings of a list in a sheet, such as a topic's MCP servers by where they come from. */
+.sheet-group,
+.sheet-group-empty {
+  padding: var(--space-xs) var(--space-sm);
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.sheet-group-empty { padding-top: 0; }
+
+.palette-list:focus-visible { outline: 0; }
+
+.server-name {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.server-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font: var(--text-code-small);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .sheet-foot {

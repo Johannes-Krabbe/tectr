@@ -67,7 +67,13 @@ tectr archive-topic <topic> [--force]  # stop its agents, remove its worktrees, 
 tectr archived                         # list archived topics
 tectr restore-topic <topic>            # bring one back with its folder
 tectr rename-device "..." [--on <device>]  # name a device, "" goes back to its hostname
+tectr mcp ls                           # MCP servers, and which ones each topic gets
+tectr mcp add github --env 'TOKEN=${TOKEN}' -- npx -y some-server  # a stdio server
+tectr mcp add linear --url https://mcp.linear.app/mcp [--topic <topic>]  # an HTTP server
+tectr mcp off github --topic <topic>   # also: on, default, rm, login, logout, import
 ```
+
+Topics can be named by their exact name or an ID prefix. Single-quote `${VAR}` values so the daemon, not your shell, fills them in.
 
 To use several daemons, repeat `--daemon` or set `TECTR_DAEMONS` to a comma-separated list of URLs.
 

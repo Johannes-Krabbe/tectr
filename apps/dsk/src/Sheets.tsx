@@ -51,8 +51,8 @@ export type SheetRequest =
 
 const CANCEL_KEY: [ActionId, string][] = [["sheet.cancel", "Escape"]];
 
-/** Creates something with a name and defaults for the rest. */
-function Sheet({
+/** Creates something with a name and defaults for the rest, or changes one in place. */
+export function Sheet({
   where,
   action,
   hint,

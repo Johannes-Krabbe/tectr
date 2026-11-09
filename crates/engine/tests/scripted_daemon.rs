@@ -82,6 +82,7 @@ async fn accept(listener: &TcpListener) -> Socket {
                 providers: vec![],
                 drafts: Default::default(),
                 settings: Default::default(),
+                mcp_servers: vec![],
             },
         },
     )

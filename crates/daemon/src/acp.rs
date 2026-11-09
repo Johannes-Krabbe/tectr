@@ -9,14 +9,15 @@ use std::time::Duration;
 use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion};
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    CancelNotification, ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest,
-    PermissionOption, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionValue, SessionConfigSelect, SessionConfigSelectOption,
-    SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, TextContent, ToolCall,
-    ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdateFields, ToolKind,
+    CancelNotification, ContentBlock, EnvVariable, InitializeRequest, InitializeResponse,
+    McpServer, McpServerHttp, McpServerStdio, Meta, NewSessionRequest, PermissionOption,
+    PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
+    SessionConfigSelect, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
+    SessionModeState, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionModeRequest, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallLocation,
+    ToolCallStatus, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
 use anyhow::{Result, anyhow, bail};
@@ -25,6 +26,7 @@ use tokio::sync::mpsc;
 
 use crate::agents::AgentLauncher;
 use crate::core::{Core, SessionCommand, SessionSettings};
+use crate::mcp::{self, AgentMcp, Isolation};
 
 /// An agent mid-turn can be slow to answer, but nothing else reaches it until it does, and
 /// that includes cancelling. So one that takes this long is treated as having failed.
@@ -32,11 +34,75 @@ const SETTINGS_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct AgentSpawn {
     pub session_id: tp::SessionId,
+    /// Tells this process apart from a later one for the same session.
+    pub run: String,
     pub cwd: PathBuf,
     pub launcher: AgentLauncher,
     pub settings: SessionSettings,
     /// The agent's own session ID, if this session has run before.
     pub resume: Option<String>,
+    /// The MCP servers it gets, and the only ones.
+    pub mcp: Vec<AgentMcp>,
+}
+
+/// Starts the agent with its own MCP servers switched off.
+async fn launch(core: &Core, launcher: &AgentLauncher, isolation: &Isolation) -> Result<AcpAgent> {
+    let (program, mut args) = core.resolve_launcher(launcher).await?;
+    args.extend(isolation.args.iter().cloned());
+    let config = AcpAgentConfig::new(program)
+        .args(args)
+        .envs(isolation.env.iter().cloned());
+    Ok(AcpAgent::new(config))
+}
+
+/// The servers as ACP passes them. An agent that can't use HTTP servers goes without them,
+/// and the session says so rather than failing.
+fn acp_servers(
+    core: &Core,
+    id: &tp::SessionId,
+    servers: &[AgentMcp],
+    init: &InitializeResponse,
+) -> Vec<McpServer> {
+    let http = init.agent_capabilities.mcp_capabilities.http;
+    let mut left_out = vec![];
+    let mut passed = vec![];
+    for server in servers {
+        match server {
+            AgentMcp::Stdio {
+                name,
+                command,
+                args,
+                env,
+            } => passed.push(McpServer::Stdio(
+                McpServerStdio::new(name.clone(), command.clone())
+                    .args(args.clone())
+                    .env(
+                        env.iter()
+                            .map(|(key, value)| EnvVariable::new(key.clone(), value.clone()))
+                            .collect(),
+                    ),
+            )),
+            AgentMcp::Http { name, url } if http => {
+                passed.push(McpServer::Http(McpServerHttp::new(
+                    name.clone(),
+                    url.clone(),
+                )));
+            }
+            AgentMcp::Http { name, .. } => left_out.push(name.clone()),
+        }
+    }
+    if !left_out.is_empty() {
+        core.agent_event(
+            id,
+            tp::SessionEventKind::Error {
+                message: format!(
+                    "This agent can't use HTTP MCP servers, so it doesn't get {}",
+                    left_out.join(", ")
+                ),
+            },
+        );
+    }
+    passed
 }
 
 pub async fn run(
@@ -45,8 +111,9 @@ pub async fn run(
     commands: mpsc::UnboundedReceiver<SessionCommand>,
 ) {
     let session_id = spawn.session_id.clone();
+    let run = spawn.run.clone();
     let result = drive(&core, spawn, commands).await;
-    core.agent_exited(&session_id, result);
+    core.agent_exited(&session_id, &run, result);
 }
 
 async fn drive(
@@ -54,8 +121,9 @@ async fn drive(
     spawn: AgentSpawn,
     mut commands: mpsc::UnboundedReceiver<SessionCommand>,
 ) -> Result<()> {
-    let (program, args) = core.resolve_launcher(&spawn.launcher).await?;
-    let agent = AcpAgent::new(AcpAgentConfig::new(program).args(args));
+    let keep: Vec<&str> = spawn.mcp.iter().map(AgentMcp::name).collect();
+    let isolation = mcp::isolation(&spawn.launcher, &spawn.cwd, &keep, core.config_home());
+    let agent = launch(core, &spawn.launcher, &isolation).await?;
 
     let id = spawn.session_id.clone();
     let on_update_core = core.clone();
@@ -101,7 +169,9 @@ async fn drive(
                 .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
-            let mut agent_session = open_session(core, &spawn, &connection, &init)
+            let servers = acp_servers(core, &id, &spawn.mcp, &init);
+            let meta = isolation.meta.clone();
+            let mut agent_session = open_session(core, &spawn, &connection, &init, servers, meta)
                 .await
                 .map_err(|error| acp_error(&format!("{error:#}")))?;
 
@@ -349,6 +419,8 @@ async fn open_session(
     spawn: &AgentSpawn,
     connection: &ConnectionTo<Agent>,
     init: &InitializeResponse,
+    servers: Vec<McpServer>,
+    meta: Option<Meta>,
 ) -> Result<OpenedSession> {
     let (id, modes, options): (SessionId, _, _) = match &spawn.resume {
         Some(agent_id) => {
@@ -361,10 +433,11 @@ async fn open_session(
                 bail!("this agent can't resume a session after its process has stopped");
             }
             let response = connection
-                .send_request(ResumeSessionRequest::new(
-                    agent_id.clone(),
-                    spawn.cwd.clone(),
-                ))
+                .send_request(
+                    ResumeSessionRequest::new(agent_id.clone(), spawn.cwd.clone())
+                        .mcp_servers(servers)
+                        .meta(meta),
+                )
                 .block_task()
                 .await
                 .map_err(|error| anyhow!("failed to resume the agent's session: {error}"))?;
@@ -376,7 +449,11 @@ async fn open_session(
         }
         None => {
             let response = connection
-                .send_request(NewSessionRequest::new(spawn.cwd.clone()))
+                .send_request(
+                    NewSessionRequest::new(spawn.cwd.clone())
+                        .mcp_servers(servers)
+                        .meta(meta),
+                )
                 .block_task()
                 .await
                 .map_err(|error| anyhow!("failed to start the agent's session: {error}"))?;
@@ -416,8 +493,9 @@ pub async fn probe(
     launcher: &AgentLauncher,
     cwd: PathBuf,
 ) -> Result<tp::Provider> {
-    let (program, args) = core.resolve_launcher(launcher).await?;
-    let agent = AcpAgent::new(AcpAgentConfig::new(program).args(args));
+    // Its own servers would only slow it down, and it uses none.
+    let isolation = mcp::isolation(launcher, &cwd, &[], core.config_home());
+    let agent = launch(core, launcher, &isolation).await?;
     Client
         .v1()
         .connect_with(agent, async |connection: ConnectionTo<Agent>| {
@@ -426,7 +504,7 @@ pub async fn probe(
                 .block_task()
                 .await?;
             let session = connection
-                .send_request(NewSessionRequest::new(cwd.clone()))
+                .send_request(NewSessionRequest::new(cwd.clone()).meta(isolation.meta.clone()))
                 .block_task()
                 .await?;
             let options = session.config_options.unwrap_or_default();

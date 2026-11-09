@@ -77,6 +77,7 @@ export type ActionId =
   | "global.toggle_vim"
   | "global.move_topic"
   | "global.archived_topics"
+  | "global.topic_mcp"
   | "sidebar.up"
   | "sidebar.down"
   | "sidebar.first"
@@ -164,6 +165,25 @@ export type ActionId =
   | "device.pick_effort"
   | "device.rename"
   | "device.toggle_keep_awake"
+  | "mcp.up"
+  | "mcp.down"
+  | "mcp.first"
+  | "mcp.last"
+  | "mcp.center"
+  | "mcp.edit"
+  | "mcp.back"
+  | "mcp.add"
+  | "mcp.remove"
+  | "mcp.toggle"
+  | "mcp.turn_on"
+  | "mcp.turn_off"
+  | "mcp.follow_default"
+  | "mcp.login"
+  | "mcp.logout"
+  | "mcp.import"
+  | "mcp_form.save"
+  | "mcp_form.switch_type"
+  | "mcp_form.toggle_enabled"
   | "sections.up"
   | "sections.down"
   | "sections.first"
@@ -318,7 +338,7 @@ export function titled(text: string, id: ActionId): string {
 
 // The contexts whose actions run while typing in a text field. Anywhere else, a key
 // without a modifier in a text field is just typing.
-const TEXT_CONTEXTS = new Set(["composer", "new_topic", "sheet", "palette"]);
+const TEXT_CONTEXTS = new Set(["composer", "new_topic", "sheet", "palette", "mcp_form"]);
 
 interface KeyEventLike extends KeyPress {
   repeat: boolean;

@@ -106,6 +106,7 @@ id_type!(
     /// Unique within a machine. Use [`SessionRef`] when merging many daemons.
     SessionId,
     ApprovalId,
+    McpServerId,
 );
 
 /// Identifies a session across all daemons.
@@ -310,6 +311,47 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
     },
+    /// Add an MCP server, or change one when `id` names it. Agents that would get a changed
+    /// server and aren't working are stopped, so their next prompt starts them with it.
+    SaveMcpServer {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<McpServerId>,
+        name: String,
+        /// `None` gives it to every topic on the device. A server can't move between the two.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        topic_id: Option<TopicId>,
+        transport: McpTransport,
+        enabled: bool,
+    },
+    /// Remove an MCP server and forget its login.
+    RemoveMcpServer {
+        id: McpServerId,
+    },
+    /// Turn a device's MCP server on or off for one topic. `None` follows the server's own
+    /// `enabled` again.
+    SetTopicMcp {
+        topic_id: TopicId,
+        server_id: McpServerId,
+        on: Option<bool>,
+    },
+    /// Start logging in to an HTTP MCP server. Open the returned address in a browser. The
+    /// login finishes when the browser comes back to the daemon, or with
+    /// [`Command::CompleteMcpLogin`] from a client that caught the redirect itself.
+    LoginMcpServer {
+        id: McpServerId,
+    },
+    /// Finish a login with what the server sent back to its redirect address.
+    CompleteMcpLogin {
+        state: String,
+        code: String,
+    },
+    /// Forget the tokens of an HTTP MCP server.
+    LogoutMcpServer {
+        id: McpServerId,
+    },
+    /// Copy the MCP servers configured for Claude Code, Codex and OpenCode on this device into
+    /// its own servers. A name that's already taken is skipped.
+    ImportMcpServers,
     #[serde(other)]
     Unknown,
 }
@@ -344,6 +386,19 @@ pub enum CommandOutput {
     /// Newest first.
     ArchivedTopics {
         topics: Vec<ArchivedTopic>,
+    },
+    McpServer {
+        server: McpServer,
+    },
+    /// Where the browser has to go to log in.
+    McpLogin {
+        url: String,
+    },
+    McpImport {
+        /// The names of the servers added.
+        added: Vec<String>,
+        /// Why each server that wasn't added was left out.
+        skipped: Vec<String>,
     },
     Done,
     #[serde(other)]
@@ -464,6 +519,9 @@ pub struct DaemonState {
     /// What's typed for each session but not sent yet.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drafts: BTreeMap<SessionId, String>,
+    /// The MCP servers agents on this device get, device-wide and per topic.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<McpServer>,
 }
 
 impl DaemonState {
@@ -543,6 +601,20 @@ impl DaemonState {
                     self.drafts.insert(session_id.clone(), text.clone());
                 }
             }
+            StateChange::McpServerChanged { server } => {
+                upsert(&mut self.mcp_servers, server.clone(), |s| &s.id);
+            }
+            StateChange::McpServerRemoved { id } => {
+                self.mcp_servers.retain(|s| &s.id != id);
+                for topic in self.workspaces.iter_mut().flat_map(|w| &mut w.topics) {
+                    topic.mcp.remove(id);
+                }
+            }
+            StateChange::TopicMcpChanged { topic_id, mcp } => {
+                if let Some(topic) = self.topic_mut(topic_id) {
+                    topic.mcp = mcp.clone();
+                }
+            }
             StateChange::Unknown => {}
         }
     }
@@ -565,6 +637,24 @@ impl DaemonState {
 
     pub fn session(&self, id: &SessionId) -> Option<&Session> {
         self.sessions().find(|s| &s.id == id)
+    }
+
+    pub fn mcp_server(&self, id: &McpServerId) -> Option<&McpServer> {
+        self.mcp_servers.iter().find(|s| &s.id == id)
+    }
+
+    /// The MCP servers a topic's agents get: the device's that are on for it, then its own
+    /// that are on.
+    pub fn topic_mcp_servers<'a>(
+        &'a self,
+        topic: &'a Topic,
+    ) -> impl Iterator<Item = &'a McpServer> {
+        self.mcp_servers
+            .iter()
+            .filter(move |server| match &server.topic_id {
+                None => topic.mcp.get(&server.id).copied().unwrap_or(server.enabled),
+                Some(owner) => owner == &topic.id && server.enabled,
+            })
     }
 
     fn topic_mut(&mut self, id: &TopicId) -> Option<&mut Topic> {
@@ -612,6 +702,9 @@ pub struct Topic {
     /// Every folder it has worked in and still has. One at the repo's own path is the repo.
     pub worktrees: Vec<Worktree>,
     pub sessions: Vec<Session>,
+    /// The device's MCP servers this topic turns on or off, against their own `enabled`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp: BTreeMap<McpServerId, bool>,
 }
 
 impl Topic {
@@ -644,6 +737,73 @@ pub struct Session {
     /// client, so reading it anywhere reads it everywhere. Starting work clears it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unread: bool,
+}
+
+/// An MCP server that tectr gives agents. Each agent's own MCP configuration is switched off,
+/// so these are the only ones it gets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServer {
+    pub id: McpServerId,
+    /// What agents call it. Letters, digits, `-` and `_`, and unique among the servers a topic
+    /// can get.
+    pub name: String,
+    /// The topic that has this server to itself. `None` is a device-wide server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_id: Option<TopicId>,
+    pub transport: McpTransport,
+    /// For a device-wide server, whether topics get it unless they turn it off. A topic's own
+    /// server is on while this is.
+    pub enabled: bool,
+    /// Whether the daemon holds a login for it. Only HTTP servers log in, and the tokens never
+    /// leave the daemon.
+    #[serde(default, skip_serializing_if = "McpAuth::is_none")]
+    pub auth: McpAuth,
+}
+
+/// How agents reach an MCP server. Values may name the daemon's environment as `${NAME}`,
+/// which keeps secrets out of tectr's state: every client of this daemon sees these values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum McpTransport {
+    /// A program the agent starts.
+    Stdio {
+        command: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        env: BTreeMap<String, String>,
+    },
+    /// A streamable HTTP server. Agents reach it through the daemon, which adds the login.
+    Http {
+        url: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        headers: BTreeMap<String, String>,
+        /// For a server that doesn't register clients by itself, the client ID registered
+        /// with it for tectr.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oauth_client_id: Option<String>,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuth {
+    /// No login is known to be needed.
+    #[default]
+    None,
+    /// The server turned the daemon away, so someone has to log in.
+    NeedsLogin,
+    LoggedIn,
+    #[serde(other)]
+    Unknown,
+}
+
+impl McpAuth {
+    pub fn is_none(&self) -> bool {
+        *self == Self::None
+    }
 }
 
 /// An agent this device knows how to run. It may not be installed.
@@ -813,6 +973,18 @@ pub enum StateChange {
     DraftChanged {
         session_id: SessionId,
         text: String,
+    },
+    McpServerChanged {
+        server: McpServer,
+    },
+    /// Topics that turned it on or off forget that too.
+    McpServerRemoved {
+        id: McpServerId,
+    },
+    /// Replaces which of the device's MCP servers the topic turns on or off.
+    TopicMcpChanged {
+        topic_id: TopicId,
+        mcp: BTreeMap<McpServerId, bool>,
     },
     #[serde(other)]
     Unknown,
@@ -1022,6 +1194,63 @@ mod tests {
     }
 
     #[test]
+    fn a_topic_gets_the_device_servers_it_leaves_on_and_its_own() {
+        let server = |id: &str, topic_id: Option<&str>, enabled| McpServer {
+            id: id.into(),
+            name: id.to_owned(),
+            topic_id: topic_id.map(TopicId::from),
+            transport: McpTransport::Stdio {
+                command: "x".into(),
+                args: vec![],
+                env: BTreeMap::new(),
+            },
+            enabled,
+            auth: McpAuth::None,
+        };
+        let topic = |id: &str, mcp: &[(&str, bool)]| Topic {
+            id: id.into(),
+            name: id.to_owned(),
+            worktree_id: "wt".into(),
+            worktrees: vec![],
+            sessions: vec![],
+            mcp: mcp
+                .iter()
+                .map(|(id, on)| (McpServerId::from(*id), *on))
+                .collect(),
+        };
+        let state = DaemonState {
+            machine: Machine {
+                id: "m".into(),
+                name: "m".into(),
+            },
+            workspaces: vec![],
+            approvals: vec![],
+            providers: vec![],
+            drafts: BTreeMap::new(),
+            settings: DeviceSettings::default(),
+            mcp_servers: vec![
+                server("on", None, true),
+                server("off", None, false),
+                server("mine", Some("t"), true),
+                server("mine-off", Some("t"), false),
+                server("theirs", Some("other"), true),
+            ],
+        };
+        let names = |topic: &Topic| -> Vec<String> {
+            state
+                .topic_mcp_servers(topic)
+                .map(|s| s.name.clone())
+                .collect()
+        };
+        assert_eq!(names(&topic("t", &[])), ["on", "mine"]);
+        assert_eq!(
+            names(&topic("t", &[("on", false), ("off", true)])),
+            ["off", "mine"]
+        );
+        assert_eq!(names(&topic("other", &[])), ["on", "theirs"]);
+    }
+
+    #[test]
     fn applying_a_change_twice_has_no_further_effect() {
         let mut state = DaemonState {
             machine: Machine {
@@ -1033,6 +1262,7 @@ mod tests {
             providers: vec![],
             drafts: BTreeMap::new(),
             settings: DeviceSettings::default(),
+            mcp_servers: vec![],
         };
         let change = StateChange::WorkspaceAdded {
             workspace: Workspace {

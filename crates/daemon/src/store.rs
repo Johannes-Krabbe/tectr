@@ -7,9 +7,12 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use protocol::{
     Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, Machine, MachineId,
-    PermissionMode, Provider, Session, SessionEvent, SessionEventKind, SessionId, SessionRef,
-    SessionStatus, Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId,
+    McpServer, McpServerId, PermissionMode, Provider, Session, SessionEvent, SessionEventKind,
+    SessionId, SessionRef, SessionStatus, Topic, TopicId, Workspace, WorkspaceId, Worktree,
+    WorktreeId,
 };
+
+use crate::oauth::Login;
 use rusqlite::{Connection, OptionalExtension, params};
 
 const MIGRATIONS: &[&str] = &[
@@ -92,6 +95,13 @@ const MIGRATIONS: &[&str] = &[
         (SELECT id FROM worktrees WHERE topic_id = topics.id ORDER BY rowid LIMIT 1);
     UPDATE sessions SET worktree_id =
         (SELECT worktree_id FROM topics WHERE id = sessions.topic_id);
+",
+    // Logins live apart from the servers, because servers go to every client and logins never
+    // leave the daemon.
+    "
+    CREATE TABLE mcp_servers (id TEXT PRIMARY KEY, server TEXT NOT NULL);
+    CREATE TABLE mcp_logins (server_id TEXT PRIMARY KEY, login TEXT NOT NULL);
+    ALTER TABLE topics ADD COLUMN mcp TEXT;
 ",
 ];
 
@@ -182,7 +192,7 @@ impl Store {
         )?;
         for workspace in &mut workspaces {
             workspace.topics = self.collect(
-                "SELECT id, name, worktree_id FROM topics
+                "SELECT id, name, worktree_id, mcp FROM topics
                  WHERE workspace_id = ?1 AND archived_at_ms IS NULL ORDER BY rowid",
                 [&workspace.id.0],
                 topic_row,
@@ -195,6 +205,10 @@ impl Store {
             self.collect("SELECT provider FROM providers ORDER BY rowid", [], |row| {
                 row.get(0)
             })?;
+        let mcp_servers: Vec<String> =
+            self.collect("SELECT server FROM mcp_servers ORDER BY rowid", [], |row| {
+                row.get(0)
+            })?;
         Ok(DaemonState {
             machine,
             workspaces,
@@ -205,6 +219,10 @@ impl Store {
                 .collect::<Result<_, _>>()?,
             drafts: self.drafts()?,
             settings: self.device_settings()?,
+            mcp_servers: mcp_servers
+                .iter()
+                .filter_map(|server| serde_json::from_str(server).ok())
+                .collect(),
         })
     }
 
@@ -269,7 +287,7 @@ impl Store {
         let found = self
             .conn
             .query_row(
-                "SELECT id, name, worktree_id, workspace_id FROM topics
+                "SELECT id, name, worktree_id, workspace_id, mcp FROM topics
                  WHERE id = ?1 AND archived_at_ms IS NOT NULL",
                 [&id.0],
                 |row| Ok((topic_row(row)?, WorkspaceId(row.get(3)?))),
@@ -484,6 +502,75 @@ impl Store {
         Ok(())
     }
 
+    /// Keeps a server's place in the list when it changes.
+    pub fn upsert_mcp_server(&self, server: &McpServer) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO mcp_servers (id, server) VALUES (?1, ?2)
+             ON CONFLICT (id) DO UPDATE SET server = excluded.server",
+            params![server.id.0, serde_json::to_string(server)?],
+        )?;
+        Ok(())
+    }
+
+    /// Its login goes too.
+    pub fn remove_mcp_server(&self, id: &McpServerId) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM mcp_servers WHERE id = ?1", [&id.0])?;
+        tx.execute("DELETE FROM mcp_logins WHERE server_id = ?1", [&id.0])?;
+        let topics: Vec<(String, String)> = {
+            let mut statement = tx.prepare("SELECT id, mcp FROM topics WHERE mcp IS NOT NULL")?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for (topic, text) in topics {
+            let mut mcp: BTreeMap<McpServerId, bool> =
+                serde_json::from_str(&text).unwrap_or_default();
+            if mcp.remove(id).is_some() {
+                tx.execute(
+                    "UPDATE topics SET mcp = ?2 WHERE id = ?1",
+                    params![topic, serde_json::to_string(&mcp)?],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn set_topic_mcp(&self, id: &TopicId, mcp: &BTreeMap<McpServerId, bool>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE topics SET mcp = ?2 WHERE id = ?1",
+            params![id.0, serde_json::to_string(mcp)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn mcp_login(&self, id: &McpServerId) -> Result<Option<Login>> {
+        let stored: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT login FROM mcp_logins WHERE server_id = ?1",
+                [&id.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored.and_then(|text| serde_json::from_str(&text).ok()))
+    }
+
+    pub fn set_mcp_login(&self, id: &McpServerId, login: &Login) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO mcp_logins (server_id, login) VALUES (?1, ?2)
+             ON CONFLICT (server_id) DO UPDATE SET login = excluded.login",
+            params![id.0, serde_json::to_string(login)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_mcp_login(&self, id: &McpServerId) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM mcp_logins WHERE server_id = ?1", [&id.0])?;
+        Ok(())
+    }
+
     pub fn remove_provider(&self, agent: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM providers WHERE agent = ?1", [agent])?;
@@ -617,13 +704,19 @@ impl Store {
     }
 }
 
+/// Every query using this selects `mcp` too, read by name because their other columns differ.
 fn topic_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Topic> {
+    let mcp: Option<String> = row.get("mcp")?;
     Ok(Topic {
         id: TopicId(row.get(0)?),
         name: row.get(1)?,
         worktree_id: WorktreeId(row.get(2)?),
         worktrees: vec![],
         sessions: vec![],
+        // Like drafts, a value a newer version wrote that doesn't parse is lost.
+        mcp: mcp
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -694,6 +787,7 @@ mod tests {
                 branch: "tectr/topic".into(),
             }],
             sessions: vec![],
+            mcp: BTreeMap::new(),
         };
         let workspace = Workspace {
             id: "w".into(),
@@ -729,6 +823,7 @@ mod tests {
                 branch: "b".into(),
             }],
             sessions: vec![],
+            mcp: BTreeMap::new(),
         };
         store.insert_workspace(&workspace).unwrap();
         store.insert_topic(&workspace.id, &topic, false).unwrap();
@@ -772,6 +867,7 @@ mod tests {
             worktree_id: worktree.id.clone(),
             worktrees: vec![worktree],
             sessions: vec![],
+            mcp: BTreeMap::new(),
         };
         store.insert_topic(&"w".into(), &topic, auto_named).unwrap();
         topic
@@ -894,6 +990,49 @@ mod tests {
     }
 
     #[test]
+    fn mcp_servers_overrides_and_logins_survive_and_go_together() {
+        let store = with_workspace();
+        stored_topic(&store, "t", false);
+        let server = McpServer {
+            id: "x".into(),
+            name: "linear".into(),
+            topic_id: None,
+            transport: protocol::McpTransport::Http {
+                url: "https://l".into(),
+                headers: BTreeMap::new(),
+                oauth_client_id: None,
+            },
+            enabled: true,
+            auth: protocol::McpAuth::LoggedIn,
+        };
+        store.upsert_mcp_server(&server).unwrap();
+        let overrides = BTreeMap::from([(McpServerId::from("x"), false)]);
+        store.set_topic_mcp(&"t".into(), &overrides).unwrap();
+        let login = Login {
+            token_endpoint: "https://l/token".into(),
+            client_id: "c".into(),
+            client_secret: None,
+            resource: "https://l".into(),
+            redirect_uri: "http://localhost:1/oauth/callback".into(),
+            access_token: Some("a".into()),
+            refresh_token: Some("r".into()),
+            expires_at_ms: Some(5),
+        };
+        store.set_mcp_login(&server.id, &login).unwrap();
+
+        let state = store.load_state(machine()).unwrap();
+        assert_eq!(state.mcp_servers, std::slice::from_ref(&server));
+        assert_eq!(state.topics().next().unwrap().mcp, overrides);
+        assert_eq!(store.mcp_login(&server.id).unwrap(), Some(login));
+
+        store.remove_mcp_server(&server.id).unwrap();
+        let state = store.load_state(machine()).unwrap();
+        assert!(state.mcp_servers.is_empty());
+        assert!(state.topics().next().unwrap().mcp.is_empty());
+        assert_eq!(store.mcp_login(&server.id).unwrap(), None);
+    }
+
+    #[test]
     fn events_after_returns_later_events_in_order() {
         let store = store();
         let workspace = Workspace {
@@ -913,6 +1052,7 @@ mod tests {
                 branch: "b".into(),
             }],
             sessions: vec![],
+            mcp: BTreeMap::new(),
         };
         store.insert_topic(&workspace.id, &topic, false).unwrap();
         let session_id = SessionId::from("s");

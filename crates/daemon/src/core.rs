@@ -24,8 +24,11 @@ use tokio::task::JoinHandle;
 
 use crate::agents::AgentLauncher;
 use crate::awake::{KeepAwake, KeepAwakeCommand};
+use crate::mcp::ConfigHome;
 use crate::store::Store;
 use crate::{acp, folders, git};
+
+mod mcp;
 
 /// A live update for connected clients.
 #[derive(Debug, Clone)]
@@ -65,6 +68,14 @@ struct LiveSession {
     turn_active: bool,
     pending: HashMap<ApprovalId, PermissionAnswer>,
     task: Option<JoinHandle<()>>,
+    /// Lets the agent's requests through the MCP proxy. It dies with the agent.
+    proxy_secret: String,
+    /// The MCP servers the agent was started with.
+    mcp: Vec<protocol::McpServerId>,
+    /// What its topic's servers were when it started, to tell when they've changed.
+    mcp_fingerprint: String,
+    /// Its servers changed while it was busy, so it stops once it's done.
+    mcp_stale: bool,
 }
 
 struct Inner {
@@ -91,16 +102,37 @@ pub struct Core {
     /// restoring a topic straight after archiving it can't race the removal of its folder.
     worktree_changes: Arc<tokio::sync::Mutex<()>>,
     shutting_down: AtomicBool,
+    /// The port the daemon listens on, which the MCP proxy and login redirects use.
+    port: u16,
+    /// Where agents keep the MCP configuration that gets switched off.
+    config_home: ConfigHome,
+    /// For MCP servers and their logins.
+    http: reqwest::Client,
+    logins: Mutex<HashMap<String, mcp::PendingLogin>>,
+    /// Refreshing one login at a time keeps two requests from using up one refresh token.
+    token_refresh: tokio::sync::Mutex<()>,
+}
+
+/// What `Core::open` needs besides the data directory.
+pub struct CoreOptions {
+    pub hostname: String,
+    pub agents: BTreeMap<String, AgentLauncher>,
+    pub event_buffer: usize,
+    pub keep_awake: Option<KeepAwakeCommand>,
+    pub port: u16,
+    pub config_home: ConfigHome,
 }
 
 impl Core {
-    pub fn open(
-        data_dir: &Path,
-        hostname: String,
-        agents: BTreeMap<String, AgentLauncher>,
-        event_buffer: usize,
-        keep_awake: Option<KeepAwakeCommand>,
-    ) -> Result<Arc<Self>> {
+    pub fn open(data_dir: &Path, options: CoreOptions) -> Result<Arc<Self>> {
+        let CoreOptions {
+            hostname,
+            agents,
+            event_buffer,
+            keep_awake,
+            port,
+            config_home,
+        } = options;
         let store = Store::open(&data_dir.join("tectr.db"))?;
         let machine = Machine {
             id: store.machine_id()?,
@@ -128,6 +160,15 @@ impl Core {
             adapter_install: tokio::sync::Mutex::new(()),
             worktree_changes: Arc::new(tokio::sync::Mutex::new(())),
             shutting_down: AtomicBool::new(false),
+            port,
+            config_home,
+            http: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .user_agent(concat!("tectr/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .context("failed to set up HTTP for MCP servers")?,
+            logins: Mutex::new(HashMap::new()),
+            token_refresh: tokio::sync::Mutex::new(()),
         }))
     }
 
@@ -224,6 +265,26 @@ impl Core {
             Command::SetUnread { session_id, unread } => self.set_unread(&session_id, unread),
             Command::SetDraft { session_id, text } => self.set_draft(session_id, text),
             Command::CloseSession { session_id, force } => self.close_session(&session_id, force),
+            Command::SaveMcpServer {
+                id,
+                name,
+                topic_id,
+                transport,
+                enabled,
+            } => self.save_mcp_server(id, &name, topic_id, transport, enabled),
+            Command::RemoveMcpServer { id } => self.remove_mcp_server(&id),
+            Command::SetTopicMcp {
+                topic_id,
+                server_id,
+                on,
+            } => self.set_topic_mcp(&topic_id, &server_id, on),
+            Command::LoginMcpServer { id } => self.login_mcp_server(&id).await,
+            Command::CompleteMcpLogin { state, code } => self
+                .complete_mcp_login(&state, &code)
+                .await
+                .map(|_| CommandOutput::Done),
+            Command::LogoutMcpServer { id } => self.logout_mcp_server(&id),
+            Command::ImportMcpServers => self.import_mcp_servers().await,
             Command::Unknown => Err(invalid("this daemon doesn't know that command")),
         }
     }
@@ -318,6 +379,7 @@ impl Core {
             worktree_id: worktree.id.clone(),
             worktrees: vec![worktree],
             sessions: vec![],
+            mcp: BTreeMap::new(),
         };
         let mut inner = self.lock();
         inner
@@ -884,7 +946,18 @@ impl Core {
             .context("the session's topic has no folder")?
             .path
             .clone();
+        let topic = inner
+            .state
+            .topics()
+            .find(|topic| topic.sessions.iter().any(|s| s.id == session.id))
+            .context("the session's topic no longer exists")?;
+        let proxy_secret = crate::new_id();
+        let proxy = format!("http://127.0.0.1:{}/mcp/{proxy_secret}", self.port);
+        let (mcp_ids, mcp_servers) = crate::mcp::agent_servers(&inner.state, topic, &proxy);
+        let mcp_fingerprint = mcp::fingerprint(&inner.state, topic);
         let spawn = acp::AgentSpawn {
+            run: proxy_secret.clone(),
+            mcp: mcp_servers,
             session_id: session.id.clone(),
             cwd: cwd.into(),
             launcher,
@@ -904,6 +977,10 @@ impl Core {
                 turn_active,
                 pending: HashMap::new(),
                 task: Some(task),
+                proxy_secret,
+                mcp: mcp_ids,
+                mcp_fingerprint,
+                mcp_stale: false,
             },
         );
         Ok(())
@@ -1182,6 +1259,10 @@ impl Core {
         Ok(CommandOutput::Done)
     }
 
+    pub fn config_home(&self) -> &ConfigHome {
+        &self.config_home
+    }
+
     /// Runs one adapter install at a time, then returns how to start the agent.
     pub async fn resolve_launcher(
         &self,
@@ -1291,11 +1372,22 @@ impl Core {
                 inner.set_status(id, SessionStatus::Failed);
             }
         }
+        if !still_waiting && inner.live.get(id).is_some_and(|live| live.mcp_stale) {
+            inner.stop_for_mcp(id);
+        }
     }
 
-    /// The agent process is gone, either as asked or unexpectedly.
-    pub fn agent_exited(&self, id: &SessionId, result: Result<()>) {
+    /// The agent process is gone, either as asked or unexpectedly. `run` tells this process
+    /// apart from one that already replaced it, as after a restart for new MCP servers.
+    pub fn agent_exited(&self, id: &SessionId, run: &str, result: Result<()>) {
         let mut inner = self.lock();
+        if inner
+            .live
+            .get(id)
+            .is_none_or(|live| live.proxy_secret != run)
+        {
+            return;
+        }
         let Some(mut live) = inner.live.remove(id) else {
             return;
         };
@@ -1656,10 +1748,27 @@ fn internal(error: anyhow::Error) -> CommandError {
 mod tests {
     use super::*;
 
+    fn options(hostname: &str, keep_awake: Option<KeepAwakeCommand>) -> CoreOptions {
+        CoreOptions {
+            hostname: hostname.to_owned(),
+            agents: BTreeMap::new(),
+            event_buffer: 16,
+            keep_awake,
+            port: 0,
+            config_home: ConfigHome {
+                home: None,
+                codex_home: None,
+                xdg_config: None,
+                opencode_config: None,
+                opencode_content: None,
+            },
+        }
+    }
+
     #[tokio::test]
     async fn a_chosen_name_outlives_a_restart_and_empty_goes_back_to_the_hostname() {
         let dir = tempfile::tempdir().unwrap();
-        let open = || Core::open(dir.path(), "host".to_owned(), BTreeMap::new(), 16, None).unwrap();
+        let open = || Core::open(dir.path(), options("host", None)).unwrap();
         let name = |core: &Core| core.snapshot_and_subscribe().0.machine.name;
 
         let core = open();
@@ -1700,6 +1809,7 @@ mod tests {
                     branch: "b".into(),
                 }],
                 sessions: vec![],
+                mcp: BTreeMap::new(),
             };
             store.insert_topic(&"w".into(), &topic, false).unwrap();
             store
@@ -1722,16 +1832,7 @@ mod tests {
             program: "sleep".into(),
             args: vec!["60".into()],
         };
-        let open = || {
-            Core::open(
-                dir.path(),
-                "m".to_owned(),
-                BTreeMap::new(),
-                16,
-                Some(stand_in.clone()),
-            )
-            .unwrap()
-        };
+        let open = || Core::open(dir.path(), options("m", Some(stand_in.clone()))).unwrap();
         let core = open();
         let set_status = |core: &Core, status| core.lock().set_status(&"s".into(), status);
         let awake = |core: &Core| core.lock().awake.is_on();
@@ -1811,6 +1912,7 @@ mod tests {
                             branch: "b".into(),
                         }],
                         sessions: vec![],
+                        mcp: BTreeMap::new(),
                     },
                     false,
                 )
@@ -1827,7 +1929,7 @@ mod tests {
             store.insert_pending_approval(&approval).unwrap();
         }
 
-        let core = Core::open(dir.path(), "m".to_owned(), BTreeMap::new(), 16, None).unwrap();
+        let core = Core::open(dir.path(), options("m", None)).unwrap();
         let (state, _) = core.snapshot_and_subscribe();
 
         assert!(state.approvals.is_empty());
@@ -1857,7 +1959,7 @@ mod tests {
 
         // A second start finds nothing left to clean up.
         drop(core);
-        let core = Core::open(dir.path(), "m".to_owned(), BTreeMap::new(), 16, None).unwrap();
+        let core = Core::open(dir.path(), options("m", None)).unwrap();
         assert_eq!(
             core.events_after(&"waiting".into(), 0, 10).unwrap().len(),
             2

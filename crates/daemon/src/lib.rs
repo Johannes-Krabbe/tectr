@@ -8,6 +8,9 @@ mod awake;
 mod core;
 mod folders;
 mod git;
+mod http;
+mod mcp;
+mod oauth;
 mod server;
 #[cfg(unix)]
 pub mod shell_env;
@@ -21,12 +24,13 @@ use std::sync::Arc;
 pub use agents::{AgentLauncher, default_agents};
 use anyhow::{Context, Result};
 pub use awake::KeepAwakeCommand;
+pub use mcp::ConfigHome;
 use protocol::MachineId;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::core::Core;
+use crate::core::{Core, CoreOptions};
 
 /// How many live updates a slow client can fall behind by before it's
 /// resynchronized from the database.
@@ -41,6 +45,8 @@ pub struct Config {
     pub event_buffer: usize,
     /// Runs while an agent works, if the device's settings allow it.
     pub keep_awake: Option<KeepAwakeCommand>,
+    /// Where agents keep the MCP configuration that tectr switches off and imports from.
+    pub mcp_home: ConfigHome,
 }
 
 impl Config {
@@ -51,6 +57,7 @@ impl Config {
             agents: default_agents(),
             event_buffer: DEFAULT_EVENT_BUFFER,
             keep_awake: KeepAwakeCommand::system(),
+            mcp_home: ConfigHome::from_env(),
         }
     }
 }
@@ -87,10 +94,14 @@ impl Daemon {
 
         let core = Core::open(
             &config.data_dir,
-            machine_name(),
-            config.agents,
-            config.event_buffer,
-            config.keep_awake,
+            CoreOptions {
+                hostname: machine_name(),
+                agents: config.agents,
+                event_buffer: config.event_buffer,
+                keep_awake: config.keep_awake,
+                port: addr.port(),
+                config_home: config.mcp_home,
+            },
         )?;
         let machine_id = core.machine().id;
         tokio::spawn(core.clone().refresh_providers());

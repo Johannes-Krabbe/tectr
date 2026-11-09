@@ -8,15 +8,24 @@ publish.workspace = true
 
 [dependencies]
 agent-client-protocol = { workspace = true, features = ["stdio"] }
+# Plain HTTP is enough: it only ever calls the daemon's loopback proxy.
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
+base64.workspace = true
+sha2.workspace = true
 engine.workspace = true
 daemon.workspace = true
 protocol.workspace = true
 
+bytes.workspace = true
 futures-util.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+reqwest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite.workspace = true

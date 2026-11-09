@@ -104,6 +104,8 @@ Creates something with just a name, with defaults for the rest.
 
 - **Parts:** where it will be created, name input in `text.title`, footer.
 - **Surface:** `surface.overlay`, `line.strong` border, `shadow.sheet`, over `scrim`.
+- **With fields:** when there's more to fill in, like an MCP server, labelled fields follow the name in two columns: the label in `text.meta` and `text.tertiary`, the input in `text.code-body` on `surface.raised` with a `line.strong` border that turns `accent.text` while focused. A box of lines (`KEY=VALUE`) takes Enter as a new line, so a save key with a modifier works from every field. A choice between a few values is a row of small buttons, the chosen one on `surface.control`, with its key after them.
+- **As a list:** a sheet can hold a list instead, like a topic's MCP servers, with group headings in `text.meta`. What the highlighted row can do sits in a bar above the footer, the same as the settings actions bar, so the list itself doesn't move.
 - **iOS:** a system `.sheet`, using our tokens only for content.
 
 ## Button

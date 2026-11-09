@@ -1,6 +1,8 @@
 //! A minimal client that tests the engine before any UI exists. It holds no
 //! logic of its own beyond parsing arguments and printing.
 
+mod mcp;
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
@@ -122,6 +124,11 @@ enum Cmd {
         /// Stop it even if it's still running.
         #[arg(long)]
         force: bool,
+    },
+    /// Manage the MCP servers agents get, device-wide and per topic.
+    Mcp {
+        #[command(subcommand)]
+        command: mcp::McpCmd,
     },
 }
 
@@ -386,6 +393,7 @@ async fn main() -> Result<()> {
                 )
                 .await?;
         }
+        Cmd::Mcp { command } => mcp::run(&engine, command).await?,
     }
     Ok(())
 }
@@ -465,10 +473,29 @@ async fn archived_topics(engine: &Engine) -> Result<Vec<(MachineId, String, Arch
     Ok(all)
 }
 
-fn resolve_topic(engine: &Engine, prefix: &str) -> Result<(MachineId, TopicId)> {
+/// Accepts a topic's exact name or an ID prefix. A name wins, so a name that looks like an ID
+/// still works.
+fn resolve_topic(engine: &Engine, wanted: &str) -> Result<(MachineId, TopicId)> {
+    let mut named: Vec<_> = engine
+        .devices()
+        .into_iter()
+        .filter_map(|device| device.state)
+        .flat_map(|state| {
+            state
+                .topics()
+                .filter(|topic| topic.name == wanted)
+                .map(|topic| (state.machine.id.clone(), topic.id.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    match named.len() {
+        0 => {}
+        1 => return Ok(named.remove(0)),
+        count => bail!("{count} topics are named {wanted}. Use an ID prefix"),
+    }
     resolve(
         engine,
-        prefix,
+        wanted,
         |state| state.topics().map(|t| t.id.clone()).collect(),
         |t| &t.0,
     )
@@ -561,6 +588,9 @@ fn print_status(engine: &Engine) {
             continue;
         };
         println!("{} ({connection}) {}", state.machine.name, device.url);
+        if let Some(line) = mcp::status_line(state) {
+            println!("  {line}");
+        }
         for workspace in &state.workspaces {
             println!(
                 "  workspace {} {} {}",
@@ -570,6 +600,9 @@ fn print_status(engine: &Engine) {
             );
             for topic in &workspace.topics {
                 println!("    topic {} {}", short(&topic.id.0), topic.name);
+                if let Some(line) = mcp::topic_status_line(state, topic) {
+                    println!("      {line}");
+                }
                 for worktree in &topic.worktrees {
                     let here = if worktree.id == topic.worktree_id {
                         " (here)"

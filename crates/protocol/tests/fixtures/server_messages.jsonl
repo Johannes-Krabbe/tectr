@@ -36,3 +36,8 @@
 {"type":"state_changed","change":{"change":"worktrees_changed","topic_id":"t1","worktree_id":"wt2","worktrees":[{"id":"wt1","path":"/repo","branch":"main"},{"id":"wt2","path":"/wt","branch":"tectr/fix-login-ab12"}]}}
 {"type":"response","id":20,"result":{"Ok":{"output":"archive_risk","risk":{"running":1,"worktrees":[{"path":"/wt","branch":"tectr/fix-login-ab12","uncommitted":3,"unpushed":2}]}}}}
 {"type":"response","id":41,"result":{"Ok":{"output":"archived_topics","topics":[{"id":"t1","workspace_id":"w1","name":"Fix login","archived_at_ms":1700000000000}]}}}
+{"type":"state_changed","change":{"change":"mcp_server_changed","server":{"id":"x1","name":"linear","transport":{"type":"http","url":"https://mcp.linear.app/mcp","headers":{"X-Team":"core"},"oauth_client_id":"abc"},"enabled":true,"auth":"needs_login"}}}
+{"type":"state_changed","change":{"change":"mcp_server_removed","id":"x1"}}
+{"type":"state_changed","change":{"change":"topic_mcp_changed","topic_id":"t1","mcp":{"x1":false}}}
+{"type":"response","id":1,"result":{"Ok":{"output":"mcp_login","url":"https://auth.example/authorize?x=1"}}}
+{"type":"response","id":1,"result":{"Ok":{"output":"mcp_import","added":["github"],"skipped":["old: sse servers aren't supported"]}}}

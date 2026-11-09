@@ -2,7 +2,7 @@
 export type View =
   | { kind: "topic"; machineId: string; topicId: string }
   | { kind: "new_topic"; machineId: string; workspaceId: string }
-  | { kind: "device_settings"; machineId: string }
+  | { kind: "device_settings"; machineId: string; section?: string }
   | { kind: "app_settings"; section: string };
 
 /** What this client is looking at. The daemon owns what exists, and each client chooses what to

@@ -68,7 +68,17 @@ pub const GROUPS: &[Group] = &[
     Group {
         id: "device",
         title: "Device settings",
-        about: "On a device's settings screen.",
+        about: "In a device's providers settings.",
+    },
+    Group {
+        id: "mcp",
+        title: "MCP servers",
+        about: "In a device's MCP servers, and in the sheet with a topic's MCP servers.",
+    },
+    Group {
+        id: "mcp_form",
+        title: "Editing an MCP server",
+        about: "In the form for adding or editing an MCP server. Enter in a box of lines adds a line.",
     },
     Group {
         id: "sections",
@@ -237,6 +247,11 @@ pub const ACTIONS: &[Action] = &[
         "Mark every topic read",
         &["mod+shift+u"],
     ),
+    once(
+        "global.topic_mcp",
+        "Choose the topic's MCP servers",
+        &["mod+shift+m"],
+    ),
     once("global.toggle_vim", "Turn vim keys on or off", &[]),
     once("global.move_topic", "Move the topic to another folder", &[]),
     once("global.archived_topics", "Restore an archived topic", &[]),
@@ -361,7 +376,7 @@ pub const ACTIONS: &[Action] = &[
         "Add or refresh the provider",
         "nav.confirm",
     ),
-    follows("device.back", "Close", "nav.back"),
+    follows("device.back", "Back to the sections", "nav.back"),
     once(
         "device.remove",
         "Remove the provider",
@@ -374,6 +389,57 @@ pub const ACTIONS: &[Action] = &[
         "device.toggle_keep_awake",
         "Keep the device awake while agents work, or not",
         &["w"],
+    ),
+    follows("mcp.up", "Move up", "nav.up"),
+    follows("mcp.down", "Move down", "nav.down"),
+    follows("mcp.first", "Go to the first server", "nav.first"),
+    follows("mcp.last", "Go to the last server", "nav.last"),
+    follows("mcp.center", "Center the current server", "nav.center"),
+    follows("mcp.edit", "Edit the server", "nav.confirm"),
+    follows(
+        "mcp.back",
+        "Back to the sections, or close the sheet",
+        "nav.back",
+    ),
+    once("mcp.add", "Add a server", &["a", "o"]),
+    once("mcp.remove", "Remove the server", &["d d", "backspace"]),
+    once(
+        "mcp.toggle",
+        "Turn the server on or off, for topics by default or for this topic",
+        &["t", "space"],
+    ),
+    once(
+        "mcp.turn_on",
+        "Turn a device's server on for this topic",
+        &["y"],
+    ),
+    once(
+        "mcp.turn_off",
+        "Turn a device's server off for this topic",
+        &["n"],
+    ),
+    once(
+        "mcp.follow_default",
+        "Let this topic follow a device's server's default",
+        &["u"],
+    ),
+    once("mcp.login", "Log in to the server", &["l"]),
+    once("mcp.logout", "Log out of the server", &["shift+l"]),
+    once(
+        "mcp.import",
+        "Import the servers of Claude Code, Codex and OpenCode",
+        &["i"],
+    ),
+    once("mcp_form.save", "Save, from any field", &["mod+enter"]),
+    once(
+        "mcp_form.switch_type",
+        "Switch between stdio and HTTP",
+        &["mod+t"],
+    ),
+    once(
+        "mcp_form.toggle_enabled",
+        "Turn the server on or off",
+        &["mod+e"],
     ),
     follows("sections.up", "Previous section", "nav.up"),
     follows("sections.down", "Next section", "nav.down"),
@@ -441,10 +507,11 @@ const SHARED_WITH_GLOBAL: &[&str] = &[
     "new_tab",
     "new_topic",
     "device",
+    "mcp",
     "sections",
     "settings",
 ];
-const SHARED: &[(&str, &str)] = &[("pane", "permission")];
+const SHARED: &[(&str, &str)] = &[("pane", "permission"), ("sheet", "mcp_form")];
 
 /// macOS handles these through the app menu before the webview sees them.
 const MACOS_MENU_KEYS: &[&str] = &[
@@ -487,7 +554,7 @@ pub const DEFAULT_SEQUENCE_TIMEOUT_MS: u32 = 1_000;
 const SEQUENCE_TIMEOUT_KEY: &str = "sequence_timeout_ms";
 
 /// The groups whose actions run while typing, as long as the keys don't type anything.
-const TEXT_GROUPS: &[&str] = &["composer", "new_topic", "sheet", "palette"];
+const TEXT_GROUPS: &[&str] = &["composer", "new_topic", "sheet", "palette", "mcp_form"];
 
 /// The longest a key can be required to be held. Long enough for anyone, and short
 /// enough that a typo can't leave an action unreachable.

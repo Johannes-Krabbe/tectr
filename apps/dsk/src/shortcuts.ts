@@ -128,6 +128,7 @@ export function globalHints(now: {
   tabs: number;
   closeTab: boolean;
   newTab: boolean;
+  topicMcp: boolean;
   newTopic: boolean;
   newWorkspace: boolean;
   topics: number;
@@ -143,6 +144,7 @@ export function globalHints(now: {
   }
   if (now.closeTab) hints.push(hint("Close tab", "global.close_tab"));
   if (now.newTab) hints.push(hint("New tab", "global.new_tab"));
+  if (now.topicMcp) hints.push(hint("MCP servers", "global.topic_mcp"));
   if (now.newTopic) hints.push(hint("New topic", "global.new_topic"));
   if (now.newWorkspace) hints.push(hint("Add workspace", "global.new_workspace"));
   if (now.topics > 1) hints.push(hint("Topic", "global.prev_topic", "global.next_topic"));
