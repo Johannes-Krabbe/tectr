@@ -1,5 +1,12 @@
-/* App-wide defaults. Values come from design/tokens. Appearance follows the system
-   unless <html> has data-theme="light" or data-theme="dark". */
+/* App-wide defaults. Values come from design/tokens, until appearance.ts sets the ones the
+   appearance settings can change on <html>. */
+
+:root {
+  --font-smoothing: antialiased;
+  --font-code-ligatures: normal;
+  --layout-sidebar-width: 256px;
+  --layout-content-width: 800px;
+}
 
 *,
 *::before,
@@ -22,7 +29,7 @@ body {
   font-feature-settings: "cv11", "ss03";
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.003em;
-  -webkit-font-smoothing: antialiased;
+  -webkit-font-smoothing: var(--font-smoothing);
 }
 
 /* Keeps the app in its own stacking context, so Base UI popups layer above it. */

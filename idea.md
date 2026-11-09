@@ -25,11 +25,10 @@ tectr is a single place to run all of your agents:
 2. **Tabs**: open agents, diffs, and terminals as tabs in a topic, with an optional split to see two at once.
 3. **Sessions**: create, run, pause, resume, and archive agent sessions, each as a tab in a topic.
 4. **Live transcript**: streaming messages, tool calls, and results, with clear rendering of markdown, code, and diffs.
-5. **Approvals inbox**: every pending permission request and question across all sessions in one list, answerable from desktop or phone.
-6. **Worktree lifecycle**: create as many branches and worktrees as a topic needs, review the diff, merge, and clean up. This builds on what twig does today.
-7. **Diff review**: a major feature. Inspect what a topic changed before merging, per file and per hunk, leave comments on many things as you go, then send them all at once.
-8. **Notifications**: push alerts when an agent needs input or finishes.
-9. **Multiple agents**: choose the agent per tab, for example plan with Claude and implement with Codex.
+5. **Worktree lifecycle**: create as many branches and worktrees as a topic needs, review the diff, merge, and clean up. This builds on what twig does today.
+6. **Diff review**: a major feature. Inspect what a topic changed before merging, per file and per hunk, leave comments on many things as you go, then send them all at once.
+7. **Notifications**: push alerts when an agent needs input or finishes.
+8. **Multiple agents**: choose the agent per tab, for example plan with Claude and implement with Codex.
 
 ## Tech stack
 
@@ -65,7 +64,7 @@ tectr natively supports multiple machines without a central server in the data p
 - **Agents via ACP**: Claude Code runs through `claude-agent-acp`, the Agent SDK-based adapter that Zed uses. tectr gets structured streaming, tool calls, and permission requests without reimplementing each agent's quirks.
 - **Clients**: the desktop and phone apps are thin. They render daemon state and send actions back. Neither ever talks to an agent directly.
 - **Client engine**: `engine` holds the logic both apps share. The UI sends it commands and subscribes to state, and never touches a socket.
-  - **In the engine**: the daemon list, one connection per daemon with reconnects, protocol types and version negotiation, event resume, the merged device and workspace tree and approvals inbox (using IDs in the form `(machine_id, session_id)`), the local cache of last known state, and sending actions.
+  - **In the engine**: the daemon list, one connection per daemon with reconnects, protocol types and version negotiation, event resume, the merged device and workspace tree and pending approvals (using IDs in the form `(machine_id, session_id)`), the local cache of last known state, and sending actions.
   - **In each app**: rendering, layout, scroll position, secure key storage, push registration, and telling the engine about lifecycle changes.
   - **Streaming**: the engine batches updates, roughly once per frame, and sends small deltas rather than whole transcripts. This applies at both boundaries: Tauri's IPC to the webview and the Swift bindings.
 - **Local use**: a client reaches the daemon on the same machine over loopback, using the same protocol. There is no extra hop or external dependency.

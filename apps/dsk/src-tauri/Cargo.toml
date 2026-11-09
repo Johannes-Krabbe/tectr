@@ -10,7 +10,24 @@ publish.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+engine.workspace = true
+highlight.workspace = true
+protocol.workspace = true
+settings.workspace = true
 
-[lints]
-workspace = true
+dirs.workspace = true
+notify = "8"
+open = "5"
+tauri = { version = "2", features = [] }
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
+# The workspace's lints, except `unsafe_code` is `deny` instead of `forbid`, because
+# nothing can allow a `forbid`. `color_title_bar` in src/main.rs is the only exception.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

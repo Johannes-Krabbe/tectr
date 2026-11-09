@@ -509,6 +509,10 @@ window.TECTR = {
       "motion.fade": {
         "type": "duration",
         "value": 320
+      },
+      "motion.sweep": {
+        "type": "duration",
+        "value": 1600
       }
     },
     "ios": {
@@ -703,6 +707,10 @@ window.TECTR = {
       "motion.fade": {
         "type": "duration",
         "value": 400
+      },
+      "motion.sweep": {
+        "type": "duration",
+        "value": 1600
       }
     }
   },

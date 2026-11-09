@@ -5,6 +5,7 @@
 mod acp;
 mod agents;
 mod core;
+mod folders;
 mod git;
 mod server;
 mod store;
@@ -84,6 +85,7 @@ impl Daemon {
             config.event_buffer,
         )?;
         let machine_id = core.machine().id;
+        tokio::spawn(core.clone().refresh_providers());
         let (shutdown, shutdown_rx) = watch::channel(false);
         let accept_task = tokio::spawn(server::accept_loop(core.clone(), listener, shutdown_rx));
 

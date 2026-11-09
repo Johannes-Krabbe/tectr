@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tectr logo drafts</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../tokens/generated/tokens.css">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--color-surface-base);
+    color: var(--color-text-primary);
+    font: 400 13px/1.5 Inter, system-ui, sans-serif;
+    padding: 32px;
+    max-width: 1440px;
+    margin: 0 auto;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 24px; }
+  h1 { font-size: 15px; font-weight: 600; }
+  header span, .label { color: var(--color-text-tertiary); }
+  .label { font: 400 11px/1.4 "Geist Mono", ui-monospace, monospace; }
+  svg { display: block; fill: currentColor; }
+
+  /* The one mark drawn in HTML and CSS. Every track is a whole number of
+     units out of 16, so at 16px each room lands on a real pixel. */
+  .plan {
+    --u: calc(var(--s) / 16);
+    width: var(--s);
+    height: var(--s);
+    padding: calc(var(--u) * 2);
+    display: grid;
+    grid-template-columns: calc(var(--u) * 6) calc(var(--u) * 5);
+    grid-template-rows: calc(var(--u) * 5) calc(var(--u) * 3) calc(var(--u) * 2);
+    gap: var(--u);
+  }
+  .plan i { background: currentColor; }
+  .plan i:first-child { grid-row: 1 / -1; }
+
+  .sizes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .sheet {
+    background: var(--color-surface-base);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-line-strong);
+    border-radius: 8px;
+    padding: 16px;
+    display: grid;
+    grid-template-columns: 40px repeat(6, 1fr);
+    gap: 12px 8px;
+    align-items: center;
+    justify-items: center;
+  }
+  .sheet .label:first-child, .sheet .size { justify-self: start; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--color-surface-panel);
+    border: 1px solid var(--color-line-subtle);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .stage { display: grid; grid-template-columns: 1fr 1fr; }
+  .half {
+    background: var(--color-surface-base);
+    color: var(--color-text-primary);
+    display: grid;
+    place-items: center;
+    padding: 36px 0;
+  }
+  .uses {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-block: 1px solid var(--color-line-subtle);
+  }
+  .tile {
+    width: 48px;
+    height: 48px;
+    border-radius: 11px;
+    display: grid;
+    place-items: center;
+    background: var(--color-surface-panel);
+    color: var(--color-text-primary);
+    box-shadow: inset 0 0 0 1px var(--color-line-strong);
+  }
+  .tile.accent {
+    background: var(--color-accent-solid);
+    color: var(--color-text-on-accent);
+    box-shadow: none;
+  }
+  .lockup {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .body { padding: 14px 16px 16px; }
+  h2 { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .chip {
+    font: 400 11px/1.4 "Geist Mono", ui-monospace, monospace;
+    color: var(--color-text-secondary);
+    background: var(--color-surface-control);
+    border-radius: 4px;
+    padding: 0 5px;
+  }
+  .chip.pick { color: var(--color-accent-text); background: var(--color-accent-tint); }
+  .source { margin-left: auto; font-weight: 400; color: var(--color-text-tertiary); }
+  a.source:hover { color: var(--color-text-secondary); }
+  p { color: var(--color-text-secondary); }
+  p + p { margin-top: 6px; color: var(--color-text-tertiary); }
+
+  @media (max-width: 960px) { .sizes { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<!-- Copies of svg/*.svg. Browsers block external <use> and fetch on file://,
+     and only inline SVG can inherit the panel's text color. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="m-joint" viewBox="0 0 64 64"><path d="M8 8H56V20H40V40H24V20H8ZM8 24H20V44H44V24H56V56H8Z"/></symbol>
+  <symbol id="m-colonnade" viewBox="0 0 64 64"><path d="M8 8H56V20H8ZM8 24H16V56H8ZM28 24H36V56H28ZM48 24H56V56H48Z"/></symbol>
+  <symbol id="m-corbel" viewBox="0 0 64 64"><path d="M8 8H56V56H48V40H40V24H24V40H16V56H8Z"/></symbol>
+  <symbol id="m-threshold" viewBox="0 0 64 64"><path d="M4 8H12V52H4ZM16 8A44 44 0 0 1 60 52H16Z"/></symbol>
+  <symbol id="m-truss" viewBox="0 0 64 64"><path d="M17 14L28 50H6ZM21 14H43L32 50ZM47 14L58 50H36Z"/></symbol>
+</svg>
+
+<header>
+  <h1>tectr logo drafts</h1>
+  <span>Round 1, 6 marks. One color, so they follow any theme.</span>
+</header>
+
+<section class="sizes" id="sizes"></section>
+<section class="cards" id="cards"></section>
+
+<script>
+  const MARKS = [
+    {
+      id: "joint", name: "Joint", format: "SVG", pick: true,
+      idea: "A mortise and tenon. Tectonics is the craft of joining parts, so a T-shaped tenon sits inside a block, held apart by one even gap.",
+      risk: "Heaviest of the set, and the T is easy to spot, so it is the least abstract.",
+    },
+    {
+      id: "colonnade", name: "Colonnade", format: "SVG",
+      idea: "Parallel columns carrying one lintel: many agents running side by side under one roof.",
+      risk: "Can read as a bank or a government building at large sizes.",
+    },
+    {
+      id: "corbel", name: "Corbel", format: "SVG",
+      idea: "A corbel arch, where courses of stone step inward until they meet. One solid block with a stepped opening, which also hints at an A for architect.",
+      risk: "The stepped edge may read as pixel art.",
+    },
+    {
+      id: "threshold", name: "Threshold", format: "SVG",
+      idea: "The door swing from a floor plan: a leaf and its arc. Architects will know it, and everyone else sees a bar and a quarter circle.",
+      risk: "Can read as a lowercase b. Wider than it is tall, so it sits smaller in a square tile.",
+    },
+    {
+      id: "truss", name: "Truss", format: "SVG",
+      idea: "Triangles are what make a structure stand. Three of them alternate as in a Warren truss, the only mark here with no right angles.",
+      risk: "Diagonal gaps soften at 16px, and the shape fills a square tile the least.",
+    },
+    {
+      id: "plan", name: "Plan", format: "HTML + CSS",
+      idea: "A floor plan with four rooms, one each for device, workspace, topic and tabs. It also reads as a tiled window layout, which suits a power user tool.",
+      risk: "The closest to a generic layout icon.",
+    },
+  ];
+
+  const mark = (id, size) => id === "plan"
+    ? `<div class="plan" style="--s:${size}px"><i></i><i></i><i></i><i></i></div>`
+    : `<svg width="${size}" height="${size}" aria-hidden="true"><use href="#m-${id}"/></svg>`;
+
+  const sheet = (theme) => `
+    <div class="sheet" data-theme="${theme}">
+      <span class="label">${theme}</span>
+      ${MARKS.map((m) => `<span class="label">${m.name}</span>`).join("")}
+      ${[16, 20, 24, 32, 48].map((size) => `
+        <span class="label size">${size}</span>
+        ${MARKS.map((m) => mark(m.id, size)).join("")}
+      `).join("")}
+    </div>`;
+
+  document.getElementById("sizes").innerHTML = sheet("dark") + sheet("light");
+
+  document.getElementById("cards").innerHTML = MARKS.map((m, i) => `
+    <article class="card">
+      <div class="stage">
+        <div class="half" data-theme="dark">${mark(m.id, 128)}</div>
+        <div class="half" data-theme="light">${mark(m.id, 128)}</div>
+      </div>
+      <div class="uses">
+        <div class="tile" data-theme="dark">${mark(m.id, 36)}</div>
+        <div class="tile" data-theme="light">${mark(m.id, 36)}</div>
+        <div class="tile accent">${mark(m.id, 36)}</div>
+        <div class="lockup">${mark(m.id, 32)}tectr</div>
+      </div>
+      <div class="body">
+        <h2>
+          ${i + 1}. ${m.name}
+          <span class="chip">${m.format}</span>
+          ${m.pick ? '<span class="chip pick">my pick</span>' : ""}
+          ${m.id === "plan"
+            ? '<span class="source label">inline in this page</span>'
+            : `<a class="source label" href="svg/${m.id}.svg">svg/${m.id}.svg</a>`}
+        </h2>
+        <p>${m.idea}</p>
+        <p>Risk: ${m.risk}</p>
+      </div>
+    </article>
+  `).join("");
+</script>
+</body>
+</html>

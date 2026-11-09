@@ -4,6 +4,7 @@
 //!
 //! - `echo a b c`: streams each word as a separate chunk.
 //! - `burst N`: streams N chunks as fast as possible.
+//! - `title a b c`: reports `a b c` as the session's title.
 //! - `write`: runs a tool that creates `fake-output.txt` in the session's
 //!   directory. In the `default` mode it asks for permission first.
 //! - `abandon`: asks for permission from background work, then ends the turn
@@ -22,10 +23,11 @@ use agent_client_protocol::v1::schema::{
     InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PermissionOption,
     PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
     RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities,
-    SessionId, SessionMode, SessionModeState, SessionNotification, SessionResumeCapabilities,
-    SessionUpdate, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse,
-    SetSessionModeRequest, SetSessionModeResponse, StopReason, TextContent, ToolCall,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption, SessionId,
+    SessionInfoUpdate, SessionMode, SessionModeState, SessionNotification,
+    SessionResumeCapabilities, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
+    TextContent, ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{
     Agent, Client, Error, Stdio, on_receive_notification, on_receive_request,
@@ -39,7 +41,48 @@ struct State {
     cwd: PathBuf,
     mode: String,
     model: Option<String>,
+    effort: Option<String>,
     resumed: bool,
+}
+
+/// Like Claude's list: a default entry naming the real model, then the models.
+fn model_values() -> Vec<SessionConfigSelectOption> {
+    let mut values = vec![
+        SessionConfigSelectOption::new("default", "Default (recommended)").description("SMART"),
+    ];
+    values.extend(select_values(&["cheap", "smart"]));
+    values
+}
+
+fn select_values(values: &[&str]) -> Vec<SessionConfigSelectOption> {
+    values
+        .iter()
+        .map(|value| SessionConfigSelectOption::new(value.to_string(), value.to_uppercase()))
+        .collect()
+}
+
+/// Reported the way real agents do. As with Claude's Haiku 4.5, the cheap model has
+/// no effort levels, and selecting it changes the mode.
+fn config_options(state: &State) -> Vec<SessionConfigOption> {
+    let model = state.model.as_deref().unwrap_or("smart");
+    let mut options = vec![
+        SessionConfigOption::select("mode", "Mode", state.mode.clone(), select_values(&MODES))
+            .category(SessionConfigOptionCategory::Mode),
+        SessionConfigOption::select("model", "Model", model.to_owned(), model_values())
+            .category(SessionConfigOptionCategory::Model),
+    ];
+    if model != "cheap" {
+        options.push(
+            SessionConfigOption::select(
+                "effort",
+                "Effort",
+                state.effort.clone().unwrap_or_else(|| "low".to_owned()),
+                select_values(&["default", "low", "high"]),
+            )
+            .category(SessionConfigOptionCategory::ThoughtLevel),
+        );
+    }
+    options
 }
 
 fn mode_state(current: &str) -> SessionModeState {
@@ -86,8 +129,11 @@ async fn main() -> Result<(), Error> {
             async move |request: NewSessionRequest, responder, _connection| {
                 let mut state = on_new.lock().unwrap();
                 state.cwd = request.cwd;
-                responder
-                    .respond(NewSessionResponse::new("fake-session").modes(mode_state(&state.mode)))
+                responder.respond(
+                    NewSessionResponse::new("fake-session")
+                        .modes(mode_state(&state.mode))
+                        .config_options(config_options(&state)),
+                )
             },
             on_receive_request!(),
         )
@@ -96,7 +142,11 @@ async fn main() -> Result<(), Error> {
                 let mut state = on_resume.lock().unwrap();
                 state.cwd = request.cwd;
                 state.resumed = true;
-                responder.respond(ResumeSessionResponse::new().modes(mode_state(&state.mode)))
+                responder.respond(
+                    ResumeSessionResponse::new()
+                        .modes(mode_state(&state.mode))
+                        .config_options(config_options(&state)),
+                )
             },
             on_receive_request!(),
         )
@@ -110,11 +160,22 @@ async fn main() -> Result<(), Error> {
         .on_receive_request(
             async move |request: SetSessionConfigOptionRequest, responder, _connection| {
                 let value = serde_json::to_value(&request.value).unwrap_or_default();
-                on_config.lock().unwrap().model = value
+                let value = value
                     .get("value")
                     .and_then(|v| v.as_str())
                     .map(str::to_owned);
-                responder.respond(SetSessionConfigOptionResponse::new(vec![]))
+                let mut state = on_config.lock().unwrap();
+                match request.config_id.to_string().as_str() {
+                    "effort" => state.effort = value,
+                    "mode" => state.mode = value.unwrap_or_default(),
+                    _ => {
+                        if value.as_deref() == Some("cheap") {
+                            state.mode = "default".to_owned();
+                        }
+                        state.model = value;
+                    }
+                }
+                responder.respond(SetSessionConfigOptionResponse::new(config_options(&state)))
             },
             on_receive_request!(),
         )
@@ -172,6 +233,13 @@ async fn run_turn(
                 say(connection, &session_id, &n.to_string())?;
             }
         }
+        "title" => {
+            let title = words.collect::<Vec<_>>().join(" ");
+            connection.send_notification(SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title(title)),
+            ))?;
+        }
         "write" => return write_file(&state, connection, &session_id).await,
         "abandon" => {
             let background = connection.clone();
@@ -203,9 +271,11 @@ async fn run_turn(
             let report = {
                 let state = state.lock().unwrap();
                 format!(
-                    "mode={} model={} resumed={} cwd={}",
+                    "pid={} mode={} model={} effort={} resumed={} cwd={}",
+                    std::process::id(),
                     state.mode,
                     state.model.as_deref().unwrap_or("none"),
+                    state.effort.as_deref().unwrap_or("none"),
                     state.resumed,
                     state.cwd.display()
                 )

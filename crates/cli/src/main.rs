@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use engine::{Connection, Device, Engine};
 use protocol::{
     Approval, Command, CommandOutput, DEFAULT_PORT, MachineId, PermissionMode, SessionEvent,
-    SessionEventKind, SessionRef, SessionStatus, ToolCallPatch,
+    SessionEventKind, SessionRef, SessionStatus, ToolCallPatch, TopicId,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast::error::RecvError;
@@ -46,6 +46,16 @@ enum Cmd {
     },
     /// Create a topic with a fresh branch and worktree.
     NewTopic { workspace: String, name: String },
+    /// Choose a topic's name.
+    RenameTopic { topic: String, name: String },
+    /// Stop a topic's agents and remove it, along with its worktree unless that has uncommitted
+    /// changes. Its branch stays unless it's fully merged.
+    DeleteTopic {
+        topic: String,
+        /// Delete it even if an agent is still running.
+        #[arg(long)]
+        force: bool,
+    },
     /// Start an agent in a topic's first worktree.
     NewSession {
         topic: String,
@@ -73,6 +83,13 @@ enum Cmd {
     Answer { approval: String, option: String },
     /// Interrupt the current turn.
     Cancel { session: String },
+    /// Stop the agent and remove its tab.
+    Close {
+        session: String,
+        /// Stop it even if it's still running.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -128,7 +145,14 @@ async fn main() -> Result<()> {
                 |w| &w.0,
             )?;
             let output = engine
-                .request(&machine, Command::CreateTopic { workspace_id, name })
+                .request(
+                    &machine,
+                    Command::CreateTopic {
+                        workspace_id,
+                        name: Some(name),
+                        at_root: false,
+                    },
+                )
                 .await?;
             if let CommandOutput::Topic { topic, .. } = output {
                 println!("topic {} {}", short(&topic.id.0), topic.name);
@@ -137,18 +161,25 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Cmd::RenameTopic { topic, name } => {
+            let (machine, topic_id) = resolve_topic(&engine, &topic)?;
+            engine
+                .request(&machine, Command::RenameTopic { topic_id, name })
+                .await?;
+        }
+        Cmd::DeleteTopic { topic, force } => {
+            let (machine, topic_id) = resolve_topic(&engine, &topic)?;
+            engine
+                .request(&machine, Command::DeleteTopic { topic_id, force })
+                .await?;
+        }
         Cmd::NewSession {
             topic,
             agent,
             mode,
             model,
         } => {
-            let (machine, topic_id) = resolve(
-                &engine,
-                &topic,
-                |state| state.topics().map(|t| t.id.clone()).collect(),
-                |t| &t.0,
-            )?;
+            let (machine, topic_id) = resolve_topic(&engine, &topic)?;
             let worktree_id = engine
                 .devices()
                 .iter()
@@ -166,6 +197,7 @@ async fn main() -> Result<()> {
                         agent,
                         mode: mode.into(),
                         model,
+                        effort: None,
                     },
                 )
                 .await?;
@@ -216,6 +248,18 @@ async fn main() -> Result<()> {
                     &session.machine_id,
                     Command::CancelTurn {
                         session_id: session.session_id,
+                    },
+                )
+                .await?;
+        }
+        Cmd::Close { session, force } => {
+            let session = resolve_session(&engine, &session)?;
+            engine
+                .request(
+                    &session.machine_id,
+                    Command::CloseSession {
+                        session_id: session.session_id,
+                        force,
                     },
                 )
                 .await?;
@@ -277,6 +321,15 @@ fn describe_failures(engine: &Engine) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn resolve_topic(engine: &Engine, prefix: &str) -> Result<(MachineId, TopicId)> {
+    resolve(
+        engine,
+        prefix,
+        |state| state.topics().map(|t| t.id.clone()).collect(),
+        |t| &t.0,
+    )
 }
 
 /// Finds the one ID starting with `prefix`, on any daemon. This works for

@@ -18,6 +18,8 @@
 //! Every enum that can grow has an `Unknown` variant, so an older client can
 //! skip a message or value it doesn't understand.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -137,12 +139,41 @@ pub enum ServerMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
-    /// Add an existing git repository on the daemon's machine.
-    AddWorkspace { path: String },
-    /// Create a topic with a fresh branch and worktree.
+    /// Add an existing git repository on the daemon's machine. The path is absolute or
+    /// starts with `~`, which means the home folder on that machine.
+    AddWorkspace {
+        path: String,
+    },
+    /// List the folders directly inside a folder on the daemon's machine, for completing
+    /// a path as it's typed. The path works as in [`Command::AddWorkspace`]. A folder that
+    /// doesn't exist has no folders in it, because that's normal halfway through typing.
+    ListFolders {
+        path: String,
+    },
+    /// Create a topic on a fresh branch and worktree, or in the repo itself.
     CreateTopic {
         workspace_id: WorkspaceId,
+        /// `None` numbers it within its workspace, like "Topic #3", until its first tab has a
+        /// title, which it then goes by.
+        name: Option<String>,
+        /// Work in the repo's own folder on its current branch, with no new worktree.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        at_root: bool,
+    },
+    /// Give a topic the name a person chose. From then on it stops following its first
+    /// tab's title.
+    RenameTopic {
+        topic_id: TopicId,
         name: String,
+    },
+    /// Stop the topic's agents and remove it. Its worktree goes too, unless it has uncommitted
+    /// changes or is the repo's own folder, and its branch goes only if it's fully merged. Fails
+    /// with [`ErrorCode::Busy`] while an agent is starting, working or waiting, unless `force`
+    /// says the person has confirmed. `force` never discards anything in git.
+    DeleteTopic {
+        topic_id: TopicId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
     },
     /// Start an agent in one of the topic's worktrees. It returns as soon as
     /// the session exists. Follow its events to see it become ready.
@@ -153,17 +184,64 @@ pub enum Command {
         mode: PermissionMode,
         /// The agent's own model name. `None` keeps the agent's default.
         model: Option<String>,
+        /// The agent's own effort level. `None` keeps the agent's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
     },
     /// Fails with [`ErrorCode::Busy`] while a turn is running. If the agent
     /// process has stopped, the daemon restarts and resumes it first.
-    SendPrompt { session_id: SessionId, text: String },
+    SendPrompt {
+        session_id: SessionId,
+        text: String,
+    },
     /// Interrupt the current turn.
-    CancelTurn { session_id: SessionId },
+    CancelTurn {
+        session_id: SessionId,
+    },
     /// Answer a pending approval with one of its options. Only the first
     /// answer counts. Later ones fail with [`ErrorCode::NotFound`].
     AnswerApproval {
         approval_id: ApprovalId,
         option_id: String,
+    },
+    /// Check which agents this device could run. Nothing is started.
+    DetectProviders,
+    /// Start the agent once and remember what it offers on this device. Adding
+    /// one again refreshes what it offers.
+    AddProvider {
+        agent: String,
+    },
+    RemoveProvider {
+        agent: String,
+    },
+    /// Choose what new sessions with this provider start with. The effort must be
+    /// one the model offers.
+    SetProviderDefaults {
+        agent: String,
+        model: Option<String>,
+        effort: Option<String>,
+    },
+    /// Change what a session runs with. A running agent changes straight away, even during
+    /// a turn, and the session only reports the change once the agent has made it. A stopped
+    /// agent gets these when it next starts. They're sent together because the efforts on
+    /// offer depend on the model. `None` leaves the agent's own value alone.
+    SetSessionSettings {
+        session_id: SessionId,
+        mode: PermissionMode,
+        model: Option<String>,
+        effort: Option<String>,
+    },
+    /// Keep what's typed for a session but not sent yet.
+    SetDraft {
+        session_id: SessionId,
+        text: String,
+    },
+    /// Stop the agent and remove its tab. Fails with [`ErrorCode::Busy`] while the agent
+    /// is starting, working or waiting, unless `force` says the person has confirmed.
+    CloseSession {
+        session_id: SessionId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
     },
     #[serde(other)]
     Unknown,
@@ -183,9 +261,29 @@ pub enum CommandOutput {
         topic_id: TopicId,
         session: Session,
     },
+    ProviderCandidates {
+        candidates: Vec<ProviderCandidate>,
+    },
+    Provider {
+        provider: Provider,
+    },
+    Folders {
+        folders: Vec<Folder>,
+    },
     Done,
     #[serde(other)]
     Unknown,
+}
+
+/// A folder on a daemon's machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Folder {
+    pub name: String,
+    /// Absolute, so it can be compared with a workspace's path.
+    pub path: String,
+    /// False can also mean the daemon didn't look, because looking would have asked
+    /// the person for permission.
+    pub is_repo: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,15 +309,20 @@ pub struct Machine {
     pub name: String,
 }
 
-/// Everything a client needs to draw a daemon's part of the tree and inbox.
-///
-/// Tabs aren't here. They're a client's view of a session, terminal, or diff.
+/// Everything a daemon knows that clients show, so that every client sees the same. What
+/// each client is looking at is its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonState {
     pub machine: Machine,
     pub workspaces: Vec<Workspace>,
     /// Permission requests waiting for an answer, across all sessions.
     pub approvals: Vec<Approval>,
+    /// The agents added to this device, part of its settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<Provider>,
+    /// What's typed for each session but not sent yet.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub drafts: BTreeMap<SessionId, String>,
 }
 
 impl DaemonState {
@@ -239,6 +342,16 @@ impl DaemonState {
                     upsert(&mut workspace.topics, topic.clone(), |t| &t.id);
                 }
             }
+            StateChange::TopicRenamed { topic_id, name } => {
+                if let Some(topic) = self.topic_mut(topic_id) {
+                    topic.name = name.clone();
+                }
+            }
+            StateChange::TopicRemoved { topic_id } => {
+                for workspace in &mut self.workspaces {
+                    workspace.topics.retain(|t| &t.id != topic_id);
+                }
+            }
             StateChange::SessionAdded { topic_id, session } => {
                 if let Some(topic) = self.topic_mut(topic_id) {
                     upsert(&mut topic.sessions, session.clone(), |s| &s.id);
@@ -254,6 +367,24 @@ impl DaemonState {
             }
             StateChange::ApprovalResolved { approval_id } => {
                 self.approvals.retain(|a| &a.id != approval_id);
+            }
+            StateChange::ProviderChanged { provider } => {
+                upsert(&mut self.providers, provider.clone(), |p| &p.agent);
+            }
+            StateChange::ProviderRemoved { agent } => {
+                self.providers.retain(|p| &p.agent != agent);
+            }
+            StateChange::SessionRemoved { session_id } => {
+                for topic in self.workspaces.iter_mut().flat_map(|w| &mut w.topics) {
+                    topic.sessions.retain(|s| &s.id != session_id);
+                }
+            }
+            StateChange::DraftChanged { session_id, text } => {
+                if text.is_empty() {
+                    self.drafts.remove(session_id);
+                } else {
+                    self.drafts.insert(session_id.clone(), text.clone());
+                }
             }
             StateChange::Unknown => {}
         }
@@ -339,8 +470,86 @@ pub struct Session {
     pub agent: String,
     pub mode: PermissionMode,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     pub status: SessionStatus,
     pub title: Option<String>,
+}
+
+/// An agent this device knows how to run. It may not be installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCandidate {
+    pub agent: String,
+    pub name: String,
+    /// Why it can't be added on this device. `None` means it can.
+    pub missing: Option<String>,
+}
+
+/// An agent added to this device, with what it reported when last started.
+/// Models and effort levels come from the agent, so new ones need no update here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provider {
+    pub agent: String,
+    pub name: String,
+    pub version: Option<String>,
+    /// The permission modes this agent can honor.
+    pub modes: Vec<PermissionMode>,
+    pub models: Vec<ProviderModel>,
+    /// What new sessions start with. It's chosen in the device's settings, and
+    /// starts out as what the agent recommends or would use itself.
+    pub default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+    /// The model the agent itself names as recommended, if it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_model: Option<String>,
+}
+
+impl Provider {
+    pub fn model(&self, id: &str) -> Option<&ProviderModel> {
+        self.models.iter().find(|model| model.id == id)
+    }
+
+    /// Takes over the choices from before this provider was asked again, as far as
+    /// the agent still offers them.
+    pub fn keep_defaults(&mut self, previous: &Provider) {
+        if let Some(model) = &previous.default_model
+            && self.model(model).is_some()
+        {
+            self.default_model = Some(model.clone());
+        }
+        let offered = |provider: &Provider, effort: &str| {
+            provider
+                .default_model
+                .as_deref()
+                .and_then(|model| provider.model(model))
+                .is_some_and(|model| model.efforts.iter().any(|e| e.id == effort))
+        };
+        if let Some(effort) = &previous.default_effort
+            && offered(self, effort)
+        {
+            self.default_effort = Some(effort.clone());
+        }
+        if let Some(effort) = self.default_effort.clone()
+            && !offered(self, &effort)
+        {
+            self.default_effort = None;
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderModel {
+    pub id: String,
+    pub name: String,
+    /// Effort levels depend on the model, and some models have none.
+    pub efforts: Vec<ProviderEffort>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderEffort {
+    pub id: String,
+    pub name: String,
 }
 
 /// How much the agent may do without asking.
@@ -386,6 +595,15 @@ pub enum StateChange {
         workspace_id: WorkspaceId,
         topic: Topic,
     },
+    TopicRenamed {
+        topic_id: TopicId,
+        name: String,
+    },
+    /// It was deleted, along with its tabs. Any open approvals and drafts of its sessions are
+    /// reported as resolved and emptied before this.
+    TopicRemoved {
+        topic_id: TopicId,
+    },
     SessionAdded {
         topic_id: TopicId,
         session: Session,
@@ -398,6 +616,21 @@ pub enum StateChange {
     },
     ApprovalResolved {
         approval_id: ApprovalId,
+    },
+    ProviderChanged {
+        provider: Provider,
+    },
+    ProviderRemoved {
+        agent: String,
+    },
+    /// Its tab was closed and its agent stopped.
+    SessionRemoved {
+        session_id: SessionId,
+    },
+    /// Empty means there's no draft any more.
+    DraftChanged {
+        session_id: SessionId,
+        text: String,
     },
     #[serde(other)]
     Unknown,
@@ -607,6 +840,8 @@ mod tests {
             },
             workspaces: vec![],
             approvals: vec![],
+            providers: vec![],
+            drafts: BTreeMap::new(),
         };
         let change = StateChange::WorkspaceAdded {
             workspace: Workspace {

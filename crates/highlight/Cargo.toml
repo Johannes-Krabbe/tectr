@@ -1,0 +1,17 @@
+[package]
+name = "highlight"
+description = "Splits code into spans labelled by role, which each app maps to its own colors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+# The pure Rust regex engine, so there's no C library to build for iOS.
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
+# syntect alone doesn't know TypeScript, TOML, or Dockerfiles.
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+
+[lints]
+workspace = true

@@ -142,6 +142,7 @@ public enum Tokens {
         public static let fast: Double = 0.15
         public static let normal: Double = 0.3
         public static let fade: Double = 0.4
+        public static let sweep: Double = 1.6
     }
 }
 

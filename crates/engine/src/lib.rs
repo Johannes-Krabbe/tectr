@@ -5,9 +5,9 @@
 //! with automatic reconnects, merges what they report, and resumes each open
 //! session's events from the last sequence number it saw.
 //!
-//! Not here yet, because nothing needs them until the first real UI: the disk
-//! cache of last known state, per-frame batching of updates, and the
-//! `suspend()`/`resume()` calls for iOS.
+//! Not here yet: the disk cache of last known state, per-frame batching of
+//! updates (the desktop app does its own for now), and the `suspend()`/`resume()`
+//! calls for iOS.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +20,7 @@ use protocol::{
     MIN_PROTOCOL_VERSION, Machine, MachineId, PROTOCOL_VERSION, ServerMessage, SessionEvent,
     SessionRef,
 };
+use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -32,7 +33,7 @@ const UPDATE_BUFFER: usize = 4096;
 
 /// What the engine knows about one daemon. The state stays after a disconnect,
 /// so a UI can still show it along with when the machine was last seen.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Device {
     pub url: String,
     pub connection: Connection,
@@ -41,7 +42,8 @@ pub struct Device {
     pub last_seen_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum Connection {
     /// The first attempt hasn't finished yet.
     Connecting,
@@ -182,7 +184,7 @@ impl Engine {
             .collect()
     }
 
-    /// The approvals inbox: every pending request across all daemons.
+    /// Every pending request across all daemons.
     pub fn approvals(&self) -> Vec<(MachineId, Approval)> {
         self.inner
             .lock()

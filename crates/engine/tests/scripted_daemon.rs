@@ -79,6 +79,8 @@ async fn accept(listener: &TcpListener) -> Socket {
                 machine: machine(),
                 workspaces: vec![],
                 approvals: vec![],
+                providers: vec![],
+                drafts: Default::default(),
             },
         },
     )

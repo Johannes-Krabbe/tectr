@@ -26,6 +26,16 @@ pub async fn repo_root(path: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(root))
 }
 
+/// The branch checked out in `repo`, or `HEAD` when it's detached.
+pub async fn current_branch(repo: &Path) -> Result<String> {
+    let branch = git(repo, &["branch".as_ref(), "--show-current".as_ref()]).await?;
+    Ok(if branch.is_empty() {
+        "HEAD".to_owned()
+    } else {
+        branch
+    })
+}
+
 /// Creates a new branch from `HEAD`, checked out in a new worktree at `path`.
 pub async fn add_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -44,6 +54,20 @@ pub async fn add_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()> 
     )
     .await
     .context("git worktree add failed")?;
+    Ok(())
+}
+
+/// Removes a worktree, and its branch if everything on the branch is already merged. Git refuses
+/// a worktree with uncommitted changes and a branch with commits nowhere else, and those refusals
+/// are what keeps someone's work, so neither is ever forced.
+pub async fn remove_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()> {
+    git(
+        repo,
+        &["worktree".as_ref(), "remove".as_ref(), path.as_os_str()],
+    )
+    .await
+    .context("git worktree remove failed")?;
+    let _ = git(repo, &["branch".as_ref(), "-d".as_ref(), branch.as_ref()]).await;
     Ok(())
 }
 

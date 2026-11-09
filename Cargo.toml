@@ -14,7 +14,9 @@ publish = false
 [workspace.dependencies]
 protocol = { path = "crates/protocol" }
 engine = { path = "crates/engine" }
+settings = { path = "crates/settings" }
 daemon = { path = "crates/daemon" }
+highlight = { path = "crates/highlight" }
 
 agent-client-protocol = "5.0.0"
 anyhow = "1"
@@ -29,6 +31,7 @@ thiserror = "2"
 tokio = "1"
 # No TLS: connections are loopback today and Tailscale-encrypted later.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+toml_edit = "0.25"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }

@@ -2,8 +2,22 @@
 {"type":"subscribe","session_id":"s1","after_seq":12}
 {"type":"unsubscribe","session_id":"s1"}
 {"type":"request","id":1,"command":{"command":"add_workspace","path":"/repo"}}
+{"type":"request","id":1,"command":{"command":"list_folders","path":"~/Developer/"}}
 {"type":"request","id":2,"command":{"command":"create_topic","workspace_id":"w1","name":"Fix login"}}
 {"type":"request","id":3,"command":{"command":"start_session","topic_id":"t1","worktree_id":"wt1","agent":"claude","mode":"auto","model":null}}
 {"type":"request","id":4,"command":{"command":"send_prompt","session_id":"s1","text":"hi"}}
 {"type":"request","id":5,"command":{"command":"cancel_turn","session_id":"s1"}}
 {"type":"request","id":6,"command":{"command":"answer_approval","approval_id":"a1","option_id":"allow-once"}}
+{"type":"request","id":2,"command":{"command":"create_topic","workspace_id":"w1","name":null,"at_root":true}}
+{"type":"request","id":7,"command":{"command":"detect_providers"}}
+{"type":"request","id":8,"command":{"command":"add_provider","agent":"claude"}}
+{"type":"request","id":9,"command":{"command":"remove_provider","agent":"claude"}}
+{"type":"request","id":10,"command":{"command":"start_session","topic_id":"t1","worktree_id":"wt1","agent":"claude","mode":"auto","model":"opus","effort":"high"}}
+{"type":"request","id":11,"command":{"command":"set_provider_defaults","agent":"claude","model":"opus","effort":"high"}}
+{"type":"request","id":19,"command":{"command":"set_session_settings","session_id":"s1","mode":"yolo","model":"opus","effort":null}}
+{"type":"request","id":15,"command":{"command":"set_draft","session_id":"s1","text":"half a tho"}}
+{"type":"request","id":17,"command":{"command":"close_session","session_id":"s1"}}
+{"type":"request","id":18,"command":{"command":"close_session","session_id":"s1","force":true}}
+{"type":"request","id":19,"command":{"command":"rename_topic","topic_id":"t1","name":"Fix login"}}
+{"type":"request","id":20,"command":{"command":"delete_topic","topic_id":"t1"}}
+{"type":"request","id":21,"command":{"command":"delete_topic","topic_id":"t1","force":true}}

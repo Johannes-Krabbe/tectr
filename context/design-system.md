@@ -1,6 +1,6 @@
 # tectr: design system decisions
 
-Last updated: 2026-11-04.
+Last updated: 2026-11-06.
 
 `architecture.md` covers how tectr is built. This file records how the desktop and iOS apps keep one design language while each feels native. The work itself lives in `design/`.
 
@@ -27,17 +27,18 @@ Share the design decisions, not the components. No UI library renders native Swi
 |---|---|---|
 | The iOS app targets iOS 26 and later | Settled | Liquid Glass needs no fallback code. Losing older iOS should matter little for a new developer tool |
 | Light and dark mode both exist from the start | Settled | Every token and component is designed for both from day one |
-| The desktop UI uses React with Base UI | Settled | Largest ecosystem, and Base UI gives behavior and accessibility without a look to fight. `@base-ui/react` is installed, and nothing uses it yet |
+| The desktop UI uses React with Base UI | Settled | Largest ecosystem, and Base UI gives behavior and accessibility without a look to fight. Only the sheets use it so far |
 | No shadcn default styling on desktop | Proposed | The original brief was not to look like every other recent app |
 | No third-party UI kit on iOS | Proposed | SwiftUI components are what make it feel native. Drop to UIKit only if the streaming transcript or diffs need it, which needs a performance test |
 | Tokens use a small dependency-free script, not Style Dictionary | Proposed | About 70 tokens, and light/dark outputs would need custom formats anyway. Revisit if outputs multiply |
 | Generated token files are committed, with a check for drift | Proposed | iOS builds then don't need Node, which also avoids the Xcode and mise pitfall in `architecture.md`. UniFFI bindings stay out of git as planned |
 | Desktop imports `design/tokens/generated/tokens.css` directly, while iOS gets generated files inside its package | Proposed | Vite can read the file where it is, so no copy can drift. A Swift package can't reach outside its folder |
 | iOS colors are generated as code rather than an asset catalog | Proposed | Names are checked by the compiler, and there's no lookup that can fail silently. Icons stay in a catalog, which is what gives them vector scaling and template rendering |
-| Highlighting and diffing run in Rust, which sends spans labelled by role (`keyword`, `added`) | Proposed | Both apps get the same result, and each maps roles to tokens. This also meets the off-UI-thread rule |
+| Highlighting and diffing run in Rust, which sends spans labelled by role (`keyword`, `added`) | Settled | Both apps get the same result, and each maps roles to tokens. This also meets the off-UI-thread rule. Highlighting is built in `crates/highlight`, and diffing isn't yet |
 | Components have the same names, parts, and states on both platforms | Proposed | People and agents can talk about one `RequestCard`. See `design/spec/components.md` |
 | Fonts are bundled, not loaded from a CDN | Proposed | Instant startup, and it works offline. Desktop uses Fontsource's Inter and Geist Mono packages, and iOS ships a Geist Mono TTF with its license. The mockups and preview page use Google Fonts only for convenience |
-| Both apps follow the system appearance, with a manual override | Proposed | Expected on both platforms |
+| Both apps follow the system appearance, with a manual override | Proposed | Expected on both platforms. Desktop has the override, in its appearance settings |
+| Desktop offers other people's themes alongside its own | Settled | People asked to choose. Tectr's own two stay the default, and everything in Color below that's about the look applies to those two |
 
 ## Liquid Glass
 
@@ -47,6 +48,7 @@ The rule is **content is ours, chrome is Apple's**. (Proposed)
 - **Our design:** transcripts, diffs, and rows sit on our surface tokens. Guides on Liquid Glass also say to use it on controls and navigation, not content backgrounds.
 - **Purple:** only on the primary action, not as a tint on every glass element.
 - **Desktop stays opaque:** native glass behind a Tauri webview needs the macOS private API, which has App Store implications.
+- **Desktop title bar:** the native macOS one, made transparent over a window colored `surface.base`, and never drawn in HTML. macOS draws the bar in a separate window in full screen, so `color_title_bar` in `apps/dsk/src-tauri/src/main.rs` colors it through private AppKit views, as Ghostty does. If a macOS update renames them, the full-screen bar falls back to the system's color. This is the workspace's only `unsafe` code, so `dsk` uses `deny` where other crates use `forbid`.
 
 How glass looks over near-black and over our light surfaces is untested. HTML can't show it, so it has to be judged in a real SwiftUI screen on a device.
 
@@ -60,6 +62,8 @@ How glass looks over near-black and over our light surfaces is untested. HTML ca
 | `status.waiting` is a dark amber in light mode | Proposed | Bright amber is unreadable on white. Bright amber remains in the light tints so rows still read as warm |
 | Amber and red never appear in syntax colors | Proposed | They mean "waiting" and "failed" |
 | Text pairs meet WCAG AA (4.5:1), enforced by a test | Proposed | The old dark tertiary text (`#7c7a89`) failed on raised surfaces and controls, so it moved to `#8a8896`. It still fails on `status.waiting-tint-strong`, so the spec bans that pair |
+| Other themes keep their published colors, including surfaces, accents, and amber or red in syntax | Proposed | Someone choosing Gruvbox wants Gruvbox, even though it colors keywords red |
+| Other themes still have to be readable: text and status colors reach AA, and syntax colors reach 3:1 | Proposed | Many published palettes fall short, Solarized and Catppuccin Latte most of all. `themes.toml` moves a color only as far as it has to and keeps the published one in a comment. A test in `crates/settings` enforces this, more loosely for syntax because that's what makes a theme recognizable. Themes people write themselves aren't checked |
 
 ## Typography
 
@@ -68,6 +72,8 @@ How glass looks over near-black and over our light surfaces is untested. HTML ca
 | Inter on desktop, SF on iOS | Proposed | SF gives Dynamic Type and a native feel, and the two are close enough to read as one voice |
 | Geist Mono for code on both | Proposed | The shared signature, since this is an app about code |
 | iOS roles map to Dynamic Type text styles, with code scaling relative to one | Proposed | Text respects the user's size setting. See `design/tokens/scale.ios.tokens.json` |
+| Everything in an agent's message is one size, including headings and code | Settled | Headings stand out by weight and a gray `#` marker instead of a larger size. That's at the default sizes: text and code sizes are separate settings on desktop, and code in a message follows the code size |
+| Rows, controls and icons grow with the text size on desktop | Proposed | Larger text in rows of a fixed height would clip. Density is a separate setting that scales rows and spacing |
 
 ## Component rules
 
@@ -106,9 +112,8 @@ apps/ios/
 
 ## Not done yet
 
-- **Components:** both apps have the tokens, fonts, and root theme, and show only a placeholder.
-- **Icons on desktop:** `design/icons/` isn't imported yet. That comes with the first `StatusIcon`.
-- **Manual appearance override:** the mechanism exists on desktop through `data-theme`. Nothing sets it yet, and iOS follows the system only.
+- **Components:** both apps have the tokens, fonts, and root theme. Desktop has first versions of `StatusIcon`, `DeviceHeader`, `WorkspaceRow`, `TopicRow`, `RequestCard`, `ActivityLine`, `Sheet`, `Button`, `Kbd`, and the ⌘K palette, without the folded states. iOS shows only a placeholder.
+- **Appearance on iOS:** it follows the system only, with tectr's own themes. Choosing a theme is desktop only.
 - **Automated token check:** nothing runs `mise run tokens:test` or the package tests in CI yet.
 
 ## Open questions

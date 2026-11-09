@@ -52,6 +52,17 @@ Something an agent needs from you. In auto mode this should be rare, and in yolo
 - **Actions:** one primary Button, the rest secondary.
 - **iOS:** a `.sheet` with detents, with glass from the system.
 
+## ActivityLine
+
+What an agent does between its messages, as one line in `text.meta`. Messages are never folded, so you can read along between steps.
+
+- **While running:** at the end of the transcript, it names the newest step still going in `text.tertiary`, with a `text.primary` highlight sweeping across it every `motion.sweep`. Each step fades out before the next fades in, and stays up long enough to read.
+- **Waiting:** "Waiting for you" in `status.waiting`, without the sweep.
+- **Finished:** how long it took and how many steps, such as "Worked for 12s, 6 steps", with failures in `status.failed`. Time spent on a permission request doesn't count.
+- **Unfolded:** the steps below it, on a `line.subtle` rule. A key or the palette does this for every activity, and pressing or clicking a line does it for one.
+- **Reduced motion:** no sweep, and messages and scrolling don't animate either.
+- **Settings:** `appearance.transcript.steps` and `appearance.transcript.animate`.
+
 ## DiffHunk
 
 - **Parts:** header in `text.tertiary`, lines in `text.code-small`, comments between lines.

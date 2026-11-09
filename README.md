@@ -2,7 +2,7 @@
 
 A fast desktop and mobile app for running, watching, and steering many coding agents in parallel. See [idea.md](idea.md) for the product and [context/architecture.md](context/architecture.md) for the design.
 
-Today this is the first milestone, a daemon and a command-line client, plus two empty apps that aren't connected to anything yet.
+Today this is a daemon, a command-line client, a first version of the desktop app, and an empty iOS app.
 
 ## Requirements
 
@@ -40,6 +40,8 @@ tectr prompt <session> "..."           # send a prompt and return
 tectr watch <session> [--until-done]   # print the history and follow it
 tectr answer <approval> <option>       # answer from anywhere, by number or ID
 tectr cancel <session>                 # interrupt the current turn
+tectr rename-topic <topic> "..."       # choose a topic's name
+tectr delete-topic <topic> [--force]   # stop its agents and remove it
 ```
 
 To use several daemons, repeat `--daemon` or set `TECTR_DAEMONS` to a comma-separated list of URLs.
@@ -56,18 +58,71 @@ cargo fmt --all
 
 The tests need no Claude login. They use `fake-agent`, a scripted ACP agent. `mise.toml` has the same commands as tasks. These commands skip the desktop app. Avoid `--workspace`, which includes it and needs its frontend built first.
 
-## Empty apps
+## Desktop app
 
-These only show a placeholder so far.
-
-Desktop (Tauri), which needs pnpm:
+The desktop app (Tauri, needs pnpm) does everything the CLI does. Start a daemon as above, then:
 
 ```sh
 pnpm install
 cd apps/dsk && pnpm tauri dev
 ```
 
-iOS (SwiftUI), which needs Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen). The Xcode project is generated and isn't in git:
+It connects to the daemon on this machine, or to the ones in `TECTR_DAEMONS`. ⌘K lists every action with its shortcut.
+
+The app's own settings live in `~/.config/tectr/dsk.toml`, which holds only what differs from the defaults and applies as soon as it's saved. `dsk.defaults.toml` next to it lists every setting. Settings (⌘,) edits the same file, so people and agents can both change it. Shortcuts are the first section:
+
+```toml
+[keybinds.nav]                # the shared default for moving around
+down = ["n", "down"]          # everything that follows nav.down moves with it
+input_down = ["ctrl+j", "down"]   # the same, for lists you search by typing
+
+[keybinds.sidebar]
+down = "s"                    # only the sidebar
+
+[keybinds.global]
+new_topic = "mod+g"           # mod is cmd on macOS, ctrl elsewhere
+interrupt = []                # no key
+
+[keybinds.permission]
+allow_once = { key = "y", hold_ms = 500 }   # has to be held for half a second
+reject = { key = "n", repeat = true }       # keeps firing while held
+
+[keybinds.pane]
+first = "g g"                 # a sequence, which works the way it does in Vim
+```
+
+Appearance is in the same file, and Settings shows each change as it happens. Moving through a list of themes or fonts tries each one out before you choose:
+
+```toml
+[appearance]
+mode = "system"               # or light, or dark
+dark_theme = "tokyo-night"    # one theme for each mode
+light_theme = "github-light"
+
+[appearance.text]
+family = "IBM Plex Sans"      # any installed font
+size = 14
+
+[appearance.code]
+family = "JetBrains Mono"
+size = 13
+ligatures = false
+
+[appearance.layout]
+density = 90                  # also corners, sidebar_width and content_width
+
+[appearance.themes.midnight]  # your own theme, which then shows up in the lists
+extends = "tokyo-night"
+"surface.base" = "#000000"
+```
+
+The app comes with its own two themes plus Catppuccin, Tokyo Night, Dracula, One, GitHub, Nord, Gruvbox, Solarized, Rosé Pine, Monokai and Vague, in dark and light where they have both.
+
+To start topics from the app, add a provider first: hover a device in the sidebar and click the settings icon, or press Enter on it. Adding one starts that agent once on that device to ask which models and modes it offers.
+
+## iOS app
+
+This only shows a placeholder so far. It's SwiftUI, and needs Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen). The Xcode project is generated and isn't in git:
 
 ```sh
 cd apps/ios && xcodegen generate

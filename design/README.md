@@ -20,7 +20,7 @@ The tests check that both modes and both platforms define the same tokens, that 
 
 ## How the apps use this
 
-**Desktop** (`apps/dsk`): `src/main.tsx` imports `tokens/generated/tokens.css` directly, so there's no copy to keep in step. Use the CSS variables, such as `var(--color-surface-panel)` and `font: var(--text-body)`. Set `data-theme="light"` or `"dark"` on `<html>` to override the system appearance.
+**Desktop** (`apps/dsk`): `src/main.tsx` imports `tokens/generated/tokens.css` directly, so there's no copy to keep in step. Use the CSS variables, such as `var(--color-surface-panel)` and `font: var(--text-body)`. `src/appearance.ts` sets the chosen theme and fonts as variables on `<html>`, so everything built on these follows them. Sizes that have to fit text use `--unit`, which is 1px at the default text size.
 
 **iOS** (`apps/ios`): the `TectrDesign` package holds the generated Swift and icon catalog, because a Swift package can't reach outside its folder. Apply `.tectrTheme()` once at the root, then use `.foregroundStyle(.textSecondary)`, `.background(.surfacePanel)`, `.font(Tokens.Text.body)`, `Tokens.Space.md`, and `StatusGlyph.waiting.image`.
 

@@ -43,6 +43,7 @@
     "$type": "duration",
     "fast": { "$value": 150 },
     "normal": { "$value": 300 },
-    "fade": { "$value": 400 }
+    "fade": { "$value": 400 },
+    "sweep": { "$value": 1600 }
   }
 }

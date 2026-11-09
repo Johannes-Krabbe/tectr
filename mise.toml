@@ -20,6 +20,10 @@ description = "Run the desktop app in development"
 dir = "apps/dsk"
 run = "pnpm tauri dev"
 
+[tasks."dsk:test"]
+description = "Test the desktop app's logic: shortcuts, appearance, navigation and markdown"
+run = "node --experimental-strip-types --test apps/dsk/src/*.test.ts"
+
 [tasks.ios]
 description = "Generate the Xcode project, then open apps/ios/Tectr.xcodeproj"
 dir = "apps/ios"

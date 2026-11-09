@@ -11,9 +11,9 @@ use daemon::{AgentLauncher, Config, Daemon};
 use engine::{Connection, Engine, EngineError};
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    Approval, ClientMessage, Command, CommandOutput, ErrorCode, MachineId, PermissionMode,
-    PermissionOutcome, ServerMessage, Session, SessionEventKind, SessionRef, SessionStatus,
-    StopReason, Topic, TopicId, Workspace,
+    Approval, ClientMessage, Command, CommandOutput, DaemonState, ErrorCode, MachineId,
+    PermissionMode, PermissionOutcome, ServerMessage, Session, SessionEventKind, SessionRef,
+    SessionStatus, StopReason, Topic, TopicId, Workspace,
 };
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -126,7 +126,8 @@ async fn add_topic(engine: &Engine, machine: &MachineId, repo: &Path) -> Topic {
     let workspace = add_workspace(engine, machine, repo).await;
     let command = Command::CreateTopic {
         workspace_id: workspace.id,
-        name: "My topic!".to_owned(),
+        name: Some("My topic!".to_owned()),
+        at_root: false,
     };
     match engine.request(machine, command).await.unwrap() {
         CommandOutput::Topic { topic, .. } => topic,
@@ -170,6 +171,7 @@ async fn start_agent(
                 agent: agent.to_owned(),
                 mode,
                 model: model.map(str::to_owned),
+                effort: None,
             },
         )
         .await?;
@@ -412,6 +414,641 @@ async fn a_denied_tool_does_not_run() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn folders_are_listed_for_completing_a_path() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let list = |path: String| {
+        let (engine, machine) = (&engine, &machine);
+        async move {
+            let command = Command::ListFolders { path };
+            match engine.request(machine, command).await {
+                Ok(CommandOutput::Folders { folders }) => Ok(folders),
+                Ok(other) => panic!("unexpected output {other:?}"),
+                Err(error) => Err(error),
+            }
+        }
+    };
+
+    let root = fixture.root.display();
+    let folders = list(format!("{root}/")).await.unwrap();
+    let repo = folders.iter().find(|f| f.name == "my repo").unwrap();
+    assert!(repo.is_repo);
+    assert_eq!(repo.path, fixture.repo.display().to_string());
+
+    // The listed path is the one a workspace ends up with, which is how a client knows
+    // that a folder has already been added.
+    let workspace = add_workspace(&engine, &machine, Path::new(&repo.path)).await;
+    assert_eq!(workspace.path, repo.path);
+
+    let inside_a_repo = list(format!("{root}/my repo")).await.unwrap();
+    assert!(inside_a_repo.iter().any(|f| f.name == ".git" && !f.is_repo));
+
+    assert_eq!(list(format!("{root}/not there/")).await.unwrap(), []);
+    let refused = |result: Result<_, EngineError>| matches!(result, Err(EngineError::Command(error)) if error.code == ErrorCode::InvalidInput);
+    assert!(refused(list("relative/".to_owned()).await));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unnamed_topic_numbers_itself_and_can_work_at_the_repo_root() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let workspace = add_workspace(&engine, &machine, &fixture.repo).await;
+    let create = async |at_root| {
+        let command = Command::CreateTopic {
+            workspace_id: workspace.id.clone(),
+            name: None,
+            at_root,
+        };
+        match engine.request(&machine, command).await.unwrap() {
+            CommandOutput::Topic { topic, .. } => topic,
+            other => panic!("unexpected output {other:?}"),
+        }
+    };
+
+    let at_root = create(true).await;
+    assert_eq!(at_root.name, "Topic #1");
+    assert_eq!(at_root.worktrees[0].path, workspace.path);
+    assert_eq!(
+        at_root.worktrees[0].branch,
+        run_git(&fixture.repo, &["branch", "--show-current"])
+    );
+    assert_eq!(
+        run_git(&fixture.repo, &["worktree", "list"])
+            .lines()
+            .count(),
+        1
+    );
+
+    let in_worktree = create(false).await;
+    assert_eq!(in_worktree.name, "Topic #2");
+    assert!(
+        in_worktree.worktrees[0]
+            .branch
+            .starts_with("tectr/topic-2-")
+    );
+    assert_ne!(in_worktree.worktrees[0].path, workspace.path);
+
+    // The new topic screen sends its prompt without waiting for the agent to be ready.
+    let session = start_session(&engine, &machine, &at_root, PermissionMode::Yolo, None).await;
+    prompt(&engine, &session, "whoami").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let report = agent_text(&engine, &session).concat();
+    assert!(
+        report.contains(&format!("cwd={}", workspace.path)),
+        "{report}"
+    );
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provider_reports_what_it_offers_and_is_kept_by_the_daemon() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("providers").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+
+    match engine
+        .request(&machine, Command::DetectProviders)
+        .await
+        .unwrap()
+    {
+        CommandOutput::ProviderCandidates { candidates } => {
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].agent, "fake");
+            assert_eq!(candidates[0].missing, None);
+        }
+        other => panic!("unexpected output {other:?}"),
+    }
+
+    let error = engine
+        .request(
+            &machine,
+            Command::AddProvider {
+                agent: "nobody".to_owned(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::InvalidInput));
+
+    let add = Command::AddProvider {
+        agent: "fake".to_owned(),
+    };
+    let provider = match engine.request(&machine, add).await.unwrap() {
+        CommandOutput::Provider { provider } => provider,
+        other => panic!("unexpected output {other:?}"),
+    };
+    assert_eq!(provider.version.as_deref(), Some("0.0.0"));
+    assert_eq!(
+        provider.modes,
+        [
+            PermissionMode::Manual,
+            PermissionMode::Auto,
+            PermissionMode::Yolo
+        ]
+    );
+    // "Default" isn't offered. The model it stands for is marked instead.
+    assert!(provider.models.iter().all(|m| m.id != "default"));
+    assert_eq!(provider.recommended_model.as_deref(), Some("smart"));
+    assert_eq!(provider.default_model.as_deref(), Some("smart"));
+    assert_eq!(provider.default_effort.as_deref(), Some("low"));
+    let efforts = |id: &str| -> Vec<String> {
+        let model = provider.models.iter().find(|m| m.id == id).unwrap();
+        model.efforts.iter().map(|e| e.id.clone()).collect()
+    };
+    assert!(efforts("cheap").is_empty());
+    assert_eq!(efforts("smart"), ["low", "high"]);
+    let stored = |engine: &Engine| engine.devices()[0].state.clone().unwrap().providers;
+    assert_eq!(stored(&engine), std::slice::from_ref(&provider));
+
+    // An effort has to belong to the model it's chosen with.
+    let set = |model: &str, effort: Option<&str>| Command::SetProviderDefaults {
+        agent: "fake".to_owned(),
+        model: Some(model.to_owned()),
+        effort: effort.map(str::to_owned),
+    };
+    let error = engine
+        .request(&machine, set("cheap", Some("high")))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::InvalidInput));
+    engine
+        .request(&machine, set("smart", Some("high")))
+        .await
+        .unwrap();
+
+    // Asking the agent again doesn't lose what was chosen.
+    let refreshed = Command::AddProvider {
+        agent: "fake".to_owned(),
+    };
+    let provider = match engine.request(&machine, refreshed).await.unwrap() {
+        CommandOutput::Provider { provider } => provider,
+        other => panic!("unexpected output {other:?}"),
+    };
+    assert_eq!(provider.default_effort.as_deref(), Some("high"));
+
+    // It's a device setting, so it's still there after a restart.
+    daemon.shutdown().await;
+    let daemon = fixture.daemon("providers").await;
+    let engine = connect(&daemon).await;
+    assert_eq!(stored(&engine), std::slice::from_ref(&provider));
+
+    let remove = Command::RemoveProvider {
+        agent: "fake".to_owned(),
+    };
+    engine.request(&machine, remove).await.unwrap();
+    assert!(stored(&engine).is_empty());
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_gets_its_model_and_effort_without_losing_its_mode() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let start = async |model: &str, effort: Option<&str>| {
+        let command = Command::StartSession {
+            topic_id: topic.id.clone(),
+            worktree_id: topic.worktrees[0].id.clone(),
+            agent: "fake".to_owned(),
+            mode: PermissionMode::Yolo,
+            model: Some(model.to_owned()),
+            effort: effort.map(str::to_owned),
+        };
+        match engine.request(&machine, command).await.unwrap() {
+            CommandOutput::Session { session, .. } => SessionRef {
+                machine_id: machine.clone(),
+                session_id: session.id,
+            },
+            other => panic!("unexpected output {other:?}"),
+        }
+    };
+
+    let smart = start("smart", Some("high")).await;
+    engine.open_session(&smart);
+    prompt(&engine, &smart, "whoami").await.unwrap();
+    wait_for_status(&engine, &smart, SessionStatus::Done).await;
+    let report = agent_text(&engine, &smart).concat();
+    assert!(report.contains("model=smart effort=high"), "{report}");
+
+    // Selecting this model changes the agent's mode, and the chosen one must win.
+    let cheap = start("cheap", None).await;
+    engine.open_session(&cheap);
+    prompt(&engine, &cheap, "whoami").await.unwrap();
+    wait_for_status(&engine, &cheap, SessionStatus::Done).await;
+    let report = agent_text(&engine, &cheap).concat();
+    assert!(report.contains("mode=bypassPermissions"), "{report}");
+
+    // An effort the model doesn't have fails instead of being ignored.
+    let unsupported = start("cheap", Some("high")).await;
+    engine.open_session(&unsupported);
+    wait_for_status(&engine, &unsupported, SessionStatus::Failed).await;
+    daemon.shutdown().await;
+}
+
+/// Starts a session on a chosen model and effort, and waits until it's ready.
+async fn start_configured(
+    engine: &Engine,
+    machine: &MachineId,
+    topic: &Topic,
+    mode: PermissionMode,
+    model: &str,
+    effort: Option<&str>,
+) -> SessionRef {
+    let command = Command::StartSession {
+        topic_id: topic.id.clone(),
+        worktree_id: topic.worktrees[0].id.clone(),
+        agent: "fake".to_owned(),
+        mode,
+        model: Some(model.to_owned()),
+        effort: effort.map(str::to_owned),
+    };
+    let CommandOutput::Session { session, .. } = engine.request(machine, command).await.unwrap()
+    else {
+        panic!("expected a session");
+    };
+    let session = SessionRef {
+        machine_id: machine.clone(),
+        session_id: session.id,
+    };
+    engine.open_session(&session);
+    wait_for_status(engine, &session, SessionStatus::Ready).await;
+    session
+}
+
+async fn set_settings(
+    engine: &Engine,
+    session: &SessionRef,
+    mode: PermissionMode,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<CommandOutput, EngineError> {
+    engine
+        .request(
+            &session.machine_id,
+            Command::SetSessionSettings {
+                session_id: session.session_id.clone(),
+                mode,
+                model: model.map(str::to_owned),
+                effort: effort.map(str::to_owned),
+            },
+        )
+        .await
+}
+
+/// What the agent says it's running with, from a new turn.
+async fn agent_report(engine: &Engine, session: &SessionRef) -> String {
+    prompt(engine, session, "whoami").await.unwrap();
+    wait_for_status(engine, session, SessionStatus::Done).await;
+    agent_text(engine, session).last().unwrap().clone()
+}
+
+fn word_after<'a>(report: &'a str, prefix: &str) -> &'a str {
+    report
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix(prefix))
+        .unwrap_or_else(|| panic!("no {prefix} in {report}"))
+}
+
+fn session_state(engine: &Engine, session: &SessionRef) -> Session {
+    state_of(engine)
+        .session(&session.session_id)
+        .unwrap()
+        .clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_running_agent_changes_settings_without_restarting() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let other_client = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let session = start_configured(
+        &engine,
+        &machine,
+        &topic,
+        PermissionMode::Auto,
+        "smart",
+        Some("high"),
+    )
+    .await;
+    let before = agent_report(&engine, &session).await;
+
+    set_settings(
+        &engine,
+        &session,
+        PermissionMode::Yolo,
+        Some("smart"),
+        Some("low"),
+    )
+    .await
+    .unwrap();
+
+    // It's current as soon as the command returns, and every client hears about it.
+    let state = session_state(&engine, &session);
+    assert_eq!(state.mode, PermissionMode::Yolo);
+    assert_eq!(state.effort.as_deref(), Some("low"));
+    wait_for("the other client to see the change", || {
+        let state = state_of(&other_client);
+        let seen = state.session(&session.session_id)?;
+        (seen.mode == PermissionMode::Yolo).then_some(())
+    })
+    .await;
+
+    let report = agent_report(&engine, &session).await;
+    assert!(report.contains("mode=bypassPermissions"), "{report}");
+    assert!(report.contains("model=smart effort=low"), "{report}");
+    assert_eq!(word_after(&report, "pid="), word_after(&before, "pid="));
+    assert_eq!(word_after(&report, "resumed="), "false");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn changing_the_model_keeps_the_chosen_mode_and_can_go_back() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let session = start_configured(
+        &engine,
+        &machine,
+        &topic,
+        PermissionMode::Auto,
+        "smart",
+        Some("high"),
+    )
+    .await;
+
+    // Selecting this model moves the agent to another mode, and the chosen one must win.
+    set_settings(&engine, &session, PermissionMode::Auto, Some("cheap"), None)
+        .await
+        .unwrap();
+    let report = agent_report(&engine, &session).await;
+    assert!(report.contains("mode=auto model=cheap"), "{report}");
+    assert_eq!(session_state(&engine, &session).effort, None);
+
+    // Back through a mode the agent was told earlier, which its own report no longer shows.
+    set_settings(&engine, &session, PermissionMode::Yolo, Some("cheap"), None)
+        .await
+        .unwrap();
+    set_settings(&engine, &session, PermissionMode::Auto, Some("cheap"), None)
+        .await
+        .unwrap();
+    let report = agent_report(&engine, &session).await;
+    assert!(report.contains("mode=auto model=cheap"), "{report}");
+
+    // The effort has to be sent again for the new model, even if it's the same one.
+    set_settings(
+        &engine,
+        &session,
+        PermissionMode::Auto,
+        Some("smart"),
+        Some("high"),
+    )
+    .await
+    .unwrap();
+    let report = agent_report(&engine, &session).await;
+    assert!(report.contains("model=smart effort=high"), "{report}");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_can_change_during_a_turn_and_cancelling_still_works() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let session = start_configured(
+        &engine,
+        &machine,
+        &topic,
+        PermissionMode::Auto,
+        "smart",
+        Some("low"),
+    )
+    .await;
+
+    prompt(&engine, &session, "hang").await.unwrap();
+    set_settings(
+        &engine,
+        &session,
+        PermissionMode::Yolo,
+        Some("smart"),
+        Some("low"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status(&engine, &session), Some(SessionStatus::Working));
+
+    engine
+        .request(
+            &machine,
+            Command::CancelTurn {
+                session_id: session.session_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let report = agent_report(&engine, &session).await;
+    assert!(report.contains("mode=bypassPermissions"), "{report}");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_agent_gets_its_settings_when_it_resumes() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let port = daemon.addr().port();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let session = start_configured(
+        &engine,
+        &machine,
+        &topic,
+        PermissionMode::Auto,
+        "smart",
+        Some("low"),
+    )
+    .await;
+    set_settings(
+        &engine,
+        &session,
+        PermissionMode::Manual,
+        Some("smart"),
+        Some("high"),
+    )
+    .await
+    .unwrap();
+    daemon.shutdown().await;
+
+    // What changed while it ran survives a restart.
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    engine.open_session(&session);
+    let state = session_state(&engine, &session);
+    assert_eq!(state.status, SessionStatus::Stopped);
+    assert_eq!(state.mode, PermissionMode::Manual);
+    assert_eq!(state.effort.as_deref(), Some("high"));
+
+    // With no agent running, there's nothing to ask, and the next start uses it.
+    set_settings(
+        &engine,
+        &session,
+        PermissionMode::Yolo,
+        Some("smart"),
+        Some("high"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status(&engine, &session), Some(SessionStatus::Stopped));
+    let report = agent_report(&engine, &session).await;
+    assert!(report.contains("mode=bypassPermissions"), "{report}");
+    assert!(report.contains("model=smart effort=high"), "{report}");
+    assert_eq!(word_after(&report, "resumed="), "true");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_change_leaves_the_agent_running_as_it_was() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let session = start_configured(
+        &engine,
+        &machine,
+        &topic,
+        PermissionMode::Auto,
+        "cheap",
+        None,
+    )
+    .await;
+    let before = agent_report(&engine, &session).await;
+
+    // This model has no efforts. Nothing changed in the agent before it failed.
+    let error = set_settings(
+        &engine,
+        &session,
+        PermissionMode::Auto,
+        Some("cheap"),
+        Some("high"),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::InvalidInput));
+    assert_eq!(session_state(&engine, &session).effort, None);
+
+    let report = agent_report(&engine, &session).await;
+    assert_eq!(word_after(&report, "pid="), word_after(&before, "pid="));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_that_fails_partway_stops_the_agent_and_keeps_the_old_settings() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let session = start_configured(
+        &engine,
+        &machine,
+        &topic,
+        PermissionMode::Auto,
+        "smart",
+        Some("high"),
+    )
+    .await;
+    let before = agent_report(&engine, &session).await;
+
+    // The model changes first, which changes the agent's mode, and then the effort fails.
+    set_settings(
+        &engine,
+        &session,
+        PermissionMode::Auto,
+        Some("cheap"),
+        Some("high"),
+    )
+    .await
+    .unwrap_err();
+    wait_for_status(&engine, &session, SessionStatus::Failed).await;
+    assert_eq!(
+        session_state(&engine, &session).model.as_deref(),
+        Some("smart")
+    );
+
+    // The next prompt starts it again with what the session says.
+    let report = agent_report(&engine, &session).await;
+    assert_ne!(word_after(&report, "pid="), word_after(&before, "pid="));
+    assert!(
+        report.contains("mode=auto model=smart effort=high"),
+        "{report}"
+    );
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_what_the_provider_offers_can_be_chosen() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    engine
+        .request(
+            &machine,
+            Command::AddProvider {
+                agent: "fake".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let session = start_configured(
+        &engine,
+        &machine,
+        &topic,
+        PermissionMode::Auto,
+        "smart",
+        Some("low"),
+    )
+    .await;
+    let before = agent_report(&engine, &session).await;
+
+    for (model, effort) in [
+        ("nope", None),
+        ("cheap", Some("low")),
+        ("smart", Some("nope")),
+    ] {
+        let error = set_settings(&engine, &session, PermissionMode::Auto, Some(model), effort)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, EngineError::Command(e) if e.code == ErrorCode::InvalidInput),
+            "{model} {effort:?}: {error:?}"
+        );
+    }
+
+    // None of these reached the agent, so it never had to stop.
+    let report = agent_report(&engine, &session).await;
+    assert_eq!(word_after(&report, "pid="), word_after(&before, "pid="));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_answer_must_be_one_of_the_offered_options() {
     let fixture = Fixture::new();
     let daemon = fixture.daemon("d").await;
@@ -539,7 +1176,7 @@ async fn only_the_first_of_two_clients_answers() {
     }));
 
     wait_for_status(&desk, &session, SessionStatus::Done).await;
-    wait_for("the second client's inbox to clear", || {
+    wait_for("the second client's approvals to clear", || {
         pocket.approvals().is_empty().then_some(())
     })
     .await;
@@ -687,6 +1324,532 @@ async fn a_client_falling_behind_loses_nothing() {
     let expected: Vec<String> = (0..2000).map(|n| n.to_string()).collect();
     assert_eq!(agent_text(&engine, &session), expected);
     daemon.shutdown().await;
+}
+
+fn state_of(engine: &Engine) -> DaemonState {
+    engine.devices()[0].state.clone().unwrap()
+}
+
+fn is_process_alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// Runs a turn that reports the agent's process ID.
+async fn agent_pid(engine: &Engine, session: &SessionRef) -> String {
+    prompt(engine, session, "whoami").await.unwrap();
+    wait_for_status(engine, session, SessionStatus::Done).await;
+    let report = agent_text(engine, session).concat();
+    report
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("pid="))
+        .unwrap_or_else(|| panic!("no pid in {report}"))
+        .to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_client_sees_the_same_tabs_and_drafts() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let port = daemon.addr().port();
+    let machine = daemon.machine_id().clone();
+    let first = connect(&daemon).await;
+    let second = connect(&daemon).await;
+
+    let (topic, older) =
+        start_ready_session(&first, &machine, &fixture.repo, PermissionMode::Auto).await;
+    let newer = start_session(&first, &machine, &topic, PermissionMode::Auto, None).await;
+    wait_for("the second client to see the new tab", || {
+        state_of(&second).session(&newer.session_id).map(|_| ())
+    })
+    .await;
+
+    first
+        .request(
+            &machine,
+            Command::SetDraft {
+                session_id: older.session_id.clone(),
+                text: "half a tho".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    let drafts = state_of(&first).drafts;
+    assert_eq!(drafts.get(&older.session_id).unwrap(), "half a tho");
+    wait_for("the other client to see the draft", || {
+        (state_of(&second).drafts == drafts).then_some(())
+    })
+    .await;
+
+    // A client that wasn't there gets all of it, and so does one after a restart.
+    let tabs = |engine: &Engine| {
+        let state = state_of(engine);
+        let sessions = &state.topic(&topic.id).unwrap().sessions;
+        sessions.iter().map(|s| s.id.clone()).collect::<Vec<_>>()
+    };
+    let expected = vec![older.session_id.clone(), newer.session_id.clone()];
+    let late = connect(&daemon).await;
+    assert_eq!(tabs(&late), expected);
+    assert_eq!(state_of(&late).drafts, drafts);
+    daemon.shutdown().await;
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let restarted = connect(&daemon).await;
+    assert_eq!(tabs(&restarted), expected);
+    assert_eq!(state_of(&restarted).drafts, drafts);
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sending_a_prompt_clears_its_draft() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    engine
+        .request(
+            &machine,
+            Command::SetDraft {
+                session_id: session.session_id.clone(),
+                text: "echo hi".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(state_of(&engine).drafts.contains_key(&session.session_id));
+
+    prompt(&engine, &session, "echo hi").await.unwrap();
+    assert!(state_of(&engine).drafts.is_empty());
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_finished_tab_kills_its_agent_and_drops_its_draft() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let port = daemon.addr().port();
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let (topic, first) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    let second = start_session(&engine, &machine, &topic, PermissionMode::Auto, None).await;
+    wait_for_status(&engine, &second, SessionStatus::Ready).await;
+    let third = start_session(&engine, &machine, &topic, PermissionMode::Auto, None).await;
+    wait_for_status(&engine, &third, SessionStatus::Ready).await;
+    let pid = agent_pid(&engine, &second).await;
+    let draft = Command::SetDraft {
+        session_id: second.session_id.clone(),
+        text: "never sent".to_owned(),
+    };
+    engine.request(&machine, draft).await.unwrap();
+
+    // Finished, so it closes without being forced.
+    let close = |session: &SessionRef, force| Command::CloseSession {
+        session_id: session.session_id.clone(),
+        force,
+    };
+    engine
+        .request(&machine, close(&second, false))
+        .await
+        .unwrap();
+
+    let state = state_of(&engine);
+    let sessions = &state.topic(&topic.id).unwrap().sessions;
+    assert_eq!(sessions.len(), 2, "the tab is gone");
+    assert!(state.session(&second.session_id).is_none());
+    assert!(state.drafts.is_empty());
+    wait_for("the agent's process to die", || {
+        (!is_process_alive(&pid)).then_some(())
+    })
+    .await;
+
+    for session in [&third, &first] {
+        engine
+            .request(&machine, close(session, false))
+            .await
+            .unwrap();
+    }
+
+    // Closing twice is a clear error, and it stays closed after a restart.
+    let error = engine
+        .request(&machine, close(&first, false))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("no session"), "{error}");
+    daemon.shutdown().await;
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let state = state_of(&connect(&daemon).await);
+    assert!(state.topic(&topic.id).unwrap().sessions.is_empty());
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_running_agent_has_to_be_forced() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    let pid = agent_pid(&engine, &session).await;
+    prompt(&engine, &session, "hang").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Working).await;
+
+    let close = |force| Command::CloseSession {
+        session_id: session.session_id.clone(),
+        force,
+    };
+    let error = engine.request(&machine, close(false)).await.unwrap_err();
+    match error {
+        EngineError::Command(error) => assert_eq!(error.code, ErrorCode::Busy),
+        other => panic!("unexpected error {other:?}"),
+    }
+    assert!(state_of(&engine).session(&session.session_id).is_some());
+    assert!(
+        is_process_alive(&pid),
+        "refusing must leave the agent running"
+    );
+
+    engine.request(&machine, close(true)).await.unwrap();
+    assert!(state_of(&engine).session(&session.session_id).is_none());
+    wait_for("the agent's process to die", || {
+        (!is_process_alive(&pid)).then_some(())
+    })
+    .await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_answers_a_request_the_agent_is_waiting_on() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Manual).await;
+    prompt(&engine, &session, "write").await.unwrap();
+    let approval = wait_for_approval(&engine, &session).await;
+
+    let close = |force| Command::CloseSession {
+        session_id: session.session_id.clone(),
+        force,
+    };
+    assert!(engine.request(&machine, close(false)).await.is_err());
+    assert_eq!(engine.approvals().len(), 1, "waiting counts as running");
+
+    engine.request(&machine, close(true)).await.unwrap();
+    assert!(engine.approvals().is_empty());
+    assert!(engine.events_after(&session, 0).iter().any(|event| matches!(
+        &event.kind,
+        SessionEventKind::PermissionResolved { approval_id, outcome: PermissionOutcome::Cancelled }
+            if approval_id == &approval.id
+    )));
+    daemon.shutdown().await;
+}
+
+/// What `Command::CreateTopic` makes when nobody gives it a name, which is what the app does.
+async fn add_unnamed_topic(engine: &Engine, machine: &MachineId, repo: &Path) -> Topic {
+    let workspace = add_workspace(engine, machine, repo).await;
+    let command = Command::CreateTopic {
+        workspace_id: workspace.id,
+        name: None,
+        at_root: false,
+    };
+    match engine.request(machine, command).await.unwrap() {
+        CommandOutput::Topic { topic, .. } => topic,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+/// Runs a turn that reports `title`, and returns once it's over and the session shows it.
+async fn set_title(engine: &Engine, session: &SessionRef, title: &str) {
+    prompt(engine, session, &format!("title {title}"))
+        .await
+        .unwrap();
+    wait_for_status(engine, session, SessionStatus::Done).await;
+    wait_for("the session's title", || {
+        let state = state_of(engine);
+        let shown = state.session(&session.session_id)?.title.as_deref()?;
+        (shown == title).then_some(())
+    })
+    .await;
+}
+
+fn topic_name(engine: &Engine, topic: &Topic) -> String {
+    state_of(engine).topic(&topic.id).unwrap().name.clone()
+}
+
+async fn wait_for_topic_name(engine: &Engine, topic: &Topic, wanted: &str) {
+    wait_for("the topic's name", || {
+        (topic_name(engine, topic) == wanted).then_some(())
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_topic_nobody_named_goes_by_its_first_tab_until_someone_names_it() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let port = daemon.addr().port();
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+
+    let topic = add_unnamed_topic(&engine, &machine, &fixture.repo).await;
+    assert_eq!(topic.name, "Topic #1");
+    let first = start_session(&engine, &machine, &topic, PermissionMode::Auto, None).await;
+    let second = start_session(&engine, &machine, &topic, PermissionMode::Auto, None).await;
+
+    set_title(&engine, &second, "The second tab").await;
+    assert_eq!(topic_name(&engine, &topic), "Topic #1");
+
+    set_title(&engine, &first, "The first tab").await;
+    wait_for_topic_name(&engine, &topic, "The first tab").await;
+
+    // It's the same name as the tab's, so a later title carries over too.
+    prompt(&engine, &first, "title A better title")
+        .await
+        .unwrap();
+    wait_for_topic_name(&engine, &topic, "A better title").await;
+    wait_for_status(&engine, &first, SessionStatus::Done).await;
+
+    let rename = |name: &str| Command::RenameTopic {
+        topic_id: topic.id.clone(),
+        name: name.to_owned(),
+    };
+    let error = engine.request(&machine, rename("   ")).await.unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::InvalidInput));
+    assert_eq!(topic_name(&engine, &topic), "A better title");
+
+    engine.request(&machine, rename("  Mine ")).await.unwrap();
+    assert_eq!(topic_name(&engine, &topic), "Mine");
+    set_title(&engine, &first, "Ignored").await;
+    assert_eq!(topic_name(&engine, &topic), "Mine");
+
+    // The branch keeps the name it was made with, and it's the worktree's own.
+    assert_eq!(
+        state_of(&engine).topic(&topic.id).unwrap().worktrees,
+        topic.worktrees
+    );
+
+    daemon.shutdown().await;
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    assert_eq!(topic_name(&engine, &topic), "Mine");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_topic_given_a_name_keeps_it() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    set_title(&engine, &session, "From the agent").await;
+
+    assert_eq!(topic_name(&engine, &topic), "My topic!");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_topic_never_reuses_a_number_still_in_the_list() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let first = add_unnamed_topic(&engine, &machine, &fixture.repo).await;
+    add_unnamed_topic(&engine, &machine, &fixture.repo).await;
+
+    let delete = Command::DeleteTopic {
+        topic_id: first.id,
+        force: false,
+    };
+    engine.request(&machine, delete).await.unwrap();
+
+    let next = add_unnamed_topic(&engine, &machine, &fixture.repo).await;
+    assert_eq!(next.name, "Topic #3");
+    daemon.shutdown().await;
+}
+
+fn branches(repo: &Path) -> String {
+    run_git(repo, &["branch", "--format=%(refname:short)"])
+}
+
+fn delete_topic(topic: &Topic, force: bool) -> Command {
+    Command::DeleteTopic {
+        topic_id: topic.id.clone(),
+        force,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_topic_removes_its_clean_worktree_and_merged_branch_and_stays_gone() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let port = daemon.addr().port();
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    let pid = agent_pid(&engine, &session).await;
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let worktree = PathBuf::from(&topic.worktrees[0].path);
+    assert!(worktree.exists());
+
+    engine
+        .request(&machine, delete_topic(&topic, false))
+        .await
+        .unwrap();
+
+    assert!(state_of(&engine).topic(&topic.id).is_none());
+    assert!(state_of(&engine).session(&session.session_id).is_none());
+    wait_for("the agent's process to die", || {
+        (!is_process_alive(&pid)).then_some(())
+    })
+    .await;
+    wait_for("the worktree to go", || (!worktree.exists()).then_some(())).await;
+    wait_for("the branch to go", || {
+        (!branches(&fixture.repo).contains(&topic.worktrees[0].branch)).then_some(())
+    })
+    .await;
+
+    let error = engine
+        .request(&machine, delete_topic(&topic, false))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::NotFound));
+
+    daemon.shutdown().await;
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    assert!(state_of(&engine).topic(&topic.id).is_none());
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_topic_with_a_running_agent_has_to_be_forced() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Manual).await;
+    let pid = agent_pid(&engine, &session).await;
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    prompt(&engine, &session, "write").await.unwrap();
+    let approval = wait_for_approval(&engine, &session).await;
+
+    let error = engine
+        .request(&machine, delete_topic(&topic, false))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::Busy));
+    assert!(state_of(&engine).topic(&topic.id).is_some());
+    assert!(
+        is_process_alive(&pid),
+        "refusing must leave the agent running"
+    );
+
+    engine
+        .request(&machine, delete_topic(&topic, true))
+        .await
+        .unwrap();
+    assert!(state_of(&engine).topic(&topic.id).is_none());
+    assert!(engine.approvals().is_empty());
+    assert!(engine.events_after(&session, 0).iter().any(|event| matches!(
+        &event.kind,
+        SessionEventKind::PermissionResolved { approval_id, outcome: PermissionOutcome::Cancelled }
+            if approval_id == &approval.id
+    )));
+    wait_for("the agent's process to die", || {
+        (!is_process_alive(&pid)).then_some(())
+    })
+    .await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_topic_never_discards_work_in_git() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+
+    let uncommitted = add_topic(&engine, &machine, &fixture.repo).await;
+    let uncommitted_path = PathBuf::from(&uncommitted.worktrees[0].path);
+    let unsaved = uncommitted_path.join("unsaved.txt");
+    std::fs::write(&unsaved, "work").unwrap();
+
+    let unmerged = add_topic(&engine, &machine, &fixture.repo).await;
+    let unmerged_path = PathBuf::from(&unmerged.worktrees[0].path);
+    run_git(
+        &unmerged_path,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "work",
+        ],
+    );
+
+    // `force` is about running agents, and doesn't change what happens in git.
+    for topic in [&uncommitted, &unmerged] {
+        engine
+            .request(&machine, delete_topic(topic, true))
+            .await
+            .unwrap();
+    }
+    wait_for("the committed worktree to go", || {
+        (!unmerged_path.exists()).then_some(())
+    })
+    .await;
+    // Each finishes on its own, and shutting down waits for what's left.
+    daemon.shutdown().await;
+
+    assert_eq!(std::fs::read_to_string(&unsaved).unwrap(), "work");
+    let left = branches(&fixture.repo);
+    assert!(left.contains(&uncommitted.worktrees[0].branch), "{left}");
+    assert!(left.contains(&unmerged.worktrees[0].branch), "{left}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_topic_at_the_repo_root_leaves_the_repo_alone() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let workspace = add_workspace(&engine, &machine, &fixture.repo).await;
+    let command = Command::CreateTopic {
+        workspace_id: workspace.id,
+        name: None,
+        at_root: true,
+    };
+    let topic = match engine.request(&machine, command).await.unwrap() {
+        CommandOutput::Topic { topic, .. } => topic,
+        other => panic!("unexpected output {other:?}"),
+    };
+    let before = branches(&fixture.repo);
+
+    engine
+        .request(&machine, delete_topic(&topic, false))
+        .await
+        .unwrap();
+    daemon.shutdown().await;
+
+    assert!(fixture.repo.join(".git").exists());
+    assert_eq!(branches(&fixture.repo), before);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -926,7 +2089,7 @@ async fn one_client_merges_many_daemons() {
             .all(|e| e.session == on_desktop)
     );
 
-    // The inbox spans machines, and a machine that doesn't own a session says so.
+    // Approvals span machines, and a machine that doesn't own a session says so.
     assert_eq!(engine.approvals().len(), 1);
     let wrong_machine = SessionRef {
         machine_id: laptop.machine_id().clone(),
