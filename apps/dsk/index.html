@@ -1,5 +1,8 @@
 <!doctype html>
-<html lang="en">
+<!-- Every field holds prompts, code or paths, so macOS mustn't rewrite them. WebKit skips
+     smart quotes, dashes, text replacements and autocorrect where spellcheck is off, and
+     writingsuggestions turns off inline predictions. Both inherit, so this covers every field. -->
+<html lang="en" spellcheck="false" writingsuggestions="false">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
