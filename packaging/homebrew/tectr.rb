@@ -17,10 +17,14 @@ cask "tectr" do
   binary "tectr-daemon"
 
   postflight do
-    # The app isn't notarized, so Gatekeeper would refuse to open it.
-    system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{appdir}/tectr.app"]
+    # The app isn't notarized, so Gatekeeper would refuse to open it. A file Homebrew didn't
+    # quarantine makes xattr fail, which is fine.
+    system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{appdir}/tectr.app"],
+                                     must_succeed: false, print_stderr: false
     system_command "/usr/bin/xattr",
-                   args: ["-d", "com.apple.quarantine", "#{staged_path}/tectr", "#{staged_path}/tectr-daemon"]
+                   args:         ["-d", "com.apple.quarantine",
+                                  "#{staged_path}/tectr", "#{staged_path}/tectr-daemon"],
+                   must_succeed: false, print_stderr: false
 
     # The daemon runs as a LaunchAgent: it starts at login, restarts if it crashes, and
     # outlives the app, so closing the window doesn't stop agents. --shell-env gives it
@@ -57,8 +61,9 @@ cask "tectr" do
       </plist>
     XML
 
-    # Restart onto the new binary. Stopping waits for the daemon to stop its agents.
-    system_command "/bin/launchctl", args: ["bootout", "#{domain}/#{label}"]
+    # Restart onto the new binary. Stopping waits for the daemon to stop its agents. On a
+    # first install there's nothing to stop, so bootout fails, which is fine.
+    system_command "/bin/launchctl", args: ["bootout", "#{domain}/#{label}"], must_succeed: false, print_stderr: false
     40.times do
       break unless system("/bin/launchctl", "print", "#{domain}/#{label}", out: File::NULL, err: File::NULL)
 
