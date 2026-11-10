@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -17,7 +17,8 @@ use protocol::{
     DaemonState, DeviceSettings, ErrorCode, Machine, MachineId, MoveTarget, PermissionMode,
     PermissionOption, PermissionOutcome, PromptImage, Provider, ProviderCandidate, Session,
     SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, StateChange, StopReason,
-    ToolCallPatch, Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
+    Terminal, TerminalColors, TerminalId, TerminalStatus, ToolCallPatch, Topic, TopicId, Workspace,
+    WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -26,10 +27,13 @@ use crate::agents::AgentLauncher;
 use crate::awake::{KeepAwake, KeepAwakeCommand};
 use crate::images::{self, Images};
 use crate::mcp::ConfigHome;
+use crate::remote::Network;
 use crate::store::Store;
+use crate::terminal::{self, Shell, Subscriber};
 use crate::{acp, folders, git};
 
 mod mcp;
+mod remote;
 
 /// How often image files nothing names are looked for, besides at startup.
 const COLLECT_IMAGES_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
@@ -89,10 +93,19 @@ struct LiveSession {
     mcp_stale: bool,
 }
 
+/// A terminal whose thread is running. `run` tells its events apart from an earlier one's.
+struct LiveTerminal {
+    handle: terminal::Handle,
+    run: String,
+}
+
 struct Inner {
     store: Store,
     state: DaemonState,
     live: HashMap<SessionId, LiveSession>,
+    terminals: HashMap<TerminalId, LiveTerminal>,
+    /// Terminals told to stop, which shutdown waits for so their history is saved.
+    stopping_terminals: Vec<std::thread::JoinHandle<()>>,
     /// Agents told to stop because their tab closed, which shutdown still has to wait for.
     closing: Vec<JoinHandle<()>>,
     last_seq: HashMap<SessionId, u64>,
@@ -123,6 +136,16 @@ pub struct Core {
     logins: Mutex<HashMap<String, mcp::PendingLogin>>,
     /// Refreshing one login at a time keeps two requests from using up one refresh token.
     token_refresh: tokio::sync::Mutex<()>,
+    /// What starts in a new terminal.
+    shell: Shell,
+    /// Tells apart the clients showing a terminal.
+    next_subscriber: AtomicU64,
+    /// What this daemon proves to remote clients, and what they dial.
+    remote_key: iroh::SecretKey,
+    network: Network,
+    /// Set once something needs remote clients: a pairing, or a client already paired.
+    endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
+    pairing: Mutex<Option<remote::Pairing>>,
 }
 
 /// What `Core::open` needs besides the data directory.
@@ -133,6 +156,8 @@ pub struct CoreOptions {
     pub keep_awake: Option<KeepAwakeCommand>,
     pub port: u16,
     pub config_home: ConfigHome,
+    pub shell: Shell,
+    pub network: Network,
 }
 
 impl Core {
@@ -144,8 +169,17 @@ impl Core {
             keep_awake,
             port,
             config_home,
+            shell,
+            network,
         } = options;
         let store = Store::open(&data_dir.join("tectr.db"))?;
+        let remote_key = store.remote_key(|| {
+            let bytes = iroh::SecretKey::generate().to_bytes();
+            bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+        })?;
+        let remote_key: iroh::SecretKey = remote_key
+            .parse()
+            .context("the stored remote key is damaged")?;
         let machine = Machine {
             id: store.machine_id()?,
             name: store.machine_name()?.unwrap_or_else(|| hostname.clone()),
@@ -157,6 +191,8 @@ impl Core {
             store,
             state,
             live: HashMap::new(),
+            terminals: HashMap::new(),
+            stopping_terminals: Vec::new(),
             closing: Vec::new(),
             last_seq,
             signals: signals.clone(),
@@ -182,6 +218,12 @@ impl Core {
                 .context("failed to set up HTTP for MCP servers")?,
             logins: Mutex::new(HashMap::new()),
             token_refresh: tokio::sync::Mutex::new(()),
+            shell,
+            next_subscriber: AtomicU64::new(1),
+            remote_key,
+            network,
+            endpoint: tokio::sync::OnceCell::new(),
+            pairing: Mutex::new(None),
         }))
     }
 
@@ -306,6 +348,12 @@ impl Core {
                 images,
             } => self.set_draft(session_id, text, images),
             Command::CloseSession { session_id, force } => self.close_session(&session_id, force),
+            Command::OpenTerminal {
+                topic_id,
+                cols,
+                rows,
+            } => self.open_terminal(topic_id, cols, rows),
+            Command::CloseTerminal { terminal_id } => self.close_terminal(&terminal_id),
             Command::SaveMcpServer {
                 id,
                 name,
@@ -329,6 +377,9 @@ impl Core {
                 .map(|_| CommandOutput::Done),
             Command::LogoutMcpServer { id } => self.logout_mcp_server(&id),
             Command::ImportMcpServers => self.import_mcp_servers().await,
+            Command::StartPairing => self.start_pairing().await,
+            Command::CancelPairing => Ok(self.cancel_pairing()),
+            Command::RemovePairedClient { key } => self.remove_paired_client(&key),
             Command::Unknown => Err(invalid("this daemon doesn't know that command")),
         }
     }
@@ -423,6 +474,7 @@ impl Core {
             worktree_id: worktree.id.clone(),
             worktrees: vec![worktree],
             sessions: vec![],
+            terminals: vec![],
             mcp: BTreeMap::new(),
         };
         let mut inner = self.lock();
@@ -540,6 +592,10 @@ impl Core {
             if let Err(error) = inner.clear_draft(&session.id) {
                 tracing::error!(id = %session.id, "failed to clear a draft: {error:#}");
             }
+        }
+        // Their shells end with the topic, and what they showed comes back with it.
+        for terminal in &topic.terminals {
+            inner.stop_terminal(&terminal.id, true);
         }
         inner.emit(StateChange::TopicRemoved {
             topic_id: topic_id.clone(),
@@ -825,6 +881,7 @@ impl Core {
             status: SessionStatus::Starting,
             title: None,
             unread: false,
+            opened_at_ms: now_ms(),
         };
         inner
             .store
@@ -1365,6 +1422,209 @@ impl Core {
         }
     }
 
+    fn open_terminal(
+        self: &Arc<Self>,
+        topic_id: TopicId,
+        cols: u16,
+        rows: u16,
+    ) -> Result<CommandOutput, CommandError> {
+        let mut inner = self.lock();
+        let cwd = inner
+            .state
+            .topic(&topic_id)
+            .ok_or_else(|| not_found("topic", &topic_id))?
+            .worktree()
+            .ok_or_else(|| internal(anyhow::anyhow!("the topic has no folder")))?
+            .path
+            .clone();
+        let terminal = Terminal {
+            id: TerminalId(crate::new_id()),
+            title: None,
+            status: TerminalStatus::Running,
+            opened_at_ms: now_ms(),
+        };
+        inner
+            .store
+            .insert_terminal(&topic_id, &terminal, &cwd)
+            .map_err(internal)?;
+        inner.emit(StateChange::TerminalAdded {
+            topic_id: topic_id.clone(),
+            terminal: terminal.clone(),
+        });
+        let folder = PathBuf::from(cwd);
+        self.start_terminal(
+            &mut inner,
+            &terminal.id,
+            folder.clone(),
+            folder,
+            (cols, rows),
+        )
+        .map_err(internal)?;
+        Ok(CommandOutput::Terminal { topic_id, terminal })
+    }
+
+    fn close_terminal(&self, terminal_id: &TerminalId) -> Result<CommandOutput, CommandError> {
+        let mut inner = self.lock();
+        if inner.state.terminal(terminal_id).is_none() {
+            return Err(not_found("terminal", terminal_id));
+        }
+        inner
+            .store
+            .close_terminal(terminal_id, now_ms())
+            .map_err(internal)?;
+        if !inner.stop_terminal(terminal_id, false) {
+            let _ = std::fs::remove_file(self.terminal_history(terminal_id));
+        }
+        inner.emit(StateChange::TerminalRemoved {
+            terminal_id: terminal_id.clone(),
+        });
+        Ok(CommandOutput::Done)
+    }
+
+    fn terminal_history(&self, id: &TerminalId) -> PathBuf {
+        self.data_dir.join("terminals").join(format!("{id}.vt"))
+    }
+
+    /// Starts a terminal's thread and shell. Its events come back through `terminal_event`.
+    fn start_terminal(
+        self: &Arc<Self>,
+        inner: &mut Inner,
+        id: &TerminalId,
+        cwd: PathBuf,
+        fallback: PathBuf,
+        (cols, rows): (u16, u16),
+    ) -> Result<()> {
+        let run = crate::new_id();
+        let core = Arc::downgrade(self);
+        let notify: terminal::Notify = {
+            let id = id.clone();
+            let run = run.clone();
+            Box::new(move |event| {
+                if let Some(core) = core.upgrade() {
+                    core.terminal_event(&id, &run, event);
+                }
+            })
+        };
+        let start = terminal::Start {
+            id: id.clone(),
+            shell: self.shell.clone(),
+            cwd,
+            fallback,
+            cols: cols.max(1),
+            rows: rows.max(1),
+            history: self.terminal_history(id),
+        };
+        let handle = terminal::Handle::start(start, notify)?;
+        inner
+            .terminals
+            .insert(id.clone(), LiveTerminal { handle, run });
+        Ok(())
+    }
+
+    fn terminal_event(&self, id: &TerminalId, run: &str, event: terminal::Event) {
+        let mut inner = self.lock();
+        // A terminal saves where it is on its way out too, after it's no longer live.
+        if let terminal::Event::Cwd(cwd) = &event {
+            if let Err(error) = inner.store.set_terminal_cwd(id, cwd) {
+                tracing::warn!(%id, "failed to store where a terminal is: {error:#}");
+            }
+            return;
+        }
+        if inner.terminals.get(id).is_none_or(|live| live.run != run) {
+            return;
+        }
+        let Some(mut terminal) = inner.state.terminal(id).cloned() else {
+            return;
+        };
+        match event {
+            terminal::Event::Running => terminal.status = TerminalStatus::Running,
+            terminal::Event::Title(title) => {
+                if let Err(error) = inner.store.set_terminal_title(id, title.as_deref()) {
+                    tracing::warn!(%id, "failed to store a terminal's title: {error:#}");
+                }
+                terminal.title = title;
+            }
+            // A shell that exits cleanly was meant to, like typing exit, so its tab goes.
+            terminal::Event::Exited(Some(0)) => {
+                if let Err(error) = inner.store.close_terminal(id, now_ms()) {
+                    tracing::error!(%id, "failed to close a terminal: {error:#}");
+                }
+                if let Some(live) = inner.terminals.remove(id) {
+                    // This runs on the terminal's own thread, which ends after this returns.
+                    drop(live.handle.stop(false));
+                }
+                inner.emit(StateChange::TerminalRemoved {
+                    terminal_id: id.clone(),
+                });
+                return;
+            }
+            terminal::Event::Exited(_) => terminal.status = TerminalStatus::Exited,
+            terminal::Event::Cwd(_) => unreachable!("handled above"),
+        }
+        if inner.state.terminal(id) != Some(&terminal) {
+            inner.emit(StateChange::TerminalChanged { terminal });
+        }
+    }
+
+    pub fn next_subscriber(&self) -> u64 {
+        self.next_subscriber.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Starts sending a terminal to a client, starting its shell if it isn't running.
+    pub fn attach_terminal(
+        self: &Arc<Self>,
+        id: &TerminalId,
+        subscriber: Subscriber,
+        (cols, rows): (u16, u16),
+        colors: Option<TerminalColors>,
+    ) -> Result<()> {
+        let mut inner = self.lock();
+        if inner.state.terminal(id).is_none() {
+            anyhow::bail!("no terminal with ID {id}");
+        }
+        if !inner.terminals.contains_key(id) {
+            let folder = inner
+                .state
+                .topics()
+                .find(|topic| topic.terminals.iter().any(|t| &t.id == id))
+                .and_then(Topic::worktree)
+                .map(|worktree| PathBuf::from(&worktree.path))
+                .context("the terminal's topic has no folder")?;
+            let cwd = inner
+                .store
+                .terminal_cwd(id)?
+                .map_or_else(|| folder.clone(), PathBuf::from);
+            self.start_terminal(&mut inner, id, cwd, folder, (cols, rows))?;
+        }
+        let live = inner.terminals.get(id).expect("started just above");
+        live.handle.attach(subscriber, cols, rows, colors);
+        Ok(())
+    }
+
+    pub fn detach_terminal(&self, id: &TerminalId, subscriber: u64) {
+        if let Some(live) = self.lock().terminals.get(id) {
+            live.handle.detach(subscriber);
+        }
+    }
+
+    pub fn resize_terminal(&self, id: &TerminalId, cols: u16, rows: u16) {
+        if let Some(live) = self.lock().terminals.get(id) {
+            live.handle.resize(cols, rows);
+        }
+    }
+
+    pub fn terminal_input(&self, id: &TerminalId, data: Vec<u8>) {
+        if let Some(live) = self.lock().terminals.get(id) {
+            live.handle.input(data);
+        }
+    }
+
+    pub fn terminal_ack(&self, id: &TerminalId, subscriber: u64, bytes: u32) {
+        if let Some(live) = self.lock().terminals.get(id) {
+            live.handle.ack(subscriber, bytes);
+        }
+    }
+
     pub fn config_home(&self) -> &ConfigHome {
         &self.config_home
     }
@@ -1534,6 +1794,10 @@ impl Core {
     /// Stops every agent and waits for them to exit.
     pub async fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
+        // Remote clients go first, so none of them sees agents stopping one by one.
+        if let Some(endpoint) = self.endpoint.get() {
+            endpoint.close().await;
+        }
         let tasks: Vec<_> = {
             let mut inner = self.lock();
             let mut tasks: Vec<_> = inner
@@ -1545,8 +1809,20 @@ impl Core {
                 })
                 .collect();
             tasks.append(&mut inner.closing);
+            let ids: Vec<TerminalId> = inner.terminals.keys().cloned().collect();
+            for id in ids {
+                inner.stop_terminal(&id, true);
+            }
             tasks
         };
+        // Terminals only save and ask their shells to end, so this takes moments.
+        let threads = std::mem::take(&mut self.lock().stopping_terminals);
+        let joined = tokio::task::spawn_blocking(move || {
+            for thread in threads {
+                let _ = thread.join();
+            }
+        });
+        let _ = tokio::time::timeout(Duration::from_secs(5), joined).await;
         for task in tasks {
             // The SDK ends a stubborn agent within about three seconds.
             let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
@@ -1640,6 +1916,25 @@ impl Inner {
             self.resolve_approval(session_id, &approval_id, PermissionOutcome::Cancelled);
         }
         live.task.take()
+    }
+
+    /// Ends a terminal's shell, saving what it showed for next time or deleting it. Returns
+    /// whether it was running.
+    fn stop_terminal(&mut self, id: &TerminalId, keep: bool) -> bool {
+        let Some(live) = self.terminals.remove(id) else {
+            return false;
+        };
+        self.stopping_terminals
+            .retain(|thread| !thread.is_finished());
+        self.stopping_terminals.extend(live.handle.stop(keep));
+        if keep && let Some(terminal) = self.state.terminal(id).cloned() {
+            let terminal = Terminal {
+                status: TerminalStatus::Stopped,
+                ..terminal
+            };
+            self.emit(StateChange::TerminalChanged { terminal });
+        }
+        true
     }
 
     fn keep_closing(&mut self, task: JoinHandle<()>) {
@@ -1902,6 +2197,10 @@ mod tests {
             event_buffer: 16,
             keep_awake,
             port: 0,
+            shell: Shell {
+                program: "/bin/sh".into(),
+                args: vec![],
+            },
             config_home: ConfigHome {
                 home: None,
                 codex_home: None,
@@ -1909,6 +2208,7 @@ mod tests {
                 opencode_config: None,
                 opencode_content: None,
             },
+            network: Network::Local,
         }
     }
 
@@ -1934,6 +2234,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pairing_code_works_once_and_wrong_secrets_use_it_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(dir.path(), options("host", None)).unwrap();
+        let start = || async {
+            let Ok(CommandOutput::Pairing { code, .. }) = core.handle(Command::StartPairing).await
+            else {
+                panic!("no code");
+            };
+            protocol::PairingCode::parse(&code).unwrap()
+        };
+        let request = |secret: &str| protocol::PairRequest {
+            secret: secret.to_owned(),
+            name: "  Laptop  ".to_owned(),
+        };
+        let paired = |response: protocol::PairResponse| {
+            matches!(response, protocol::PairResponse::Paired { .. })
+        };
+        let laptop = iroh::SecretKey::generate().public();
+        let phone = iroh::SecretKey::generate().public();
+
+        let code = start().await;
+        assert_eq!(code.daemon_key, core.remote_id().to_string());
+        assert!(core.remote_addr().is_some(), "pairing starts listening");
+        assert!(!core.is_paired(&laptop));
+        assert!(paired(core.pair(&laptop, &request(&code.secret))));
+        assert!(core.is_paired(&laptop));
+        let clients = core.snapshot_and_subscribe().0.paired_clients;
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name, "Laptop");
+        assert!(
+            !paired(core.pair(&phone, &request(&code.secret))),
+            "a code works once"
+        );
+
+        let code = start().await;
+        for _ in 0..5 {
+            assert!(!paired(core.pair(&phone, &request("wrong"))));
+        }
+        assert!(
+            !paired(core.pair(&phone, &request(&code.secret))),
+            "too many wrong secrets use the code up"
+        );
+
+        let code = start().await;
+        core.handle(Command::CancelPairing).await.unwrap();
+        assert!(!core.pairing_open());
+        assert!(!paired(core.pair(&phone, &request(&code.secret))));
+
+        let key = laptop.to_string();
+        let remove = || Command::RemovePairedClient { key: key.clone() };
+        core.handle(remove()).await.unwrap();
+        assert!(!core.is_paired(&laptop));
+        assert!(core.handle(remove()).await.is_err());
+        core.shutdown().await;
+
+        let reopened = Core::open(dir.path(), options("host", None)).unwrap();
+        assert_eq!(
+            reopened.remote_id(),
+            code.daemon_key.parse().unwrap(),
+            "the key survives a restart"
+        );
+    }
+
+    #[tokio::test]
     async fn the_machine_stays_awake_only_while_an_agent_works_and_the_setting_allows() {
         let dir = tempfile::tempdir().unwrap();
         {
@@ -1956,6 +2320,7 @@ mod tests {
                     branch: "b".into(),
                 }],
                 sessions: vec![],
+                terminals: vec![],
                 mcp: BTreeMap::new(),
             };
             store.insert_topic(&"w".into(), &topic, false).unwrap();
@@ -1971,6 +2336,7 @@ mod tests {
                         status: SessionStatus::Ready,
                         title: None,
                         unread: false,
+                        opened_at_ms: 0,
                     },
                 )
                 .unwrap();
@@ -2028,6 +2394,7 @@ mod tests {
             status,
             title: None,
             unread: false,
+            opened_at_ms: 0,
         };
         let approval = Approval {
             id: "a1".into(),
@@ -2059,6 +2426,7 @@ mod tests {
                             branch: "b".into(),
                         }],
                         sessions: vec![],
+                        terminals: vec![],
                         mcp: BTreeMap::new(),
                     },
                     false,

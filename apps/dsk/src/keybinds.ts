@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useSyncExternalStore } from "react";
+import { inTerminal } from "./keys";
 import {
   type Appearance,
   type AppearancePreview,
@@ -26,6 +27,7 @@ import {
   isSequence,
   type KeyPress,
   sequenceState,
+  usesCommand,
 } from "./keymatch";
 
 export type { Binding };
@@ -77,6 +79,8 @@ export type ActionId =
   | "global.toggle_vim"
   | "global.move_topic"
   | "global.archived_topics"
+  | "global.pair_machine"
+  | "global.add_device"
   | "global.topic_mcp"
   | "sidebar.up"
   | "sidebar.down"
@@ -184,6 +188,10 @@ export type ActionId =
   | "mcp.login"
   | "mcp.logout"
   | "mcp.import"
+  | "pairing.add"
+  | "pairing.add_device"
+  | "pairing.remove"
+  | "pairing.forget"
   | "mcp_form.save"
   | "mcp_form.switch_type"
   | "mcp_form.toggle_enabled"
@@ -401,9 +409,12 @@ function bindingFor(event: KeyEventLike, id: ActionId): Match | undefined {
     !event.altKey;
   if (onButton) return undefined;
   const typing = isTextField(event.target);
+  const terminal = inTerminal(event.target);
   let waiting: Match | undefined;
   for (const binding of actions.get(id)?.bindings ?? []) {
     if (typing && !worksWhileTyping(binding.key, id)) continue;
+    // Shells and editors use every other key, Ctrl and Esc included.
+    if (terminal && !usesCommand(binding.key)) continue;
     const state = stateOf(binding.key, event);
     if (state === "full") return { binding, state };
     if (state === "prefix") waiting ??= { binding, state };

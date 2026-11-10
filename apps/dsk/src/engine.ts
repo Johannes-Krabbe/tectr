@@ -28,6 +28,30 @@ export interface Session {
   title: string | null;
   /** A turn finished and nobody has looked at it yet, on any client. */
   unread?: boolean;
+  /** Puts its tab in order among the topic's agents and terminals. */
+  opened_at_ms?: number;
+}
+
+export type TerminalStatus = "running" | "stopped" | "exited" | "unknown";
+
+/** A shell in its topic's folder. */
+export interface Terminal {
+  id: string;
+  /** What the program in it last called it. */
+  title?: string | null;
+  /** Stopped: no shell since the daemon started, and showing it starts one. Exited: its shell
+   * failed, and typing starts another. */
+  status: TerminalStatus;
+  opened_at_ms: number;
+}
+
+/** A client's colors as `#rrggbb`, which programs ask a terminal for. */
+export interface TerminalColors {
+  foreground: string;
+  background: string;
+  cursor: string;
+  /** The 16 ANSI colors, black to bright white. */
+  palette: string[];
 }
 
 /** A slash command an agent offers. Sending `/name`, and anything after it, runs it. */
@@ -54,6 +78,8 @@ export interface Topic {
   /** Every folder it has worked in and still has. One at the repo's own path is the repo. */
   worktrees: Worktree[];
   sessions: Session[];
+  /** Left out while it has none. */
+  terminals?: Terminal[];
   /** The device's MCP servers this topic turns on or off, against their own `enabled`. By
    * server ID. */
   mcp?: Record<string, boolean>;
@@ -178,6 +204,15 @@ export interface DaemonState {
   settings?: DeviceSettings;
   /** The MCP servers agents on this device get, device-wide and per topic. */
   mcp_servers?: McpServer[];
+  /** The clients on other machines that may connect, oldest first. */
+  paired_clients?: PairedClient[];
+}
+
+/** A client on another machine that may connect to a daemon, by the key it proves. */
+export interface PairedClient {
+  key: string;
+  name: string;
+  paired_at_ms: number;
 }
 
 /** How agents reach an MCP server. Values may name the daemon's environment as `${NAME}`. */
@@ -296,6 +331,8 @@ export type Command =
   | { command: "set_unread"; session_id: string; unread: boolean }
   | { command: "set_draft"; session_id: string; text: string; images?: PromptImage[] }
   | { command: "close_session"; session_id: string; force?: boolean }
+  | { command: "open_terminal"; topic_id: string; cols: number; rows: number }
+  | { command: "close_terminal"; terminal_id: string }
   | {
       command: "save_mcp_server";
       /** Changes the server it names, or else adds one. */
@@ -312,12 +349,16 @@ export type Command =
   | { command: "login_mcp_server"; id: string }
   | { command: "complete_mcp_login"; state: string; code: string }
   | { command: "logout_mcp_server"; id: string }
-  | { command: "import_mcp_servers" };
+  | { command: "import_mcp_servers" }
+  | { command: "start_pairing" }
+  | { command: "cancel_pairing" }
+  | { command: "remove_paired_client"; key: string };
 
 export type CommandOutput =
   | { output: "workspace"; workspace: Workspace }
   | { output: "topic"; workspace_id: string; topic: Topic }
   | { output: "session"; topic_id: string; session: Session }
+  | { output: "terminal"; topic_id: string; terminal: Terminal }
   | { output: "provider_candidates"; candidates: ProviderCandidate[] }
   | { output: "provider"; provider: Provider }
   | { output: "folders"; folders: Folder[] }
@@ -331,12 +372,29 @@ export type CommandOutput =
   | { output: "image_added"; id: string }
   /** Base64. A thumbnail can be a different type from its image. */
   | { output: "image"; data: string; mime: string }
+  /** A code that pairs one more machine, once, until it expires. */
+  | { output: "pairing"; code: string; expires_at_ms: number }
   | { output: "done" }
   | { output: "unknown" };
 
 /** Rejects with the daemon's message, which is written to be shown as is. */
 export function request(machineId: string, command: Command): Promise<CommandOutput> {
   return invoke("request", { machineId, command });
+}
+
+/** Pairs with a device on another machine using the code it showed, and keeps it. */
+export function pairDevice(code: string): Promise<void> {
+  return invoke("pair_device", { code });
+}
+
+/** Stops reaching a paired device, taking this app off its allowed list if it's online. */
+export function forgetDevice(url: string): Promise<void> {
+  return invoke("forget_device", { url });
+}
+
+/** The key this app proves to other machines, which their paired clients list. */
+export function clientKey(): Promise<string> {
+  return invoke("client_key");
 }
 
 export function errorText(error: unknown): string {

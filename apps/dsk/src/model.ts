@@ -13,6 +13,7 @@ import type {
   PromptImage,
   Session,
   SessionEvent,
+  Terminal,
   ToolCallPatch,
   Topic,
   Workspace,
@@ -139,6 +140,35 @@ export function allTopics(devices: Device[]): TopicEntry[] {
 
 export function sessionLabel(session: Session): string {
   return session.title ?? session.agent;
+}
+
+export function terminalLabel(terminal: Terminal): string {
+  return terminal.title || "Terminal";
+}
+
+/** One of a topic's tabs. */
+export type Tab =
+  | { kind: "session"; id: string; session: Session }
+  | { kind: "terminal"; id: string; terminal: Terminal };
+
+/** A topic's tabs in the order they were opened, agents and terminals together. Tabs opened
+ * at the same moment keep the order the daemon lists them in. */
+export function tabsOf(topic: Topic): Tab[] {
+  const tabs = [
+    ...topic.sessions.map((session): { tab: Tab; at: number } => ({
+      tab: { kind: "session", id: session.id, session },
+      at: session.opened_at_ms ?? 0,
+    })),
+    ...(topic.terminals ?? []).map((terminal): { tab: Tab; at: number } => ({
+      tab: { kind: "terminal", id: terminal.id, terminal },
+      at: terminal.opened_at_ms,
+    })),
+  ];
+  return tabs.sort((a, b) => a.at - b.at).map(({ tab }) => tab);
+}
+
+export function tabLabel(tab: Tab): string {
+  return tab.kind === "session" ? sessionLabel(tab.session) : terminalLabel(tab.terminal);
 }
 
 /** The folder a topic's tabs work in. */

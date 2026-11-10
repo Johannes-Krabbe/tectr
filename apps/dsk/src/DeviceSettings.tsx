@@ -1,8 +1,10 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
+  clientKey,
   type Command,
   type Device,
   errorText,
+  type PairedClient,
   type Provider,
   type ProviderCandidate,
   type ProviderModel,
@@ -12,6 +14,7 @@ import { act, type ActionId } from "./keybinds";
 import { inPane } from "./keys";
 import { McpSettings } from "./McpServers";
 import { defaultEffort, isOnline, keepsAwake, modelLabel, withKeepAwakeToggled } from "./model";
+import { isLoopback } from "./pathInput";
 import { hint, type Hint, SETTINGS_MOVES, useHints } from "./shortcuts";
 import { Choice, Picker } from "./ui/Picker";
 import { listMoves, SettingsLayout, SettingsPage } from "./ui/SettingsPage";
@@ -21,6 +24,7 @@ const SECTIONS = [
   { id: "general", label: "General" },
   { id: "providers", label: "Providers" },
   { id: "mcp", label: "MCP servers" },
+  { id: "pairing", label: "Pairing" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -46,7 +50,7 @@ const defaultModelOf = (provider: Provider): ProviderModel | undefined =>
   provider.models.find((m) => m.id === provider.default_model) ?? provider.models[0];
 
 /** Selected rows scroll into view as the cursor moves. */
-function useScrollToCurrent(selected: number, active: boolean) {
+export function useScrollToCurrent(selected: number, active: boolean) {
   useEffect(() => {
     if (active) document.querySelector(".keybind.current")?.scrollIntoView({ block: "nearest" });
   }, [selected, active]);
@@ -54,7 +58,7 @@ function useScrollToCurrent(selected: number, active: boolean) {
 
 /** One row of a device settings list, which takes the cursor and the keyboard when the
  * pointer moves over it. */
-function Row({
+export function Row({
   current,
   onPoint,
   children,
@@ -78,7 +82,7 @@ function Row({
 }
 
 // Focus stays off controls in a row, so Enter does what the settings say rather than pressing them.
-const keepFocus = (event: React.MouseEvent) => event.preventDefault();
+export const keepFocus = (event: React.MouseEvent) => event.preventDefault();
 
 /** The settings of one device. They live on its daemon, so every client sees the same ones.
  * Like the app's settings, the list of sections has the keyboard first. */
@@ -89,6 +93,8 @@ export function DeviceSettings({
   renaming,
   onRename,
   onRenameEnd,
+  onPair,
+  onForget,
   onClose,
 }: {
   device: Device;
@@ -98,6 +104,10 @@ export function DeviceSettings({
   renaming: boolean;
   onRename: () => void;
   onRenameEnd: () => void;
+  /** Shows a code that lets another machine in. */
+  onPair: () => void;
+  /** Stops this app reaching the device. */
+  onForget: () => void;
   onClose: () => void;
 }) {
   const section: SectionId = SECTIONS.find((s) => s.id === shown)?.id ?? "general";
@@ -174,6 +184,7 @@ export function DeviceSettings({
       )}
       {section === "providers" && <Providers {...props} />}
       {section === "mcp" && <McpSettings {...props} />}
+      {section === "pairing" && <Pairing {...props} onPair={onPair} onForget={onForget} />}
     </SettingsLayout>
   );
 }
@@ -621,6 +632,139 @@ function Providers({ device, active, onActivate, onLeave }: SectionProps) {
         </section>
       )}
       {candidates && rows.length === 0 && <p className="settings-note">No agents found on this device</p>}
+    </SettingsPage>
+  );
+}
+
+/** The machines that may connect to this device. Pairing starts only on the device itself, and
+ * on another device this app's own row is how it stops reaching that device. */
+function Pairing({
+  device,
+  active,
+  onActivate,
+  onLeave,
+  onPair,
+  onForget,
+}: SectionProps & { onPair: () => void; onForget: () => void }) {
+  const state = device.state;
+  const online = isOnline(device);
+  const local = isLoopback(device.url);
+  const canPair = online && local;
+  const clients: PairedClient[] = state?.paired_clients ?? [];
+  const [cursor, setCursor] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [ownKey, setOwnKey] = useState<string | null>(null);
+  const selected = Math.max(Math.min(cursor, clients.length - 1), 0);
+  const client: PairedClient | undefined = clients[selected];
+  const isThisApp = (c: PairedClient) => c.key === ownKey;
+
+  useEffect(() => {
+    clientKey()
+      .then(setOwnKey)
+      .catch(() => setOwnKey(null));
+  }, []);
+
+  const remove = (target: PairedClient | undefined) => {
+    if (!target || !state || !online) return;
+    if (isThisApp(target)) {
+      onForget();
+      return;
+    }
+    setError(null);
+    request(state.machine.id, { command: "remove_paired_client", key: target.key }).catch(
+      (reason) => setError(errorText(reason)),
+    );
+  };
+
+  useScrollToCurrent(selected, active);
+  useHints(
+    "pane",
+    active
+      ? [
+          ...(canPair ? [hint("Pair", "pairing.add")] : []),
+          ...(client && online ? [hint("Remove", "pairing.remove")] : []),
+          ...SETTINGS_MOVES,
+        ]
+      : null,
+  );
+
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!inPane(event)) return;
+      const commands: [ActionId, () => void][] = listMoves(selected, clients.length, setCursor, onLeave);
+      if (canPair) commands.push(["pairing.add", onPair]);
+      if (online) commands.push(["pairing.remove", () => remove(client)]);
+      if (!local) commands.push(["pairing.forget", onForget]);
+      commands.some(([id, run]) => act(event, id, run));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const about = !client
+    ? undefined
+    : isThisApp(client)
+      ? "Stops this app reaching this device."
+      : "Disconnects it, and it can only come back by pairing again.";
+  const footer =
+    active && client ? (
+      <>
+        <span className="settings-actions-what">{about}</span>
+        <button className="button" disabled={!online} onClick={() => remove(client)}>
+          Remove
+          <Keys action="pairing.remove" />
+        </button>
+      </>
+    ) : (
+      <span className="settings-actions-what">
+        <Keys action="sections.confirm" /> Change who can connect
+      </span>
+    );
+
+  return (
+    <SettingsPage error={error} footer={footer}>
+      {!online && <p className="settings-note">This device is offline</p>}
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h3 className="settings-group-title">Machines that can connect</h3>
+          {local && (
+            <button
+              className={`button ${clients.length === 0 ? "primary" : ""}`}
+              disabled={!canPair}
+              onMouseDown={keepFocus}
+              onClick={onPair}
+            >
+              Pair
+              {active && <Keys action="pairing.add" />}
+            </button>
+          )}
+        </div>
+        {clients.length === 0 && (
+          <p className="settings-note">
+            {local
+              ? "Only this machine can reach it. Pair shows a code that lets one more machine in."
+              : "Only the machines paired on the device itself can reach it."}
+          </p>
+        )}
+        <div className="keybinds">
+          {clients.map((c, index) => (
+            <Row
+              key={c.key}
+              current={active && index === selected}
+              onPoint={() => {
+                setCursor(index);
+                onActivate();
+              }}
+            >
+              <span className="name">{isThisApp(c) ? `${c.name} (this app)` : c.name}</span>
+              <span className="meta">
+                Paired {new Date(c.paired_at_ms).toLocaleDateString()}
+              </span>
+            </Row>
+          ))}
+        </div>
+      </section>
     </SettingsPage>
   );
 }

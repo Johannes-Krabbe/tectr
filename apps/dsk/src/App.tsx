@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AgentPane } from "./AgentPane";
 import { shownValue } from "./appearance";
 import { AppSettings } from "./AppSettings";
@@ -8,6 +8,7 @@ import {
   type Device,
   errorText,
   type PromptImage,
+  forgetDevice,
   request,
   type Session,
   type Topic,
@@ -42,8 +43,9 @@ import {
   keepsAwake,
   type MoveChoice,
   moveChoices,
-  sessionLabel,
   sessionState,
+  tabLabel,
+  tabsOf,
   type TopicEntry,
   topicState,
   topicWorktree,
@@ -79,6 +81,14 @@ import { Keys, StatusIcon } from "./ui/StatusIcon";
 
 /** One for every session without draft images, so a pane's images stay the same object. */
 const NO_IMAGES: PromptImage[] = [];
+// xterm.js is most of the app's code, so it loads when the first terminal is shown rather than
+// with the app.
+const loadTerminalPane = () => import("./TerminalPane");
+const TerminalPane = lazy(() =>
+  loadTerminalPane().then((module) => ({ default: module.TerminalPane })),
+);
+/** Loaded soon after starting, out of the way of the first paint, so a terminal opens at once. */
+const PRELOAD_TERMINAL_MS = 2000;
 
 const TAB_ACTIONS: ActionId[] = [
   "global.tab_1",
@@ -180,11 +190,12 @@ export function App() {
       ? topics.find((t) => t.machineId === view.machineId && t.topic.id === view.topicId)
       : undefined;
   const sessions = entry?.topic.sessions ?? [];
+  const tabs = entry ? tabsOf(entry.topic) : [];
   const tabIds = entry
     ? topicTabs(
         navigation,
         entry.topic.id,
-        sessions.map((s) => s.id),
+        tabs.map((tab) => tab.id),
       )
     : [];
   const chosenTab = entry && navigation.tabs[entry.topic.id];
@@ -194,6 +205,8 @@ export function App() {
     entry ? (seenTabs.current[entry.topic.id] ?? []) : [],
   );
   const session = sessions.find((s) => s.id === shownTabId);
+  const shownTerminal = entry?.topic.terminals?.find((t) => t.id === shownTabId);
+  const shownLabel = tabs.find((tab) => tab.id === shownTabId);
   const onNewTab = entry !== undefined && shownTabId === NEW_TAB;
   const shownKey = JSON.stringify([view, shownTabId]);
 
@@ -204,6 +217,11 @@ export function App() {
   }, [shownKey]);
 
   useEffect(() => saveNavigation(navigation), [navigation]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => void loadTerminalPane(), PRELOAD_TERMINAL_MS);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => setKeptUnread([]), [shownKey]);
 
@@ -304,6 +322,28 @@ export function App() {
     if (!device.state) return;
     const { id, name } = device.state.machine;
     setSheet({ kind: "workspace", machineId: id, deviceName: name, local: isLoopback(device.url) });
+  };
+
+  // Pairing starts on the device itself, which is the one reached over loopback.
+  const localDevice = devices.find((d) => isLoopback(d.url) && isOnline(d));
+
+  const pairWith = async (device: Device) => {
+    if (!device.state || !isOnline(device)) return;
+    const { id, name } = device.state.machine;
+    const output = await request(id, { command: "start_pairing" });
+    if (output.output !== "pairing") return;
+    setSheet({
+      kind: "pairing",
+      machineId: id,
+      deviceName: name,
+      code: output.code,
+      expiresAtMs: output.expires_at_ms,
+    });
+  };
+
+  const forget = async (device: Device) => {
+    if (device === settingsDevice) closeSettings();
+    await forgetDevice(device.url);
   };
 
   // Editing a name in place ends once its device's General settings aren't showing.
@@ -407,9 +447,29 @@ export function App() {
     focusOnceShown(true, focusPane);
   };
 
-  const onTabStarted = (topicId: string, sessionId: string) => {
+  const onTabStarted = (topicId: string, tabId: string) => {
     forgetNewTab(topicId);
-    replaceNewTab(topicId, sessionId);
+    replaceNewTab(topicId, tabId);
+  };
+
+  /** Starts a shell in the topic's folder. From the new tab it takes the new tab's place. The
+   * size is a guess that the terminal corrects as soon as it's shown. */
+  const openTerminal = () => {
+    if (!entry || !isOnline(entry.device)) return;
+    const { machineId, topic } = entry;
+    const fromNewTab = onNewTab;
+    setError(null);
+    request(machineId, { command: "open_terminal", topic_id: topic.id, cols: 80, rows: 24 })
+      .then((output) => {
+        if (output.output !== "terminal") return;
+        if (fromNewTab) {
+          onTabStarted(topic.id, output.terminal.id);
+        } else {
+          setStartedHere(output.terminal.id);
+          selectTab(topic.id, output.terminal.id);
+        }
+      })
+      .catch(reportFailure);
   };
 
   /** The prompt stays in the new tab, because it never reached the agent. */
@@ -455,9 +515,12 @@ export function App() {
   };
 
   // A topic's only tab is its new tab, which stays because there's nothing else to show.
-  const canCloseNewTab = onNewTab && sessions.length > 0;
+  const canCloseNewTab = onNewTab && tabs.length > 0;
   const canClose =
-    canCloseNewTab || (session !== undefined && entry !== undefined && isOnline(entry.device));
+    canCloseNewTab ||
+    ((session !== undefined || shownTerminal !== undefined) &&
+      entry !== undefined &&
+      isOnline(entry.device));
 
   /** Stops the agent and removes its tab, asking first if it's still running. A new tab
    * closes with what was typed in it. */
@@ -467,6 +530,15 @@ export function App() {
       forgetNewTab(topicId);
       setNavigation((current) => closeNewTab(current, topicId));
       focusOnceShown(true, focusPane);
+      return;
+    }
+    // Its shell ends with it, as closing a terminal window does.
+    if (entry && shownTerminal && isOnline(entry.device)) {
+      setError(null);
+      focusWhenShown.current = focusPane;
+      request(entry.machineId, { command: "close_terminal", terminal_id: shownTerminal.id }).catch(
+        reportFailure,
+      );
       return;
     }
     if (!entry || !session || !isOnline(entry.device)) return;
@@ -635,6 +707,12 @@ export function App() {
         run: newTab,
       });
       items.push({
+        id: "new-terminal",
+        label: `New terminal in ${entry.topic.name}`,
+        keys: onNewTab ? keysLabel("new_tab.terminal") : undefined,
+        run: openTerminal,
+      });
+      items.push({
         id: "topic-mcp",
         label: `MCP servers for ${entry.topic.name}`,
         detail: "Topic",
@@ -709,9 +787,10 @@ export function App() {
     if (entry && tabIds.length > 1) {
       tabIds.forEach((id, index) => {
         const s = sessions.find((other) => other.id === id);
+        const tab = tabs.find((other) => other.id === id);
         items.push({
           id: `tab/${id}`,
-          label: s ? sessionLabel(s) : "New tab",
+          label: tab ? tabLabel(tab) : "New tab",
           detail: "Tab",
           keys: index < 9 ? keysLabel(TAB_ACTIONS[index]) : undefined,
           state: s && sessionState(s, isOnline(entry.device)),
@@ -722,7 +801,7 @@ export function App() {
     if (entry && canClose) {
       items.push({
         id: "close-tab",
-        label: `Close ${session ? sessionLabel(session) : "the new tab"}`,
+        label: `Close ${shownLabel ? tabLabel(shownLabel) : "the new tab"}`,
         detail: "Tab",
         keys: keysLabel("global.close_tab"),
         run: closeTab,
@@ -752,6 +831,30 @@ export function App() {
         run: () => void findArchived().catch(reportFailure),
       });
     }
+    if (localDevice?.state) {
+      const device = localDevice;
+      items.push({
+        id: "pair-machine",
+        label: `Pair another machine with ${localDevice.state.machine.name}`,
+        keys: keysLabel("global.pair_machine"),
+        run: () => void pairWith(device).catch(reportFailure),
+      });
+    }
+    items.push({
+      id: "add-device",
+      label: "Add a device",
+      detail: "From another machine",
+      keys: keysLabel("global.add_device"),
+      run: () => setSheet({ kind: "add_device" }),
+    });
+    for (const device of devices.filter((d) => !isLoopback(d.url))) {
+      items.push({
+        id: `forget-device/${device.url}`,
+        label: `Remove ${device.state?.machine.name ?? device.url} from this app`,
+        keys: device === settingsDevice ? keysLabel("pairing.forget") : undefined,
+        run: () => void forget(device).catch(reportFailure),
+      });
+    }
     items.push({
       id: "sidebar",
       label: "Go to the sidebar",
@@ -769,6 +872,12 @@ export function App() {
       label: "Appearance",
       detail: "Theme, fonts and layout",
       run: () => openAppSettings("appearance"),
+    });
+    items.push({
+      id: "devices",
+      label: "Devices",
+      detail: "The devices this app reaches",
+      run: () => openAppSettings("devices"),
     });
     for (const t of topics) {
       items.push({
@@ -883,6 +992,8 @@ export function App() {
         ["global.toggle_vim", () => toggleVim().catch(reportFailure)],
         ["global.move_topic", () => entry && pickFolder(entry)],
         ["global.archived_topics", () => void findArchived().catch(reportFailure)],
+        ["global.pair_machine", () => localDevice && void pairWith(localDevice).catch(reportFailure)],
+        ["global.add_device", () => setSheet({ kind: "add_device" })],
         ["global.topic_mcp", openTopicMcp],
       ];
       TAB_ACTIONS.forEach((id, index) => {
@@ -937,6 +1048,11 @@ export function App() {
           section={view.section}
           onSection={(section) => show({ kind: "app_settings", section })}
           onClose={closeSettings}
+          devices={devices}
+          onAddDevice={() => setSheet({ kind: "add_device" })}
+          onPair={localDevice && (() => void pairWith(localDevice).catch(reportFailure))}
+          onForget={(device) => void forget(device).catch(reportFailure)}
+          onOpenDevice={(device) => device.state && openSettings(device.state.machine.id)}
         />
       ) : settingsDevice ? (
         <DeviceSettings
@@ -948,6 +1064,8 @@ export function App() {
           renaming={renamingDevice === settingsDevice.state?.machine.id}
           onRename={() => renameDevice(settingsDevice)}
           onRenameEnd={() => setRenamingDevice(null)}
+          onPair={() => void pairWith(settingsDevice).catch(reportFailure)}
+          onForget={() => void forget(settingsDevice).catch(reportFailure)}
           onClose={closeSettings}
         />
       ) : (
@@ -984,6 +1102,7 @@ export function App() {
               <div className="tabs" role="tablist">
                 {tabIds.map((id, index) => {
                   const s = sessions.find((other) => other.id === id);
+                  const tab = tabs.find((other) => other.id === id);
                   return (
                     <button
                       key={id}
@@ -994,7 +1113,8 @@ export function App() {
                       onClick={() => selectTab(entry.topic.id, id)}
                     >
                       {s && <StatusIcon state={sessionState(s, isOnline(entry.device))} />}
-                      <span className="tab-label">{s ? sessionLabel(s) : "New tab"}</span>
+                      {tab?.kind === "terminal" && <Icon name="terminal" />}
+                      <span className="tab-label">{tab ? tabLabel(tab) : "New tab"}</span>
                     </button>
                   );
                 })}
@@ -1023,6 +1143,15 @@ export function App() {
                   worktree={topicWorktree(entry.topic)}
                   onInterrupt={isActive(session) ? interrupt : undefined}
                 />
+              ) : shownTerminal ? (
+                <Suspense fallback={<div className="pane terminal" />}>
+                  <TerminalPane
+                    key={shownTerminal.id}
+                    machineId={entry.machineId}
+                    terminal={shownTerminal}
+                    online={isOnline(entry.device)}
+                  />
+                </Suspense>
               ) : (
                 <NewTab
                   key={entry.topic.id}
@@ -1030,6 +1159,7 @@ export function App() {
                   state={newTabStates[entry.topic.id] ?? NEW_TAB_STATE}
                   onState={(state) => setNewTabState(entry.topic.id, state)}
                   onSettings={openSettings}
+                  onTerminal={openTerminal}
                   onStarted={(sessionId) => onTabStarted(entry.topic.id, sessionId)}
                   onStalled={(sessionId, reason) =>
                     onTabStalled(entry.topic.id, sessionId, reason)
@@ -1046,11 +1176,13 @@ export function App() {
         <Sheets
           sheet={sheet}
           workspaces={
-            devices.find((d) => d.state?.machine.id === sheet.machineId)?.state?.workspaces ?? []
+            ("machineId" in sheet
+              ? devices.find((d) => d.state?.machine.id === sheet.machineId)?.state?.workspaces
+              : undefined) ?? []
           }
           onClose={() => setSheet(null)}
           onDone={(output) => {
-            if (output.output === "workspace") {
+            if (output.output === "workspace" && sheet.kind === "workspace") {
               open(landingIn(navigation, sheet.machineId, output.workspace));
             }
             // The tab can already be gone by now, so this can't wait for the change.

@@ -1,8 +1,8 @@
 {"type":"welcome","version":1,"machine":{"id":"m1","name":"laptop"},"daemon_version":"0.1.0"}
 {"type":"version_rejected","min_version":1,"max_version":1}
-{"type":"snapshot","state":{"machine":{"id":"m1","name":"laptop"},"workspaces":[{"id":"w1","name":"repo","path":"/repo","topics":[{"id":"t1","name":"Fix login","worktree_id":"wt1","worktrees":[{"id":"wt1","path":"/wt","branch":"tectr/fix-login-ab12"}],"sessions":[{"id":"s1","agent":"claude","mode":"auto","model":null,"status":"working","title":null}]}]}],"approvals":[]}}
+{"type":"snapshot","state":{"machine":{"id":"m1","name":"laptop"},"workspaces":[{"id":"w1","name":"repo","path":"/repo","topics":[{"id":"t1","name":"Fix login","worktree_id":"wt1","worktrees":[{"id":"wt1","path":"/wt","branch":"tectr/fix-login-ab12"}],"sessions":[{"id":"s1","agent":"claude","mode":"auto","model":null,"status":"working","title":null,"opened_at_ms":1000}],"terminals":[{"id":"x1","title":"vim","status":"running","opened_at_ms":2000}]}]}],"approvals":[]}}
 {"type":"state_changed","change":{"change":"approval_resolved","approval_id":"a1"}}
-{"type":"state_changed","change":{"change":"session_changed","session":{"id":"s1","agent":"claude","mode":"yolo","model":"haiku","status":"done","title":"Fix login"}}}
+{"type":"state_changed","change":{"change":"session_changed","session":{"id":"s1","agent":"claude","mode":"yolo","model":"haiku","status":"done","title":"Fix login","opened_at_ms":1000}}}
 {"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":1,"at_ms":1000,"kind":{"event":"status_changed","status":"waiting_for_you"}}}
 {"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":2,"at_ms":1000,"kind":{"event":"agent_ready","name":"Claude Agent","version":"0.100.0","modes":["default"],"current_mode":"default"}}}
 {"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":3,"at_ms":1000,"kind":{"event":"user_prompt","text":"hi"}}}
@@ -22,7 +22,7 @@
 {"type":"response","id":5,"result":{"Ok":{"output":"provider","provider":{"agent":"claude","name":"Claude Code","version":"0.100.0","modes":["manual","auto","yolo"],"models":[{"id":"opus","name":"Opus","efforts":[{"id":"high","name":"High"}]}],"default_model":"opus"}}}}
 {"type":"response","id":6,"result":{"Ok":{"output":"folders","folders":[{"name":"tectr","path":"/home/me/Developer/tectr","is_repo":true},{"name":"notes","path":"/home/me/Developer/notes","is_repo":false}]}}}
 {"type":"state_changed","change":{"change":"provider_removed","agent":"claude"}}
-{"type":"state_changed","change":{"change":"session_changed","session":{"id":"s1","agent":"claude","mode":"yolo","model":"haiku","effort":"high","status":"done","title":"Fix login"}}}
+{"type":"state_changed","change":{"change":"session_changed","session":{"id":"s1","agent":"claude","mode":"yolo","model":"haiku","effort":"high","status":"done","title":"Fix login","opened_at_ms":1000}}}
 {"type":"state_changed","change":{"change":"provider_changed","provider":{"agent":"claude","name":"Claude Code","version":"0.100.0","modes":["auto"],"models":[{"id":"opus","name":"Opus","efforts":[{"id":"high","name":"High"}]}],"default_model":"opus","default_effort":"high","recommended_model":"opus"}}}
 {"type":"state_changed","change":{"change":"session_removed","session_id":"s1"}}
 {"type":"state_changed","change":{"change":"draft_changed","session_id":"s1","text":"half a tho"}}
@@ -30,7 +30,7 @@
 {"type":"state_changed","change":{"change":"topic_renamed","topic_id":"t1","name":"Fix login"}}
 {"type":"state_changed","change":{"change":"topic_removed","topic_id":"t1"}}
 {"type":"state_changed","change":{"change":"machine_renamed","name":"Desk"}}
-{"type":"state_changed","change":{"change":"session_changed","session":{"id":"s1","agent":"claude","mode":"auto","model":null,"status":"done","title":"Fix login","unread":true}}}
+{"type":"state_changed","change":{"change":"session_changed","session":{"id":"s1","agent":"claude","mode":"auto","model":null,"status":"done","title":"Fix login","unread":true,"opened_at_ms":1000}}}
 {"type":"state_changed","change":{"change":"device_settings_changed","settings":{"keep_awake":false}}}
 {"type":"snapshot","state":{"machine":{"id":"m1","name":"laptop"},"workspaces":[],"approvals":[],"settings":{"keep_awake":false}}}
 {"type":"state_changed","change":{"change":"worktrees_changed","topic_id":"t1","worktree_id":"wt2","worktrees":[{"id":"wt1","path":"/repo","branch":"main"},{"id":"wt2","path":"/wt","branch":"tectr/fix-login-ab12"}]}}
@@ -47,3 +47,7 @@
 {"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":3,"at_ms":1000,"kind":{"event":"user_prompt","text":"see [Image #1]","images":[{"id":"ab12","number":1,"mime":"image/png","width":1440,"height":900}]}}}
 {"type":"state_changed","change":{"change":"draft_changed","session_id":"s1","text":"see [Image #1]","images":[{"id":"ab12","number":1,"mime":"image/png","width":1440,"height":900}]}}
 {"type":"snapshot","state":{"machine":{"id":"m1","name":"laptop"},"workspaces":[],"approvals":[],"drafts":{"s1":"see [Image #1]"},"draft_images":{"s1":[{"id":"ab12","number":1,"mime":"image/png","width":1440,"height":900}]}}}
+{"type":"state_changed","change":{"change":"terminal_added","topic_id":"t1","terminal":{"id":"x2","status":"running","opened_at_ms":3000}}}
+{"type":"state_changed","change":{"change":"terminal_changed","terminal":{"id":"x2","status":"exited","opened_at_ms":3000}}}
+{"type":"state_changed","change":{"change":"terminal_removed","terminal_id":"x2"}}
+{"type":"response","id":1,"result":{"Ok":{"output":"terminal","topic_id":"t1","terminal":{"id":"x2","status":"running","opened_at_ms":3000}}}}

@@ -436,6 +436,27 @@ button.row:hover { background: var(--color-surface-raised); }
 /* It takes focus so arrow keys scroll it. */
 .log:focus-visible { outline: 0; }
 
+.terminal-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.terminal-host:focus { outline: 0; }
+
+.terminal .xterm { height: 100%; }
+
+/* The grid is whole cells, so a sliver of the host shows past it. xterm.js paints that black
+   by default, which would read as a border. */
+.terminal-host,
+.terminal .xterm .xterm-viewport { background-color: var(--color-surface-panel); }
+
+/* Shown while composing with an input method. Also black by default. */
+.terminal .xterm .composition-view {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+}
+
 .log-in {
   display: flex;
   flex-direction: column;

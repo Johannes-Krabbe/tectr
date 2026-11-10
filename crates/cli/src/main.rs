@@ -9,7 +9,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use engine::{Connection, Device, Engine};
+use engine::{ClientStore, Connection, Device, Engine, Remote};
 use protocol::{
     Approval, ArchivedTopic, Command, CommandOutput, MachineId, MoveTarget, PermissionMode,
     SessionEvent, SessionEventKind, SessionRef, SessionStatus, ToolCallPatch, TopicId,
@@ -21,7 +21,8 @@ use tokio::sync::broadcast::error::RecvError;
 #[derive(Parser)]
 #[command(name = "tectr", version)]
 struct Cli {
-    /// Daemon URLs. Repeat the flag or separate them with commas.
+    /// Daemon URLs. Repeat the flag or separate them with commas. Without it, the CLI
+    /// uses this machine's daemon and every daemon it paired with.
     #[arg(
         long = "daemon",
         env = "TECTR_DAEMONS",
@@ -130,6 +131,24 @@ enum Cmd {
         #[command(subcommand)]
         command: mcp::McpCmd,
     },
+    /// Show a code that lets one more machine in. Run it on the machine to reach, then
+    /// `tectr add-device <code>` on the one that wants in. The code works once.
+    Pair,
+    /// Pair with a device on another machine using the code `tectr pair` showed there.
+    AddDevice { code: String },
+    /// Stop reaching a paired device, and take this machine off its allowed list if it's online.
+    RemoveDevice {
+        /// The device's name, machine ID prefix or URL.
+        device: String,
+    },
+    /// Take a machine off this device's allowed list, disconnecting it.
+    Unpair {
+        /// The client's name or key prefix, as `tectr status` lists it.
+        client: String,
+        /// The device to change, by name or ID prefix. Needed only with more than one daemon.
+        #[arg(long)]
+        on: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -158,9 +177,22 @@ impl From<ModeArg> for PermissionMode {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let engine = Engine::new("tectr-cli");
+    let store = ClientStore::default_dir().map(ClientStore::new);
+    let engine = match &store {
+        Some(store) => Engine::with_remote(
+            "tectr-cli",
+            Remote {
+                key: store.key()?,
+                network: engine::Network::Public,
+            },
+        ),
+        None => Engine::new("tectr-cli"),
+    };
     if cli.daemons.is_empty() {
         engine.add_daemon(&protocol::local_daemon_url());
+        for url in store.iter().flat_map(ClientStore::daemons) {
+            engine.add_daemon(&url);
+        }
     }
     for url in &cli.daemons {
         engine.add_daemon(url);
@@ -395,8 +427,81 @@ async fn main() -> Result<()> {
                 .await?;
         }
         Cmd::Mcp { command } => mcp::run(&engine, command).await?,
+        Cmd::Pair => {
+            let machine = choose_local_machine(&engine)?;
+            if let CommandOutput::Pairing { code, .. } =
+                engine.request(&machine, Command::StartPairing).await?
+            {
+                println!("{code}");
+                eprintln!(
+                    "On the other machine, run: tectr add-device {code}\nThe code works once, for 5 minutes."
+                );
+            }
+        }
+        Cmd::AddDevice { code } => {
+            let store = store.context("couldn't find a data directory to keep pairings in")?;
+            let url = engine.pair(&code, &engine::this_machine_name()).await?;
+            store.add_daemon(&url)?;
+            println!("paired with {url}");
+        }
+        Cmd::RemoveDevice { device } => {
+            let store = store.context("couldn't find a data directory to keep pairings in")?;
+            let found = engine.devices().into_iter().find(|candidate| {
+                candidate.url == device
+                    || candidate.state.as_ref().is_some_and(|state| {
+                        state.machine.name == device || state.machine.id.0.starts_with(&device)
+                    })
+            });
+            let Some(found) = found.filter(|found| store.daemons().contains(&found.url)) else {
+                bail!("no paired device matches {device}");
+            };
+            if let Some(state) = &found.state
+                && found.connection == Connection::Online
+            {
+                let key = store.key()?.public().to_string();
+                // It may already have removed this machine itself.
+                let _ = engine
+                    .request(&state.machine.id, Command::RemovePairedClient { key })
+                    .await;
+            }
+            store.remove_daemon(&found.url)?;
+            engine.remove_daemon(&found.url);
+        }
+        Cmd::Unpair { client, on } => {
+            let machine = choose_machine(&engine, on.as_deref())?;
+            let clients: Vec<_> = online_devices(&engine)
+                .into_iter()
+                .filter_map(|device| device.state)
+                .filter(|state| state.machine.id == machine)
+                .flat_map(|state| state.paired_clients)
+                .filter(|paired| paired.name == client || paired.key.starts_with(&client))
+                .collect();
+            let key = match clients.as_slice() {
+                [paired] => paired.key.clone(),
+                [] => bail!("no paired client matches {client}"),
+                _ => bail!("{client} is ambiguous"),
+            };
+            engine
+                .request(&machine, Command::RemovePairedClient { key })
+                .await?;
+        }
     }
     Ok(())
+}
+
+/// Pairing starts on the device itself, so it's the daemon reached over loopback.
+fn choose_local_machine(engine: &Engine) -> Result<MachineId> {
+    online_devices(engine)
+        .into_iter()
+        .find(|device| protocol::remote_daemon_key(&device.url).is_none())
+        .and_then(|device| device.state)
+        .map(|state| state.machine.id)
+        .with_context(|| {
+            format!(
+                "this machine's daemon isn't reachable\n{}",
+                describe_failures(engine)
+            )
+        })
 }
 
 /// Relative paths mean relative to here, which is right while daemons are local.
@@ -591,6 +696,9 @@ fn print_status(engine: &Engine) {
         println!("{} ({connection}) {}", state.machine.name, device.url);
         if let Some(line) = mcp::status_line(state) {
             println!("  {line}");
+        }
+        for client in &state.paired_clients {
+            println!("  paired client {} {}", short(&client.key), client.name);
         }
         for workspace in &state.workspaces {
             println!(

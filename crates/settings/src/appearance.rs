@@ -10,7 +10,15 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table};
 
-const SUBTABLES: &[&str] = &["text", "code", "layout", "transcript", "images", "vim"];
+const SUBTABLES: &[&str] = &[
+    "text",
+    "code",
+    "layout",
+    "transcript",
+    "terminal",
+    "images",
+    "vim",
+];
 const THEMES_KEY: &str = "themes";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -127,6 +135,10 @@ pub const GROUPS: &[FieldGroup] = &[
         title: "Transcript",
     },
     FieldGroup {
+        id: "terminal",
+        title: "Terminal",
+    },
+    FieldGroup {
         id: "images",
         title: "Images",
     },
@@ -203,6 +215,21 @@ const VIM_ESCAPES: &[Choice] = &[
     Choice {
         value: "jj",
         label: "jj",
+    },
+];
+
+const CURSORS: &[Choice] = &[
+    Choice {
+        value: "block",
+        label: "Block",
+    },
+    Choice {
+        value: "bar",
+        label: "Bar",
+    },
+    Choice {
+        value: "underline",
+        label: "Underline",
     },
 ];
 
@@ -439,6 +466,69 @@ const FIELDS: &[Field] = &[
         about: "The images a sent message has. [Image #1] in its text shows each one either way",
         default: DefaultValue::Flag(true),
         kind: Kind::Toggle,
+    },
+    Field {
+        id: "terminal.size",
+        group: "terminal",
+        label: "Size",
+        about: "Terminals use the code font",
+        default: DefaultValue::Number(13.0),
+        kind: Kind::Number {
+            min: 8.0,
+            max: 28.0,
+            step: 0.5,
+            unit: "px",
+        },
+    },
+    Field {
+        id: "terminal.line_height",
+        group: "terminal",
+        label: "Line height",
+        about: "Box drawing lines only join up at 1",
+        default: DefaultValue::Number(1.0),
+        kind: Kind::Number {
+            min: 1.0,
+            max: 2.0,
+            step: 0.05,
+            unit: "",
+        },
+    },
+    Field {
+        id: "terminal.cursor",
+        group: "terminal",
+        label: "Cursor",
+        about: "Programs can change it while they run",
+        default: DefaultValue::Text("block"),
+        kind: Kind::Choice { options: CURSORS },
+    },
+    Field {
+        id: "terminal.cursor_blink",
+        group: "terminal",
+        label: "Blinking cursor",
+        about: "",
+        default: DefaultValue::Flag(false),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "terminal.option_as_meta",
+        group: "terminal",
+        label: "Option as Meta",
+        about: "Option with a letter sends Esc and the letter, as shells and editors expect, instead of typing a special character",
+        default: DefaultValue::Flag(false),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "terminal.scrollback",
+        group: "terminal",
+        label: "History",
+        about: "Lines you can scroll back through. The device keeps up to 10000",
+        default: DefaultValue::Number(10000.0),
+        kind: Kind::Number {
+            min: 0.0,
+            max: 10000.0,
+            step: 1000.0,
+            unit: " lines",
+        },
     },
     Field {
         id: "vim.enabled",
@@ -694,6 +784,33 @@ const TOKENS: &[&str] = &[
     "scrim",
     "shadow.popover",
     "shadow.sheet",
+    "terminal.black",
+    "terminal.red",
+    "terminal.green",
+    "terminal.yellow",
+    "terminal.blue",
+    "terminal.magenta",
+    "terminal.cyan",
+    "terminal.white",
+    "terminal.bright-black",
+    "terminal.bright-red",
+    "terminal.bright-green",
+    "terminal.bright-yellow",
+    "terminal.bright-blue",
+    "terminal.bright-magenta",
+    "terminal.bright-cyan",
+    "terminal.bright-white",
+];
+
+/// The six ANSI hues, each from a color every theme has. Their bright versions lean toward
+/// the text color.
+const TERMINAL_HUES: &[(&str, &str)] = &[
+    ("red", "status.failed"),
+    ("green", "status.online"),
+    ("yellow", "status.waiting"),
+    ("blue", "syntax.function"),
+    ("magenta", "syntax.constant"),
+    ("cyan", "syntax.type"),
 ];
 
 type Colors = BTreeMap<String, String>;
@@ -793,7 +910,47 @@ fn complete(scheme: Scheme, mut colors: Colors) -> Colors {
             colors.insert((*token).to_owned(), value);
         }
     }
+    complete_terminal(dark, &mut colors);
     colors
+}
+
+/// Black and white swap roles in a light theme, where black is what text is written in and
+/// white is a light background.
+fn complete_terminal(dark: bool, colors: &mut Colors) {
+    let color = |colors: &Colors, token: &str| colors.get(token).cloned().unwrap_or_default();
+    let mut derived: Vec<(String, String)> = vec![];
+    let ends = if dark {
+        [
+            ("black", "surface.control"),
+            ("white", "text.secondary"),
+            ("bright-white", "text.primary"),
+        ]
+    } else {
+        [
+            ("black", "text.primary"),
+            ("white", "surface.control"),
+            ("bright-white", "surface.panel"),
+        ]
+    };
+    for (name, from) in ends {
+        derived.push((format!("terminal.{name}"), color(colors, from)));
+    }
+    derived.push((
+        "terminal.bright-black".to_owned(),
+        color(colors, "text.tertiary"),
+    ));
+    for (hue, from) in TERMINAL_HUES {
+        let base = colors
+            .get(&format!("terminal.{hue}"))
+            .cloned()
+            .unwrap_or_else(|| color(colors, from));
+        let bright = mix(&base, &color(colors, "text.primary"), 0.3);
+        derived.push((format!("terminal.{hue}"), base));
+        derived.push((format!("terminal.bright-{hue}"), bright));
+    }
+    for (token, value) in derived {
+        colors.entry(token).or_insert(value);
+    }
 }
 
 /// A theme from `themes.toml`, with what it set itself so another theme can extend it.
@@ -1429,6 +1586,26 @@ mod tests {
                 4.5,
                 "diff.del-text".to_owned(),
             );
+            // Terminals draw on the main pane. Like syntax, the bar is that each can be seen.
+            let mut terminal_colors: Vec<String> = TERMINAL_HUES
+                .iter()
+                .flat_map(|(hue, _)| [format!("terminal.{hue}"), format!("terminal.bright-{hue}")])
+                .collect();
+            terminal_colors.push("terminal.bright-black".to_owned());
+            let readable_end = if theme.scheme == Scheme::Dark {
+                "terminal.white"
+            } else {
+                "terminal.black"
+            };
+            terminal_colors.push(readable_end.to_owned());
+            for fg in &terminal_colors {
+                check(
+                    color(fg),
+                    color("surface.panel").to_owned(),
+                    3.0,
+                    format!("{fg} on surface.panel"),
+                );
+            }
             // Syntax stays close to what each theme published, so the bar is that it can be seen.
             for role in [
                 "plain",

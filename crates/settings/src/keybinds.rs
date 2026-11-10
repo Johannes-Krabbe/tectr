@@ -81,6 +81,11 @@ pub const GROUPS: &[Group] = &[
         about: "In a device's MCP servers, and in the sheet with a topic's MCP servers.",
     },
     Group {
+        id: "pairing",
+        title: "Pairing",
+        about: "In a device's Pairing settings, and in the app's Devices settings.",
+    },
+    Group {
         id: "mcp_form",
         title: "Editing an MCP server",
         about: "In the form for adding or editing an MCP server. Enter in a box of lines adds a line.",
@@ -260,6 +265,16 @@ pub const ACTIONS: &[Action] = &[
     once("global.toggle_vim", "Turn vim keys on or off", &[]),
     once("global.move_topic", "Move the topic to another folder", &[]),
     once("global.archived_topics", "Restore an archived topic", &[]),
+    once(
+        "global.pair_machine",
+        "Pair another machine with this one",
+        &[],
+    ),
+    once(
+        "global.add_device",
+        "Add a device from another machine",
+        &[],
+    ),
     follows("sidebar.up", "Move up", "nav.up"),
     follows("sidebar.down", "Move down", "nav.down"),
     follows("sidebar.first", "Go to the first row", "nav.first"),
@@ -423,6 +438,14 @@ pub const ACTIONS: &[Action] = &[
         "Keep the device awake while agents work, or not",
         &["w"],
     ),
+    once("pairing.add", "Pair another machine", &["p"]),
+    once("pairing.add_device", "Add a device", &["a"]),
+    once(
+        "pairing.remove",
+        "Remove the paired machine or device",
+        &["d d", "backspace"],
+    ),
+    once("pairing.forget", "Remove the device from this app", &[]),
     follows("mcp.up", "Move up", "nav.up"),
     follows("mcp.down", "Move down", "nav.down"),
     follows("mcp.first", "Go to the first server", "nav.first"),
@@ -536,6 +559,7 @@ const SHARED_WITH_GLOBAL: &[&str] = &[
     "new_topic",
     "device",
     "mcp",
+    "pairing",
     "sections",
     "settings",
 ];

@@ -9,6 +9,7 @@ import {
   isBareChord,
   type KeyPress,
   sequenceState,
+  usesCommand,
 } from "./keymatch.ts";
 
 const press = (key: string, extra: Partial<KeyPress> = {}): KeyPress => ({
@@ -181,4 +182,14 @@ test("holding is said once, and only where it applies", () => {
     formatKeys([{ ...held, key: "mod+1" }, { ...held, key: "mod+2" }], true),
     "Hold ⌘1-2",
   );
+});
+
+test("only keys that start with Cmd reach the app from a terminal", () => {
+  assert.equal(usesCommand("mod+t"), true);
+  assert.equal(usesCommand("cmd+shift+n"), true);
+  assert.equal(usesCommand("mod+w q"), true);
+  assert.equal(usesCommand("ctrl+c"), false);
+  assert.equal(usesCommand("escape"), false);
+  assert.equal(usesCommand("g t"), false);
+  assert.equal(usesCommand("ctrl+w mod+q"), false);
 });

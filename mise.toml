@@ -1,4 +1,6 @@
 [tools]
+# Builds Ghostty's terminal engine, which the daemon's terminals use. Ghostty pins the version.
+zig = "0.17.1"
 # The Claude adapter needs Node 22+ on every machine that runs a daemon.
 node = "22"
 pnpm = "11.28.9"

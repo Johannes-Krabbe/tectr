@@ -43,3 +43,9 @@
 {"type":"request","id":1,"command":{"command":"add_image","mime":"image/png","data":"iVBORw0KGgo="}}
 {"type":"request","id":1,"command":{"command":"read_image","id":"ab12"}}
 {"type":"request","id":1,"command":{"command":"read_image","id":"ab12","thumbnail":true}}
+{"type":"request","id":1,"command":{"command":"open_terminal","topic_id":"t1","cols":80,"rows":24}}
+{"type":"request","id":1,"command":{"command":"close_terminal","terminal_id":"x1"}}
+{"type":"attach_terminal","terminal_id":"x1","cols":80,"rows":24,"colors":{"foreground":"#edecf1","background":"#09080c","cursor":"#edecf1","palette":["#000000","#ff0000"]}}
+{"type":"attach_terminal","terminal_id":"x1","cols":100,"rows":30}
+{"type":"resize_terminal","terminal_id":"x1","cols":100,"rows":30}
+{"type":"detach_terminal","terminal_id":"x1"}

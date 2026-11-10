@@ -10,10 +10,14 @@ use std::fs;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use engine::{Device, Engine, Update};
+use engine::{ClientStore, Device, Engine, Remote, Update};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use protocol::{Channel, Command, CommandOutput, MachineId, SessionEvent, SessionRef};
+use protocol::{
+    Channel, Command, CommandOutput, MachineId, SessionEvent, SessionRef, TerminalColors,
+    TerminalId,
+};
 use settings::{Binding, InstalledFont, Scheme, Settings, Store, Value};
+use tauri::ipc::{InvokeBody, InvokeResponseBody};
 #[cfg(target_os = "macos")]
 use tauri::menu::{
     AboutMetadata, HELP_SUBMENU_ID, Menu, PredefinedMenuItem, Submenu, WINDOW_SUBMENU_ID,
@@ -43,6 +47,66 @@ fn devices(engine: State<'_, Engine>) -> Vec<Device> {
     engine.devices()
 }
 
+/// Where this app keeps its key and the devices it paired with, if it can keep them anywhere.
+struct Pairings(Option<ClientStore>);
+
+impl Pairings {
+    fn store(&self) -> Result<&ClientStore, String> {
+        self.0
+            .as_ref()
+            .ok_or_else(|| "couldn't find a data folder to keep pairings in".to_owned())
+    }
+}
+
+#[tauri::command]
+async fn pair_device(
+    engine: State<'_, Engine>,
+    pairings: State<'_, Pairings>,
+    code: String,
+) -> Result<(), String> {
+    let store = pairings.store()?;
+    let url = engine
+        .pair(&code, &engine::this_machine_name())
+        .await
+        .map_err(|error| error.to_string())?;
+    store.add_daemon(&url).map_err(|error| error.to_string())
+}
+
+/// Stops reaching a device, and takes this app off its allowed list first while it can.
+#[tauri::command]
+async fn forget_device(
+    engine: State<'_, Engine>,
+    pairings: State<'_, Pairings>,
+    url: String,
+) -> Result<(), String> {
+    let store = pairings.store()?;
+    let machine = engine
+        .devices()
+        .into_iter()
+        .find(|device| device.url == url && device.connection == engine::Connection::Online)
+        .and_then(|device| device.state)
+        .map(|state| state.machine.id);
+    if let Some(machine) = machine {
+        let key = store.key().map_err(|error| error.to_string())?;
+        let removal = protocol::Command::RemovePairedClient {
+            key: key.public().to_string(),
+        };
+        // It may already have removed this app itself.
+        let _ = engine.request(&machine, removal).await;
+    }
+    store
+        .remove_daemon(&url)
+        .map_err(|error| error.to_string())?;
+    engine.remove_daemon(&url);
+    Ok(())
+}
+
+#[tauri::command]
+fn client_key(pairings: State<'_, Pairings>) -> Result<String, String> {
+    let key = pairings.store()?.key().map_err(|error| error.to_string())?;
+    Ok(key.public().to_string())
+}
+
 #[tauri::command]
 async fn request(
     engine: State<'_, Engine>,
@@ -67,6 +131,103 @@ fn events_after(
     after_seq: u64,
 ) -> Vec<SessionEvent> {
     engine.events_after(&session, after_seq)
+}
+
+/// Frames waiting to go to the webview. Frames that arrive while a send is on its way go
+/// together, so a flood of output is a few large messages instead of thousands of small ones.
+#[derive(Default)]
+struct PendingFrames {
+    records: Vec<u8>,
+    sending: bool,
+}
+
+/// Starts showing a terminal. Its frames reach `frames` as one raw message holding records of
+/// a kind byte, a `u32` length and the payload, which is what the webview acknowledges.
+#[tauri::command]
+fn terminal_attach(
+    engine: State<'_, Engine>,
+    machine_id: MachineId,
+    terminal_id: TerminalId,
+    cols: u16,
+    rows: u16,
+    colors: Option<TerminalColors>,
+    frames: tauri::ipc::Channel<InvokeResponseBody>,
+) {
+    let pending = Arc::new(Mutex::new(PendingFrames::default()));
+    let sink = Arc::new(move |kind: protocol::frame::Kind, payload: Vec<u8>| {
+        let start = {
+            let mut pending = pending.lock().unwrap_or_else(PoisonError::into_inner);
+            pending.records.push(kind as u8);
+            let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+            pending.records.extend_from_slice(&len.to_le_bytes());
+            pending.records.extend_from_slice(&payload);
+            !std::mem::replace(&mut pending.sending, true)
+        };
+        if start {
+            let pending = pending.clone();
+            let frames = frames.clone();
+            tauri::async_runtime::spawn(async move {
+                let records = {
+                    let mut pending = pending.lock().unwrap_or_else(PoisonError::into_inner);
+                    pending.sending = false;
+                    std::mem::take(&mut pending.records)
+                };
+                let _ = frames.send(InvokeResponseBody::Raw(records));
+            });
+        }
+    });
+    engine.attach_terminal(&machine_id, &terminal_id, (cols, rows), colors, sink);
+}
+
+#[tauri::command]
+fn terminal_detach(engine: State<'_, Engine>, machine_id: MachineId, terminal_id: TerminalId) {
+    engine.detach_terminal(&machine_id, &terminal_id);
+}
+
+#[tauri::command]
+fn terminal_resize(
+    engine: State<'_, Engine>,
+    machine_id: MachineId,
+    terminal_id: TerminalId,
+    cols: u16,
+    rows: u16,
+) {
+    engine.resize_terminal(&machine_id, &terminal_id, (cols, rows));
+}
+
+/// What was typed, as the raw body, so pasting a lot isn't turned into JSON on the way. The
+/// IDs come in headers.
+#[tauri::command]
+fn terminal_input(
+    engine: State<'_, Engine>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("missing the {name} header"))
+    };
+    let InvokeBody::Raw(data) = request.body() else {
+        return Err("expected the typed bytes as the body".to_owned());
+    };
+    let machine_id = MachineId(header("machine-id")?);
+    let terminal_id = TerminalId(header("terminal-id")?);
+    engine
+        .terminal_input(&machine_id, &terminal_id, data)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn terminal_ack(
+    engine: State<'_, Engine>,
+    machine_id: MachineId,
+    terminal_id: TerminalId,
+    bytes: u32,
+) {
+    engine.terminal_ack(&machine_id, &terminal_id, bytes);
 }
 
 #[tauri::command]
@@ -243,9 +404,9 @@ async fn forward_updates(app: AppHandle, mut updates: broadcast::Receiver<Update
     }
 }
 
-/// The same setting as the CLI. There's no UI for this yet, because daemons
-/// only listen on loopback until pairing exists.
-fn daemon_urls() -> Vec<String> {
+/// The same setting as the CLI: `TECTR_DAEMONS` if it's set, and otherwise this machine's
+/// daemon and every device this machine paired with.
+fn daemon_urls(store: Option<&ClientStore>) -> Vec<String> {
     let urls: Vec<String> = std::env::var("TECTR_DAEMONS")
         .unwrap_or_default()
         .split(',')
@@ -253,11 +414,12 @@ fn daemon_urls() -> Vec<String> {
         .filter(|url| !url.is_empty())
         .map(str::to_owned)
         .collect();
-    if urls.is_empty() {
-        vec![protocol::local_daemon_url()]
-    } else {
-        urls
+    if !urls.is_empty() {
+        return urls;
     }
+    let mut urls = vec![protocol::local_daemon_url()];
+    urls.extend(store.iter().flat_map(|store| store.daemons()));
+    urls
 }
 
 /// In full screen, macOS draws the title bar in its own window, which ignores the
@@ -483,14 +645,33 @@ fn main() {
             _ => {}
         })
         .setup(|app| {
+            let store = ClientStore::default_dir().map(ClientStore::new);
+            // Without its key the app can still reach this machine's daemon.
+            let key = match store.as_ref().map(ClientStore::key).transpose() {
+                Ok(key) => key,
+                Err(error) => {
+                    eprintln!("can't reach other machines: {error}");
+                    None
+                }
+            };
             // The engine's connections run on Tauri's Tokio runtime.
             let engine = tauri::async_runtime::block_on(async {
-                let engine = Engine::new("tectr-dsk");
-                for url in daemon_urls() {
+                let engine = match key {
+                    Some(key) => Engine::with_remote(
+                        "tectr-dsk",
+                        Remote {
+                            key,
+                            network: engine::Network::Public,
+                        },
+                    ),
+                    None => Engine::new("tectr-dsk"),
+                };
+                for url in daemon_urls(store.as_ref()) {
                     engine.add_daemon(&url);
                 }
                 engine
             });
+            app.manage(Pairings(store));
             tauri::async_runtime::spawn(forward_updates(app.handle().clone(), engine.updates()));
             app.manage(engine);
 
@@ -527,6 +708,11 @@ fn main() {
             request,
             open_session,
             events_after,
+            terminal_attach,
+            terminal_detach,
+            terminal_resize,
+            terminal_input,
+            terminal_ack,
             settings,
             set_keybind,
             reset_keybind,
@@ -537,7 +723,10 @@ fn main() {
             highlight_code,
             open_url,
             read_clipboard,
-            write_clipboard
+            write_clipboard,
+            pair_device,
+            forget_device,
+            client_key
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the tectr desktop app");

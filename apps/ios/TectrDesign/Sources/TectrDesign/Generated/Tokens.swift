@@ -55,6 +55,22 @@ public extension Color {
     static let syntaxType = Color(light: 0x0b6f78ff, dark: 0x7fcfd6ff)
     static let syntaxComment = Color(light: 0x66636fff, dark: 0x8a8896ff)
     static let syntaxPunctuation = Color(light: 0x55525fff, dark: 0xa8a6b3ff)
+    static let terminalBlack = Color(light: 0x16141cff, dark: 0x201d28ff)
+    static let terminalRed = Color(light: 0xc2332aff, dark: 0xf0766eff)
+    static let terminalGreen = Color(light: 0x0f6e4fff, dark: 0x5cc99aff)
+    static let terminalYellow = Color(light: 0x8f5a00ff, dark: 0xf0b64dff)
+    static let terminalBlue = Color(light: 0x1f5fbfff, dark: 0x8fb8f0ff)
+    static let terminalMagenta = Color(light: 0x94328fff, dark: 0xd9a8e8ff)
+    static let terminalCyan = Color(light: 0x0b6f78ff, dark: 0x7fcfd6ff)
+    static let terminalWhite = Color(light: 0xe9e7eeff, dark: 0xa8a6b3ff)
+    static let terminalBrightBlack = Color(light: 0x66636fff, dark: 0x8a8896ff)
+    static let terminalBrightRed = Color(light: 0x8e2a26ff, dark: 0xef9995ff)
+    static let terminalBrightGreen = Color(light: 0x115340ff, dark: 0x88d4b4ff)
+    static let terminalBrightYellow = Color(light: 0x6b4508ff, dark: 0xefc67eff)
+    static let terminalBrightBlue = Color(light: 0x1c498eff, dark: 0xabc8f0ff)
+    static let terminalBrightMagenta = Color(light: 0x6e296dff, dark: 0xdfbcebff)
+    static let terminalBrightCyan = Color(light: 0x0e545cff, dark: 0xa0d8deff)
+    static let terminalBrightWhite = Color(light: 0xffffffff, dark: 0xedecf1ff)
     static let scrim = Color(light: 0x16141c40, dark: 0x0504088c)
 }
 
@@ -98,6 +114,22 @@ public extension ShapeStyle where Self == Color {
     static var syntaxType: Color { Color.syntaxType }
     static var syntaxComment: Color { Color.syntaxComment }
     static var syntaxPunctuation: Color { Color.syntaxPunctuation }
+    static var terminalBlack: Color { Color.terminalBlack }
+    static var terminalRed: Color { Color.terminalRed }
+    static var terminalGreen: Color { Color.terminalGreen }
+    static var terminalYellow: Color { Color.terminalYellow }
+    static var terminalBlue: Color { Color.terminalBlue }
+    static var terminalMagenta: Color { Color.terminalMagenta }
+    static var terminalCyan: Color { Color.terminalCyan }
+    static var terminalWhite: Color { Color.terminalWhite }
+    static var terminalBrightBlack: Color { Color.terminalBrightBlack }
+    static var terminalBrightRed: Color { Color.terminalBrightRed }
+    static var terminalBrightGreen: Color { Color.terminalBrightGreen }
+    static var terminalBrightYellow: Color { Color.terminalBrightYellow }
+    static var terminalBrightBlue: Color { Color.terminalBrightBlue }
+    static var terminalBrightMagenta: Color { Color.terminalBrightMagenta }
+    static var terminalBrightCyan: Color { Color.terminalBrightCyan }
+    static var terminalBrightWhite: Color { Color.terminalBrightWhite }
     static var scrim: Color { Color.scrim }
 }
 

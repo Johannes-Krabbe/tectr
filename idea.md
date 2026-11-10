@@ -50,7 +50,7 @@ tectr natively supports multiple machines without a central server in the data p
  │ engine       │             │ engine       │
  └──┬───────┬───┘             └──┬─────┬─────┘
     │       └───────────┐ ┌──────┘     │
-    │ loopback          │ │ Tailscale  │    websocket (tectr event schema)
+    │ loopback          │ │ iroh       │    websocket (tectr event schema)
  ┌──┴─────────┐      ┌──┴─┴───────┐  ┌─┴──────────┐
  │ daemon     │      │ daemon     │  │ daemon     │
  │ (laptop)   │      │ (desktop)  │  │ (VPS)      │
@@ -68,8 +68,9 @@ tectr natively supports multiple machines without a central server in the data p
   - **In each app**: rendering, layout, scroll position, secure key storage, push registration, and telling the engine about lifecycle changes.
   - **Streaming**: the engine batches updates, roughly once per frame, and sends small deltas rather than whole transcripts. This applies at both boundaries: Tauri's IPC to the webview and the Swift bindings.
 - **Local use**: a client reaches the daemon on the same machine over loopback, using the same protocol. There is no extra hop or external dependency.
-- **Remote access**: clients reach other daemons over a private network such as Tailscale. Nothing is exposed publicly.
-- **Discovery and auth**: clients find machines through the Tailscale peer list or by address. Devices pair by QR code, and each daemon keeps a list of allowed keys, like `authorized_keys`. Tailscale identity could remove the need to pair every device with every machine.
+- **Remote access**: clients reach other daemons over [iroh](https://iroh.computer), which dials a device by its public key, connects directly when the network allows and otherwise through a relay that only forwards end-to-end encrypted traffic. Users set up nothing: there's no VPN to install and nothing to host. The goal is fast and encrypted, not hiding how much traffic flows.
+- **Pairing and auth**: devices pair by QR code or a short code, and each daemon keeps a list of allowed keys, like `authorized_keys`. A connection from any other key is closed before it can do anything.
+- **Other ways to connect**: identity belongs to tectr rather than iroh, so Tailscale or similar can be added later as another way to reach a device, without pairing again.
 - **Offline machines**: the client caches the last known state and shows the machine as offline, with when it was last seen. Nothing new can be created on an offline machine.
 - **Version differences**: daemons on different machines can run different versions, so the protocol negotiates a version on connect.
 - **Phone**: iOS doesn't keep sockets open in the background, so the phone connects to daemons only while open and relies on push notifications otherwise. The app calls the engine's `suspend()` and `resume()` on backgrounding and foregrounding, and every resume is a normal reconnect from the last sequence number.
@@ -81,7 +82,7 @@ Routing everything through a server (client => server => daemon => agent) would 
 
 ### Possible later additions
 
-- **Relay for people without Tailscale**: an optional relay that only forwards end-to-end encrypted traffic.
+- **Self-hosted relay**: point iroh at your own relay instead of the public default, so no third party relays your traffic.
 - **Hub for team views or a web client**: an optional aggregator that connects to daemons as a client and offers the same protocol to apps, which treat it as just another daemon.
 
 ## What "fast" means here
@@ -122,4 +123,4 @@ Four requirements apply from the start, because they are expensive to add later:
 - **Multiple connections**: the minimal client is built around a list of daemons, even if the list has only one entry at first.
 - **Version negotiation**: the first handshake includes a protocol version.
 
-Pairing, the push relay, and Tailscale discovery can wait until after this milestone.
+Pairing, remote connections, and the push relay can wait until after this milestone.

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { DevicesSettings } from "./DevicesSettings";
+import type { Device } from "./engine";
 import { act, type ActionId, useSettings } from "./keybinds";
 import { inPane } from "./keys";
 import { KeybindSettings } from "./KeybindSettings";
@@ -10,6 +12,7 @@ const SECTIONS = [
   { id: "general", label: "General" },
   { id: "appearance", label: "Appearance" },
   { id: "keybinds", label: "Keybinds" },
+  { id: "devices", label: "Devices" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -35,15 +38,25 @@ export function AppSettings({
   section: shown,
   onSection,
   onClose,
+  devices,
+  onAddDevice,
+  onPair,
+  onForget,
+  onOpenDevice,
 }: {
   section: string;
   onSection: (section: string) => void;
   onClose: () => void;
+  devices: Device[];
+  onAddDevice: () => void;
+  onPair: (() => void) | undefined;
+  onForget: (device: Device) => void;
+  onOpenDevice: (device: Device) => void;
 }) {
   const section: SectionId = SECTIONS.find((s) => s.id === shown)?.id ?? "general";
   // Whether the section has the keyboard, rather than the list of sections.
   const [inside, setInside] = useState(false);
-  const canGoInside = section === "keybinds" || section === "appearance";
+  const canGoInside = section === "keybinds" || section === "appearance" || section === "devices";
   const select = onSection;
 
   useHints(
@@ -111,6 +124,18 @@ export function AppSettings({
           active={inside}
           onActivate={() => setInside(true)}
           onLeave={() => setInside(false)}
+        />
+      )}
+      {section === "devices" && (
+        <DevicesSettings
+          devices={devices}
+          active={inside}
+          onActivate={() => setInside(true)}
+          onLeave={() => setInside(false)}
+          onAddDevice={onAddDevice}
+          onPair={onPair}
+          onForget={onForget}
+          onOpen={onOpenDevice}
         />
       )}
     </SettingsLayout>

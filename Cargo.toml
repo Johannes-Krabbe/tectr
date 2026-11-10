@@ -8,7 +8,7 @@ default-members = ["crates/*"]
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.91"
 publish = false
 
 [workspace.dependencies]
@@ -23,6 +23,9 @@ anyhow = "1"
 base64 = "0.22"
 bytes = "1"
 http-body-util = "0.1"
+# Remote connections: QUIC dialed by public key, direct when possible and through a
+# relay otherwise. Metrics are left out because nothing reads them.
+iroh = { version = "1.4", default-features = false, features = ["fast-apple-datapath", "portmapper", "tls-ring"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 # Only the types agents take, for the daemon's thumbnails.
@@ -39,7 +42,7 @@ serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 tokio = "1"
-# No TLS: connections are loopback today and Tailscale-encrypted later.
+# No TLS: websockets run over loopback, or later inside iroh's encrypted QUIC streams.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 toml_edit = "0.25"
 tracing = "0.1"
