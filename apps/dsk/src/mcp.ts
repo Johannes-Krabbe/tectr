@@ -3,9 +3,29 @@
 
 import type { Command, DaemonState, McpServer, McpTransport, Topic } from "./engine";
 
-/** The servers every topic on the device can get. */
+export const isConnector = (server: McpServer) =>
+  server.transport.type === "claude_connector" || server.transport.type === "codex_app";
+
+/** The servers every topic on the device can get, apart from connectors. */
 export function deviceServers(state: DaemonState): McpServer[] {
-  return (state.mcp_servers ?? []).filter((server) => !server.topic_id);
+  return (state.mcp_servers ?? []).filter((server) => !server.topic_id && !isConnector(server));
+}
+
+/** The claude.ai connectors and ChatGPT apps, which only their own agent gets. */
+export function connectors(state: DaemonState): McpServer[] {
+  return (state.mcp_servers ?? []).filter(isConnector);
+}
+
+/** The agent a connector is for. */
+export function connectorAgent(server: McpServer): string | null {
+  switch (server.transport.type) {
+    case "claude_connector":
+      return "Claude";
+    case "codex_app":
+      return "Codex";
+    default:
+      return null;
+  }
 }
 
 /** The servers a topic has to itself. */
@@ -127,6 +147,10 @@ export function mcpSummary(transport: McpTransport): string {
       return [quoteArg(transport.command), ...(transport.args ?? []).map(quoteArg)].join(" ");
     case "http":
       return transport.url;
+    case "claude_connector":
+      return transport.url;
+    case "codex_app":
+      return "ChatGPT app";
     case "unknown":
       return "A kind of server this app doesn't know";
   }
@@ -157,7 +181,13 @@ export function withEnabled(server: McpServer, enabled: boolean): Command | null
   };
 }
 
-export const canEdit = (server: McpServer) => server.transport.type !== "unknown";
+export const canToggle = (server: McpServer) => server.transport.type !== "unknown";
+
+/** A connector is its agent's, so it's only turned on or off. */
+export const canEdit = (server: McpServer) => canToggle(server) && !isConnector(server);
+
+/** A removed connector would come back with the next refresh. */
+export const canRemove = (server: McpServer) => !isConnector(server);
 
 export const canLogIn = (server: McpServer) => server.transport.type === "http";
 
@@ -257,6 +287,15 @@ export function transportOf(draft: McpDraft): { transport: McpTransport } | { er
 export function importLines(added: string[], skipped: string[]): string[] {
   const lines = [added.length > 0 ? `Added ${added.join(", ")}` : "Nothing new to add"];
   return [...lines, ...skipped.map((reason) => `Skipped ${reason}`)];
+}
+
+/** What refreshing the connectors said, as lines to show. */
+export function connectorLines(added: string[], removed: string[], problems: string[]): string[] {
+  const lines: string[] = [];
+  if (added.length > 0) lines.push(`Added ${added.join(", ")}, off until turned on`);
+  if (removed.length > 0) lines.push(`Removed ${removed.join(", ")}`);
+  if (lines.length === 0 && problems.length === 0) lines.push("No new connectors");
+  return [...lines, ...problems.map((problem) => `Couldn't list: ${problem}`)];
 }
 
 // Reading a server from whatever a README hands you: an address, a command, a `claude mcp add`

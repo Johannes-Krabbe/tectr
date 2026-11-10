@@ -481,6 +481,11 @@ pub const ACTIONS: &[Action] = &[
         "Import the servers of Claude Code, Codex and OpenCode",
         &["i"],
     ),
+    once(
+        "mcp.connectors",
+        "Refresh the claude.ai connectors and ChatGPT apps",
+        &["r"],
+    ),
     once("mcp_form.save", "Save, from any field", &["mod+enter"]),
     once(
         "mcp_form.switch_type",

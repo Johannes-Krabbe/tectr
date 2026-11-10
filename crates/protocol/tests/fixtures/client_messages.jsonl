@@ -49,3 +49,5 @@
 {"type":"attach_terminal","terminal_id":"x1","cols":100,"rows":30}
 {"type":"resize_terminal","terminal_id":"x1","cols":100,"rows":30}
 {"type":"detach_terminal","terminal_id":"x1"}
+{"type":"request","id":1,"command":{"command":"refresh_mcp_connectors"}}
+{"type":"request","id":1,"command":{"command":"save_mcp_server","id":"c1","name":"claude.ai Slack","transport":{"type":"claude_connector","url":"https://mcp.slack.com/mcp"},"enabled":true}}

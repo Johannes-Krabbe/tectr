@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DaemonState, McpServer, Topic } from "./engine";
 import {
+  canEdit,
   canLogOut,
+  canRemove,
+  canToggle,
+  connectorAgent,
+  connectorLines,
+  connectors,
   deviceServers,
   draftOf,
   draftReady,
@@ -68,6 +74,55 @@ test("a topic gets the device servers it leaves on and its own that are on", () 
   ]);
   assert.deepEqual(names(topicMcpServers(state, topic("other"))), ["on", "theirs"]);
   assert.deepEqual(names(topicMcpServers({ ...state, mcp_servers: undefined }, topic("t"))), []);
+});
+
+test("connectors are listed apart, only turned on or off, and reach a topic like device servers", () => {
+  const slack: McpServer = {
+    id: "c1",
+    name: "claude.ai Slack",
+    transport: { type: "claude_connector", url: "https://mcp.slack.com/mcp" },
+    enabled: false,
+  };
+  const app: McpServer = {
+    id: "c2",
+    name: "ChatGPT Slack",
+    transport: { type: "codex_app", id: "asdk_app_1" },
+    enabled: true,
+  };
+  const withConnectors = { ...state, mcp_servers: [...(state.mcp_servers ?? []), slack, app] };
+  assert.deepEqual(names(deviceServers(withConnectors)), ["on", "off"]);
+  assert.deepEqual(names(connectors(withConnectors)), ["claude.ai Slack", "ChatGPT Slack"]);
+  assert.deepEqual(names(topicMcpServers(withConnectors, topic("t", { c1: true }))), [
+    "on",
+    "mine",
+    "claude.ai Slack",
+    "ChatGPT Slack",
+  ]);
+  assert.equal(connectorAgent(slack), "Claude");
+  assert.equal(connectorAgent(app), "Codex");
+  assert.equal(connectorAgent(server("x", undefined, true)), null);
+  assert.equal(mcpSummary(slack.transport), "https://mcp.slack.com/mcp");
+  assert.ok(canToggle(slack));
+  assert.ok(!canEdit(slack));
+  assert.ok(!canRemove(app));
+  assert.ok(canEdit(server("x", undefined, true)));
+  assert.deepEqual(withEnabled(slack, true), {
+    command: "save_mcp_server",
+    id: "c1",
+    name: "claude.ai Slack",
+    transport: slack.transport,
+    enabled: true,
+  });
+});
+
+test("refreshing connectors says what changed and what couldn't be listed", () => {
+  assert.deepEqual(connectorLines(["claude.ai Notion"], ["claude.ai Linear"], ["no list"]), [
+    "Added claude.ai Notion, off until turned on",
+    "Removed claude.ai Linear",
+    "Couldn't list: no list",
+  ]);
+  assert.deepEqual(connectorLines([], [], []), ["No new connectors"]);
+  assert.deepEqual(connectorLines([], [], ["x"]), ["Couldn't list: x"]);
 });
 
 test("a topic follows a device server's default until it turns it on or off", () => {

@@ -9,7 +9,8 @@ use protocol::{
 };
 
 use super::{Core, Inner, internal, invalid, not_found};
-use crate::mcp::{self, expand};
+use crate::agents::AgentLauncher;
+use crate::mcp::{self, ConnectorKind, expand};
 use crate::oauth;
 
 /// How long saving an HTTP server waits to find out whether it wants a login.
@@ -76,11 +77,48 @@ fn check_transport(transport: &McpTransport) -> Result<(), CommandError> {
                 }
             }
         }
+        McpTransport::ClaudeConnector { .. } | McpTransport::CodexApp { .. } => {
+            return Err(invalid(
+                "connectors come from refreshing them, not from adding them by hand",
+            ));
+        }
         McpTransport::Unknown => {
             return Err(invalid("this daemon doesn't know that kind of server"));
         }
     }
     Ok(())
+}
+
+/// How long `claude mcp list` may take. It checks every server Claude Code has, connectors
+/// included, which takes a few seconds.
+const LIST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Asks Claude Code which claude.ai connectors the person has, with their addresses.
+async fn list_claude_connectors(
+    claude: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Result<Vec<mcp::Listed>, String> {
+    let output = tokio::process::Command::new(claude)
+        .args(["mcp", "list"])
+        // An empty folder, so no project's servers get started for nothing.
+        .current_dir(cwd)
+        .env_remove("ENABLE_CLAUDEAI_MCP_SERVERS")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(LIST_TIMEOUT, output)
+        .await
+        .map_err(|_| "Claude Code took too long to list its connectors".to_owned())?
+        .map_err(|error| format!("couldn't run Claude Code to list its connectors: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Claude Code couldn't list its connectors: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(mcp::claude_connectors(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
 }
 
 fn http_url(transport: &McpTransport) -> Option<&str> {
@@ -133,6 +171,9 @@ impl Core {
         transport: McpTransport,
         enabled: bool,
     ) -> Result<McpServer, CommandError> {
+        if transport.is_connector() {
+            return self.store_connector(id, topic_id, transport, enabled);
+        }
         let name = name.trim();
         if !mcp::valid_name(name) {
             return Err(invalid(
@@ -190,6 +231,114 @@ impl Core {
         inner.put_mcp_server(server.clone()).map_err(internal)?;
         inner.refresh_mcp_sessions(None);
         Ok(server)
+    }
+
+    /// A connector is only turned on or off. Its name and address are its agent's.
+    fn store_connector(
+        &self,
+        id: Option<McpServerId>,
+        topic_id: Option<TopicId>,
+        transport: McpTransport,
+        enabled: bool,
+    ) -> Result<McpServer, CommandError> {
+        let mut inner = self.lock();
+        let existing = id
+            .as_ref()
+            .and_then(|id| inner.state.mcp_server(id))
+            .filter(|existing| existing.transport == transport && topic_id.is_none())
+            .cloned()
+            .ok_or_else(|| {
+                invalid("connectors come from refreshing them, and can only be turned on or off")
+            })?;
+        let server = McpServer {
+            enabled,
+            ..existing
+        };
+        inner.put_mcp_server(server.clone()).map_err(internal)?;
+        inner.refresh_mcp_sessions(None);
+        Ok(server)
+    }
+
+    /// Lists the connectors of each added Claude and Codex agent, and keeps their servers in
+    /// step with that.
+    pub(super) async fn refresh_mcp_connectors(&self) -> Result<CommandOutput, CommandError> {
+        let (claude, codex) = {
+            let inner = self.lock();
+            let added = |wanted: fn(&AgentLauncher) -> bool| {
+                inner
+                    .state
+                    .providers
+                    .iter()
+                    .any(|provider| self.agents.get(&provider.agent).is_some_and(wanted))
+            };
+            (
+                added(|l| matches!(l, AgentLauncher::ClaudeAdapter)),
+                added(|l| matches!(l, AgentLauncher::CodexAdapter)),
+            )
+        };
+        if !claude && !codex {
+            return Err(invalid(
+                "connectors come from Claude and Codex. Add one of them to this device first",
+            ));
+        }
+        let mut listed = vec![];
+        let mut problems = vec![];
+        if claude {
+            match self.claude_code().await {
+                Ok(binary) => {
+                    let cwd = self.data_dir.join("probe");
+                    tokio::fs::create_dir_all(&cwd)
+                        .await
+                        .map_err(|error| internal(error.into()))?;
+                    match list_claude_connectors(&binary, &cwd).await {
+                        Ok(found) => listed.push((ConnectorKind::Claude, found)),
+                        Err(problem) => problems.push(problem),
+                    }
+                }
+                Err(error) => problems.push(format!("{error:#}")),
+            }
+        }
+        if codex {
+            let home = self.config_home.clone();
+            let found = tokio::task::spawn_blocking(move || mcp::codex_apps(&home))
+                .await
+                .map_err(|error| internal(error.into()))?;
+            match found {
+                Ok(found) => listed.push((ConnectorKind::Codex, found)),
+                Err(problem) => problems.push(problem),
+            }
+        }
+        let mut added = vec![];
+        let mut removed = vec![];
+        let mut inner = self.lock();
+        for (kind, found) in listed {
+            let sync = mcp::sync_connectors(&inner.state.mcp_servers, kind, &found, || {
+                McpServerId(crate::new_id())
+            });
+            for server in sync.put {
+                inner.put_mcp_server(server).map_err(internal)?;
+            }
+            for id in &sync.remove {
+                inner.drop_mcp_server(id).map_err(internal)?;
+            }
+            added.extend(sync.added);
+            removed.extend(sync.removed);
+        }
+        inner.refresh_mcp_sessions(None);
+        Ok(CommandOutput::McpConnectors {
+            added,
+            removed,
+            problems,
+        })
+    }
+
+    /// The Claude Code that lists the claude.ai connectors: the one the adapter runs.
+    async fn claude_code(&self) -> anyhow::Result<std::path::PathBuf> {
+        if let Some(binary) = &self.config_home.claude_code {
+            return Ok(binary.clone());
+        }
+        let _guard = self.adapter_install.lock().await;
+        crate::agents::bundled_claude_code(&self.data_dir).await
     }
 
     pub(super) fn remove_mcp_server(
