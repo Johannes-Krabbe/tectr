@@ -145,7 +145,8 @@ pub struct Isolation {
     pub meta: Option<Map<String, Value>>,
 }
 
-/// Where each agent keeps its configuration. Tests point these at a temporary folder.
+/// Where each agent keeps its configuration and conversations. Tests point these at a
+/// temporary folder.
 #[derive(Debug, Clone)]
 pub struct ConfigHome {
     pub home: Option<PathBuf>,
@@ -171,10 +172,14 @@ impl ConfigHome {
         }
     }
 
-    fn codex_dir(&self) -> Option<PathBuf> {
+    pub fn codex_dir(&self) -> Option<PathBuf> {
         self.codex_home
             .clone()
             .or_else(|| self.home.as_ref().map(|home| home.join(".codex")))
+    }
+
+    pub fn claude_dir(&self) -> Option<PathBuf> {
+        self.home.as_ref().map(|home| home.join(".claude"))
     }
 
     fn codex_config(&self) -> Option<PathBuf> {

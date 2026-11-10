@@ -14,7 +14,7 @@
 //! - `hang`: does nothing until the turn is cancelled.
 //! - `crash`: exits immediately with an error.
 //! - `whoami`: reports the session's mode, model, directory, and whether it was
-//!   resumed.
+//!   resumed, and which session.
 //! - `mcp`: reports the MCP servers the session was opened with, and its `_meta`.
 //! - `mcp-call NAME`: sends an MCP initialize request to the HTTP server NAME and
 //!   reports the status and body it got back.
@@ -53,6 +53,8 @@ struct State {
     model: Option<String>,
     effort: Option<String>,
     resumed: bool,
+    /// The agent's own session it was asked to resume.
+    resumed_id: Option<String>,
     mcp: Vec<McpServer>,
     meta: Option<serde_json::Map<String, serde_json::Value>>,
 }
@@ -165,6 +167,7 @@ async fn main() -> Result<(), Error> {
                 state.mcp = request.mcp_servers;
                 state.meta = request.meta;
                 state.resumed = true;
+                state.resumed_id = Some(request.session_id.to_string());
                 responder.respond(
                     ResumeSessionResponse::new()
                         .modes(mode_state(&state.mode))
@@ -334,12 +337,13 @@ async fn run_turn(
             let report = {
                 let state = state.lock().unwrap();
                 format!(
-                    "pid={} mode={} model={} effort={} resumed={} cwd={}",
+                    "pid={} mode={} model={} effort={} resumed={} session={} cwd={}",
                     std::process::id(),
                     state.mode,
                     state.model.as_deref().unwrap_or("none"),
                     state.effort.as_deref().unwrap_or("none"),
                     state.resumed,
+                    state.resumed_id.as_deref().unwrap_or("none"),
                     state.cwd.display()
                 )
             };

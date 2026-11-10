@@ -871,6 +871,40 @@ impl Store {
         Ok(())
     }
 
+    /// Adds a tab carrying on an agent's own conversation, with its history, all or nothing.
+    pub fn import_session(
+        &self,
+        topic_id: &TopicId,
+        session: &Session,
+        agent_session_id: &str,
+        agent_cwd: &str,
+        events: &[SessionEvent],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.insert_session(topic_id, session)?;
+        self.set_agent_session_id(&session.id, agent_session_id)?;
+        self.set_agent_cwd(&session.id, agent_cwd)?;
+        for event in events {
+            self.insert_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The agents' own conversations open in a tab, as `(agent, agent session ID)`. Archived
+    /// topics count, because restoring them brings their tabs back.
+    pub fn open_agent_sessions(&self) -> Result<HashSet<(String, String)>> {
+        Ok(self
+            .collect(
+                "SELECT agent, agent_session_id FROM sessions
+                 WHERE agent_session_id IS NOT NULL AND closed_at_ms IS NULL",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+            .into_iter()
+            .collect())
+    }
+
     pub fn events_after(
         &self,
         machine_id: &MachineId,

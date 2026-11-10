@@ -500,6 +500,18 @@ pub enum Command {
     /// connector servers in step: new ones are added switched off, gone ones are removed. An
     /// agent that can't be asked keeps the connectors it had.
     RefreshMcpConnectors,
+    /// List the conversations Claude Code and Codex keep on this device, newest first, for
+    /// agents added here. One already open in a tab is left out.
+    ListConversations,
+    /// Open a conversation from [`Command::ListConversations`] as a new tab in a topic, with
+    /// its history. The tab starts stopped, and its first prompt resumes the agent's own
+    /// session, so the agent remembers everything. If the topic's folder isn't where the
+    /// conversation was, the agent is told it moved.
+    ImportConversation {
+        topic_id: TopicId,
+        agent: String,
+        id: String,
+    },
     /// Show a code that pairs one more client from another machine, answered with
     /// [`CommandOutput::Pairing`]. Only a client on the daemon's own machine can ask, so
     /// letting a new machine in needs someone at this one. A new code replaces the last.
@@ -569,6 +581,10 @@ pub enum CommandOutput {
         /// Why an agent's connectors couldn't be listed.
         problems: Vec<String>,
     },
+    /// Newest first.
+    Conversations {
+        conversations: Vec<Conversation>,
+    },
     ImageAdded {
         id: ImageId,
     },
@@ -586,6 +602,20 @@ pub enum CommandOutput {
     Done,
     #[serde(other)]
     Unknown,
+}
+
+/// A conversation an agent keeps itself, outside tectr, which can be imported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conversation {
+    /// The agent that carries it on, such as `claude` or `codex`.
+    pub agent: String,
+    /// The agent's own ID for it.
+    pub id: String,
+    pub title: String,
+    /// The folder it was in.
+    pub cwd: String,
+    /// Milliseconds since the Unix epoch.
+    pub updated_at_ms: i64,
 }
 
 /// Where [`Command::MoveTopic`] takes a topic.

@@ -11,8 +11,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{ClientStore, Connection, Device, Engine, Remote};
 use protocol::{
-    Approval, ArchivedTopic, Command, CommandOutput, MachineId, MoveTarget, PermissionMode,
-    SessionEvent, SessionEventKind, SessionRef, SessionStatus, ToolCallPatch, TopicId,
+    Approval, ArchivedTopic, Command, CommandOutput, Conversation, MachineId, MoveTarget,
+    PermissionMode, SessionEvent, SessionEventKind, SessionRef, SessionStatus, ToolCallPatch,
+    TopicId,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast::error::RecvError;
@@ -102,6 +103,19 @@ enum Cmd {
         /// The agent's own model name, such as `haiku`.
         #[arg(long)]
         model: Option<String>,
+    },
+    /// List the Claude Code and Codex conversations that can be imported, newest first.
+    Conversations {
+        /// The machine to list, by name or ID prefix. Needed only with more than one daemon.
+        #[arg(long)]
+        on: Option<String>,
+    },
+    /// Open a Claude Code or Codex conversation as a new tab in a topic, with its history.
+    /// Its first prompt carries it on where it left off.
+    Import {
+        topic: String,
+        /// The conversation's ID or a prefix of it, as `tectr conversations` lists it.
+        conversation: String,
     },
     /// Send a prompt and return without waiting for the agent.
     Prompt { session: String, text: String },
@@ -366,6 +380,41 @@ async fn main() -> Result<()> {
                 println!("session {} {}", short(&session.id.0), session.agent);
             }
         }
+        Cmd::Conversations { on } => {
+            let machine = choose_machine(&engine, on.as_deref())?;
+            for c in conversations(&engine, &machine).await? {
+                println!("{} {} {}  {}", c.agent, short(&c.id), c.title, c.cwd);
+            }
+        }
+        Cmd::Import {
+            topic,
+            conversation,
+        } => {
+            let (machine, topic_id) = resolve_topic(&engine, &topic)?;
+            let mut matches: Vec<_> = conversations(&engine, &machine)
+                .await?
+                .into_iter()
+                .filter(|c| c.id.starts_with(&conversation))
+                .collect();
+            let found = match matches.len() {
+                1 => matches.remove(0),
+                0 => bail!("no conversation on the topic's device matches {conversation}"),
+                count => bail!("{conversation} is ambiguous: {count} matches"),
+            };
+            let output = engine
+                .request(
+                    &machine,
+                    Command::ImportConversation {
+                        topic_id,
+                        agent: found.agent,
+                        id: found.id,
+                    },
+                )
+                .await?;
+            if let CommandOutput::Session { session, .. } = output {
+                println!("session {} {}", short(&session.id.0), session.agent);
+            }
+        }
         Cmd::Prompt { session, text } => {
             let session = resolve_session(&engine, &session)?;
             engine
@@ -577,6 +626,13 @@ async fn archived_topics(engine: &Engine) -> Result<Vec<(MachineId, String, Arch
         }
     }
     Ok(all)
+}
+
+async fn conversations(engine: &Engine, machine: &MachineId) -> Result<Vec<Conversation>> {
+    match engine.request(machine, Command::ListConversations).await? {
+        CommandOutput::Conversations { conversations } => Ok(conversations),
+        _ => bail!("the daemon didn't list conversations"),
+    }
 }
 
 /// Accepts a topic's exact name or an ID prefix. A name wins, so a name that looks like an ID

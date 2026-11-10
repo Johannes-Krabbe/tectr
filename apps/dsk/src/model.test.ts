@@ -1,9 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ArchiveRisk, DaemonState, Provider, ProviderModel, Session, Topic } from "./engine";
+import type {
+  ArchiveRisk,
+  Conversation,
+  DaemonState,
+  Provider,
+  ProviderModel,
+  Session,
+  Topic,
+  Workspace,
+} from "./engine";
 import {
   archiveLosses,
   archiveSummary,
+  conversationsFor,
+  folderName,
   effortForModel,
   keepsAwake,
   moveChoices,
@@ -178,4 +189,37 @@ test("agents and terminals share one row of tabs, in the order they were opened"
     ["old", "shell", "agent", "vim"],
   );
   assert.deepEqual(tabs.map(tabLabel), ["claude", "Terminal", "claude", "vim"]);
+});
+
+test("conversations from the topic's workspace and folders come first, each part newest first", () => {
+  const conversation = (id: string, cwd: string): Conversation => ({
+    agent: "claude",
+    id,
+    title: id,
+    cwd,
+    updated_at_ms: 0,
+  });
+  const topic: Topic = {
+    id: "t",
+    name: "T",
+    worktree_id: "w2",
+    worktrees: [
+      { id: "w1", path: "/repo", branch: "main" },
+      { id: "w2", path: "/trees/t-1", branch: "tectr/t-1" },
+    ],
+    sessions: [],
+  };
+  const workspace: Workspace = { id: "ws", name: "repo", path: "/repo", topics: [topic] };
+  const listed = [
+    conversation("elsewhere", "/other"),
+    conversation("sibling", "/repository"),
+    conversation("worktree", "/trees/t-1"),
+    conversation("older-elsewhere", "/other"),
+    conversation("inside", "/repo/apps/api"),
+  ];
+  assert.deepEqual(
+    conversationsFor(listed, workspace, topic).map((c) => c.id),
+    ["worktree", "inside", "elsewhere", "sibling", "older-elsewhere"],
+  );
+  assert.equal(folderName("/Users/me/repo/"), "repo");
 });

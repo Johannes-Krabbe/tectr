@@ -114,6 +114,18 @@ export interface ArchivedTopic {
   archived_at_ms: number;
 }
 
+/** A conversation Claude Code or Codex keeps itself, which can be imported into a topic. */
+export interface Conversation {
+  /** The agent that carries it on. */
+  agent: string;
+  /** The agent's own ID for it. */
+  id: string;
+  title: string;
+  /** The folder it was in. */
+  cwd: string;
+  updated_at_ms: number;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -355,6 +367,8 @@ export type Command =
   | { command: "logout_mcp_server"; id: string }
   | { command: "import_mcp_servers" }
   | { command: "refresh_mcp_connectors" }
+  | { command: "list_conversations" }
+  | { command: "import_conversation"; topic_id: string; agent: string; id: string }
   | { command: "start_pairing" }
   | { command: "cancel_pairing" }
   | { command: "remove_paired_client"; key: string };
@@ -376,6 +390,8 @@ export type CommandOutput =
   | { output: "mcp_import"; added: string[]; skipped: string[] }
   /** The connectors added and removed, and why an agent's couldn't be listed. */
   | { output: "mcp_connectors"; added: string[]; removed: string[]; problems: string[] }
+  /** Newest first. */
+  | { output: "conversations"; conversations: Conversation[] }
   | { output: "image_added"; id: string }
   /** Base64. A thumbnail can be a different type from its image. */
   | { output: "image"; data: string; mime: string }
