@@ -40,8 +40,51 @@ export const MODES: { mode: PermissionMode; label: string }[] = [
   { mode: "yolo", label: "Yolo" },
 ];
 
+/** Whether commands can be sent, which a device that's slow to answer still takes. */
 export function isOnline(device: Device): boolean {
   return device.connection.state === "online";
+}
+
+/** What to call a device, which before its first connection is only its address. */
+export function deviceName(device: Device): string {
+  return device.state?.machine.name ?? device.url;
+}
+
+/** Why a device can't be reached, in the words of whatever refused. */
+export function connectionProblem(device: Device): string | undefined {
+  const { connection } = device;
+  if (connection.state === "offline") return connection.reason;
+  if (connection.state === "incompatible") {
+    return `The daemon speaks protocol ${connection.daemon_min} to ${connection.daemon_max}, which this app doesn't`;
+  }
+  return undefined;
+}
+
+/** What a pane says about its device while something sent there might not be answered. */
+export interface DeviceNotice {
+  text: string;
+  /** Why, for a tooltip. */
+  detail?: string;
+  /** Whether trying again now could help. */
+  reconnect: boolean;
+}
+
+/** The worst of what's keeping a device from answering, or null when nothing is. `waiting` is
+ * whether a command has gone unanswered for long enough to mention. */
+export function deviceNotice(device: Device, waiting: boolean): DeviceNotice | null {
+  const name = deviceName(device);
+  const detail = connectionProblem(device);
+  switch (device.connection.state) {
+    case "connecting":
+      return { text: `Connecting to ${name}`, reconnect: false };
+    case "offline":
+      return { text: `${name} is offline`, detail, reconnect: true };
+    case "incompatible":
+      return { text: `${name} needs an update`, detail, reconnect: true };
+    case "online":
+      if (device.connection.stalled) return { text: `${name} isn't responding`, reconnect: false };
+      return waiting ? { text: `Waiting for ${name}`, reconnect: false } : null;
+  }
 }
 
 /** On unless someone turned it off, because the daemon leaves defaults out. */

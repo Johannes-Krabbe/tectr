@@ -113,7 +113,10 @@ function leaveQueriesToTheDaemon(term: XTerm) {
 }
 
 /** A shell, drawn by xterm.js from what the daemon's copy of the terminal sends. Every key
- * goes to the shell except Cmd shortcuts, which stay the app's. */
+ * goes to the shell except Cmd shortcuts, which stay the app's.
+ *
+ * It stays up while its device is away, dimmed and showing what it last had, because the
+ * engine drops what's typed meanwhile and shows the terminal again once the device is back. */
 export function TerminalPane({
   machineId,
   terminal,
@@ -131,7 +134,7 @@ export function TerminalPane({
 
   useEffect(() => {
     const element = host.current;
-    if (!element || !online) return;
+    if (!element) return;
     const terminalId = terminal.id;
     let disposed = false;
     let cleanup = () => {};
@@ -267,7 +270,7 @@ export function TerminalPane({
       disposed = true;
       cleanup();
     };
-  }, [machineId, terminal.id, online]);
+  }, [machineId, terminal.id]);
 
   // Settings that change while it's open apply in place.
   const settings = useRef(options());
@@ -285,7 +288,7 @@ export function TerminalPane({
   }, [settingsKey]);
 
   return (
-    <div className="pane terminal">
+    <div className={online ? "pane terminal" : "pane terminal stale"}>
       <div
         ref={host}
         className="terminal-host"

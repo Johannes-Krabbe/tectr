@@ -83,7 +83,7 @@ async fn forget_device(
     let machine = engine
         .devices()
         .into_iter()
-        .find(|device| device.url == url && device.connection == engine::Connection::Online)
+        .find(|device| device.url == url && device.connection.is_online())
         .and_then(|device| device.state)
         .map(|state| state.machine.id);
     if let Some(machine) = machine {
@@ -117,6 +117,12 @@ async fn request(
         .request(&machine_id, command)
         .await
         .map_err(|error| error.to_string())
+}
+
+/// Tries the devices that aren't connected again now, instead of after their wait.
+#[tauri::command]
+fn reconnect(engine: State<'_, Engine>) {
+    engine.reconnect();
 }
 
 #[tauri::command]
@@ -636,13 +642,22 @@ fn main() {
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu);
     builder
-        .on_window_event(|window, event| match event {
-            // AppKit can reset the title bar's views around a full screen transition,
-            // which fires a resize, and when the window comes back to the front.
-            WindowEvent::ThemeChanged(_) | WindowEvent::Focused(true) | WindowEvent::Resized(_) => {
-                paint_window(window);
+        .on_window_event(|window, event| {
+            // Whoever comes back to the window is about to use it, so a device that's away
+            // is tried now rather than whenever its next attempt is due.
+            if let WindowEvent::Focused(true) = event
+                && let Some(engine) = window.try_state::<Engine>()
+            {
+                engine.reconnect();
             }
-            _ => {}
+            match event {
+                // AppKit can reset the title bar's views around a full screen transition,
+                // which fires a resize, and when the window comes back to the front.
+                WindowEvent::ThemeChanged(_)
+                | WindowEvent::Focused(true)
+                | WindowEvent::Resized(_) => paint_window(window),
+                _ => {}
+            }
         })
         .setup(|app| {
             let store = ClientStore::default_dir().map(ClientStore::new);
@@ -706,6 +721,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             devices,
             request,
+            reconnect,
             open_session,
             events_after,
             terminal_attach,

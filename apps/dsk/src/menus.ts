@@ -87,6 +87,7 @@ export type AppItemId =
   | "next"
   | "mark-all-read"
   | "archived-topics"
+  | "reconnect"
   | "add-device"
   | "pair-machine";
 
@@ -99,6 +100,8 @@ export function appItems(now: {
   unread: number;
   /** A device is reachable, so its archive can be asked for. */
   online: boolean;
+  /** A device isn't connected, so trying again now could bring it back. */
+  away?: boolean;
   /** This machine's own device, which is where pairing starts. */
   local?: string;
 }): ActionItem<AppItemId>[][] {
@@ -122,7 +125,16 @@ export function appItems(now: {
       key: "global.archived_topics",
     });
   }
-  const devices: ActionItem<AppItemId>[] = [
+  const devices: ActionItem<AppItemId>[] = [];
+  if (now.away) {
+    devices.push({
+      id: "reconnect",
+      label: "Reconnect",
+      inPalette: "Reconnect to offline devices",
+      key: "global.reconnect",
+    });
+  }
+  devices.push(
     {
       id: "add-device",
       label: "Add a device",
@@ -130,7 +142,7 @@ export function appItems(now: {
       detail: "From another machine",
       key: "global.add_device",
     },
-  ];
+  );
   if (now.local !== undefined) {
     devices.push({
       id: "pair-machine",

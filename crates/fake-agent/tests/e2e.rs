@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use daemon::{AgentLauncher, Config, Daemon, Shell};
-use engine::{Connection, Engine, EngineError, Remote};
-use futures_util::{SinkExt, StreamExt};
+use engine::{Connection, Engine, EngineError, Liveness, Remote};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use protocol::{
     AgentCommand, Approval, ArchiveRisk, ClientMessage, Command, CommandOutput, DaemonState,
     ErrorCode, MachineId, MoveTarget, PermissionMode, PermissionOutcome, PromptImage,
@@ -100,7 +100,7 @@ async fn connect(daemon: &Daemon) -> Engine {
     let engine = Engine::new("e2e");
     engine.add_daemon(&url(daemon));
     engine.wait_until_settled().await;
-    assert_eq!(engine.devices()[0].connection, Connection::Online);
+    assert!(engine.devices()[0].connection.is_online());
     engine
 }
 
@@ -2333,7 +2333,7 @@ async fn state_and_events_survive_a_daemon_restart() {
 
     // The client reconnects by itself and carries on from where it stopped.
     wait_for("the client to reconnect", || {
-        (engine.devices()[0].connection == Connection::Online).then_some(())
+        engine.devices()[0].connection.is_online().then_some(())
     })
     .await;
     wait_for_status(&engine, &session, SessionStatus::Stopped).await;
@@ -2499,7 +2499,7 @@ async fn one_client_merges_many_daemons() {
         engine
             .devices()
             .iter()
-            .filter(|device| device.connection == Connection::Online)
+            .filter(|device| device.connection.is_online())
             .count(),
         2
     );
@@ -2710,6 +2710,80 @@ async fn say_hello(socket: &mut RawSocket, min_version: u32, max_version: u32) -
     )
     .await;
     raw_next(socket).await
+}
+
+/// A daemon that gives up on a silent client quickly enough to test.
+async fn impatient_daemon(fixture: &Fixture, silence: Duration) -> Daemon {
+    Daemon::start(Config {
+        client_silence: silence,
+        ..fixture.config("d", 0)
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_goes_quiet_is_dropped() {
+    let fixture = Fixture::new();
+    let daemon = impatient_daemon(&fixture, Duration::from_millis(300)).await;
+    let mut socket = raw_connect(&daemon).await;
+    assert!(matches!(
+        say_hello(&mut socket, 1, 1).await,
+        ServerMessage::Welcome { .. }
+    ));
+    assert!(matches!(
+        raw_next(&mut socket).await,
+        ServerMessage::Snapshot { .. }
+    ));
+
+    // It never pings, so the daemon takes it for gone.
+    let closed = tokio::time::timeout(TIMEOUT, async {
+        while let Some(Ok(frame)) = socket.next().await {
+            assert!(frame.is_close(), "unexpected {frame:?}");
+        }
+    });
+    closed.await.expect("the daemon should have hung up");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_only_pings_stays_connected() {
+    let fixture = Fixture::new();
+    let silence = Duration::from_millis(500);
+    let daemon = impatient_daemon(&fixture, silence).await;
+    let mut socket = raw_connect(&daemon).await;
+    say_hello(&mut socket, 1, 1).await;
+    raw_next(&mut socket).await;
+
+    // Well past the limit, with nothing but pings, each of which gets its pong.
+    let mut pongs = 0;
+    for _ in 0..30 {
+        socket
+            .send(Message::Ping(Default::default()))
+            .await
+            .unwrap();
+        tokio::time::sleep(silence / 10).await;
+        while let Some(frame) = socket.next().now_or_never() {
+            pongs += usize::from(frame.unwrap().unwrap().is_pong());
+        }
+    }
+    assert!(pongs > 20, "only {pongs} pongs");
+
+    let command = Command::ListArchivedTopics;
+    raw_send(&mut socket, &ClientMessage::Request { id: 7, command }).await;
+    let answered = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let frame = socket.next().await.unwrap().unwrap();
+            let Message::Text(text) = frame else { continue };
+            if let ServerMessage::Response { id, result } = serde_json::from_str(&text).unwrap() {
+                return (id, result);
+            }
+        }
+    });
+    let (id, result) = answered.await.expect("the daemon should still answer");
+    assert_eq!(id, 7);
+    assert!(matches!(result, Ok(CommandOutput::ArchivedTopics { .. })));
+    daemon.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2999,7 +3073,7 @@ async fn a_paired_client_works_over_iroh_until_it_is_removed() {
     let remote = remote_engine(&daemon);
     let url = remote.pair(&code, "Phone").await.unwrap();
     remote.wait_until_settled().await;
-    assert_eq!(connection(&remote, &url), Some(Connection::Online));
+    assert!(connection(&remote, &url).is_some_and(|connection| connection.is_online()));
     let client = wait_for("the paired client", || {
         local.devices()[0]
             .state
@@ -3041,6 +3115,40 @@ async fn a_paired_client_works_over_iroh_until_it_is_removed() {
     })
     .await;
     assert!(reason.contains("not paired"), "{reason}");
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_idle_remote_client_stays_connected_by_pinging() {
+    let fixture = Fixture::new();
+    let silence = Duration::from_millis(600);
+    let daemon = Daemon::start(Config {
+        network: daemon::Network::Local,
+        client_silence: silence,
+        ..fixture.config("d", 0)
+    })
+    .await
+    .unwrap();
+    let machine = daemon.machine_id().clone();
+    let local = connect(&daemon).await;
+    let code = pairing_code(&local, &machine).await;
+
+    let remote = remote_engine(&daemon).with_liveness(Liveness {
+        ping_every: Duration::from_millis(100),
+        stalled_after: Duration::from_millis(400),
+        silence_limit: Duration::from_millis(800),
+    });
+    let url = remote.pair(&code, "Phone").await.unwrap();
+    remote.wait_until_settled().await;
+
+    // Nothing happens for several times what either end would wait in silence.
+    tokio::time::sleep(silence * 4).await;
+    assert_eq!(
+        connection(&remote, &url),
+        Some(Connection::Online { stalled: false })
+    );
+    let device = remote.devices().into_iter().find(|d| d.url == url).unwrap();
+    assert_eq!(device.last_seen_ms, None, "it never dropped");
     daemon.shutdown().await;
 }
 
@@ -3118,7 +3226,7 @@ async fn a_paired_daemon_listens_again_after_a_restart() {
     );
     remote.add_daemon(&url);
     remote.wait_until_settled().await;
-    assert_eq!(connection(&remote, &url), Some(Connection::Online));
+    assert!(connection(&remote, &url).is_some_and(|connection| connection.is_online()));
     daemon.shutdown().await;
 }
 

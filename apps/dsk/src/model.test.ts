@@ -4,6 +4,7 @@ import type {
   ArchiveRisk,
   Conversation,
   DaemonState,
+  Device,
   Provider,
   ProviderModel,
   Session,
@@ -14,6 +15,7 @@ import {
   archiveLosses,
   archiveSummary,
   conversationsFor,
+  deviceNotice,
   folderName,
   effortForModel,
   keepsAwake,
@@ -222,4 +224,39 @@ test("conversations from the topic's workspace and folders come first, each part
     ["worktree", "inside", "elsewhere", "sibling", "older-elsewhere"],
   );
   assert.equal(folderName("/Users/me/repo/"), "repo");
+});
+
+function deviceWith(connection: Device["connection"], named = true): Device {
+  const state: DaemonState | null = named
+    ? { machine: { id: "m1", name: "Laptop" }, workspaces: [], approvals: [] }
+    : null;
+  return { url: "iroh://abc", connection, state, last_seen_ms: null };
+}
+
+test("a device that answers has nothing to say", () => {
+  assert.equal(deviceNotice(deviceWith({ state: "online", stalled: false }), false), null);
+});
+
+test("a pane says what keeps its device from answering, worst first", () => {
+  const text = (connection: Device["connection"], waiting = false) =>
+    deviceNotice(deviceWith(connection), waiting)?.text;
+  assert.equal(text({ state: "online", stalled: false }, true), "Waiting for Laptop");
+  assert.equal(text({ state: "online", stalled: true }, true), "Laptop isn't responding");
+  assert.equal(text({ state: "offline", reason: "gone" }, true), "Laptop is offline");
+  assert.equal(text({ state: "incompatible", daemon_min: 7, daemon_max: 8 }), "Laptop needs an update");
+});
+
+test("reconnecting is offered only for a device that isn't connected", () => {
+  const offers = (connection: Device["connection"]) =>
+    deviceNotice(deviceWith(connection), true)?.reconnect;
+  assert.equal(offers({ state: "offline", reason: "gone" }), true);
+  assert.equal(offers({ state: "incompatible", daemon_min: 7, daemon_max: 8 }), true);
+  assert.equal(offers({ state: "online", stalled: true }), false);
+  assert.equal(offers({ state: "online", stalled: false }), false);
+});
+
+test("an offline device's notice carries why, and one never reached goes by its address", () => {
+  const notice = deviceNotice(deviceWith({ state: "offline", reason: "the device stopped answering" }, false), false);
+  assert.equal(notice?.text, "iroh://abc is offline");
+  assert.equal(notice?.detail, "the device stopped answering");
 });

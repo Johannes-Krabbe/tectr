@@ -145,6 +145,8 @@ pub struct Core {
     /// What this daemon proves to remote clients, and what they dial.
     remote_key: iroh::SecretKey,
     network: Network,
+    /// How long a client may send nothing before its connection ends.
+    client_silence: Duration,
     /// Set once something needs remote clients: a pairing, or a client already paired.
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
     pairing: Mutex<Option<remote::Pairing>>,
@@ -160,6 +162,7 @@ pub struct CoreOptions {
     pub config_home: ConfigHome,
     pub shell: Shell,
     pub network: Network,
+    pub client_silence: Duration,
 }
 
 impl Core {
@@ -173,6 +176,7 @@ impl Core {
             config_home,
             shell,
             network,
+            client_silence,
         } = options;
         let store = Store::open(&data_dir.join("tectr.db"))?;
         let remote_key = store.remote_key(|| {
@@ -224,6 +228,7 @@ impl Core {
             next_subscriber: AtomicU64::new(1),
             remote_key,
             network,
+            client_silence,
             endpoint: tokio::sync::OnceCell::new(),
             pairing: Mutex::new(None),
         }))
@@ -237,6 +242,10 @@ impl Core {
 
     pub fn machine(&self) -> Machine {
         self.lock().state.machine.clone()
+    }
+
+    pub fn client_silence(&self) -> Duration {
+        self.client_silence
     }
 
     /// Returns the current state and a subscription that starts exactly after
@@ -2242,6 +2251,7 @@ mod tests {
                 claude_code: None,
             },
             network: Network::Local,
+            client_silence: Duration::from_secs(8),
         }
     }
 

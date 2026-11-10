@@ -5,6 +5,10 @@
 //! with automatic reconnects, merges what they report, and resumes each open
 //! session's events from the last sequence number it saw.
 //!
+//! A connection is only trusted while its daemon keeps answering. The engine pings on a
+//! timer, shows a device that has gone quiet as not responding, and then drops the
+//! connection, so a command never sits on a dead one. See [`protocol::liveness`].
+//!
 //! A daemon's URL says how to reach it: `ws://` for one on this machine, and
 //! `iroh://<key>` for a paired one on another machine. Both carry the same protocol.
 //!
@@ -24,6 +28,8 @@ use futures_util::{SinkExt, StreamExt};
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointId, SecretKey};
 use protocol::frame::{self, Kind};
+pub use protocol::liveness::Liveness;
+use protocol::liveness::SleepWatch;
 use protocol::{
     Approval, ClientMessage, Command, CommandError, CommandOutput, DaemonState,
     MIN_PROTOCOL_VERSION, Machine, MachineId, PAIRING_ALPN, PROTOCOL_VERSION, PairRequest,
@@ -33,8 +39,9 @@ use protocol::{
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tokio::time::{Instant, MissedTickBehavior};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -42,6 +49,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 const MIN_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 const UPDATE_BUFFER: usize = 4096;
+/// How long one attempt to connect may take. An attempt at a device that's away resends
+/// at growing gaps, so a fresh one finds a device that just came back sooner.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Finding a remote daemon can take a lookup and a relay before the first byte.
 const PAIR_TIMEOUT: Duration = Duration::from_secs(30);
 /// A pairing answer is a machine's ID and name, so anything longer isn't one.
@@ -63,7 +73,11 @@ pub struct Device {
 pub enum Connection {
     /// The first attempt hasn't finished yet.
     Connecting,
-    Online,
+    Online {
+        /// It hasn't answered for a while. Commands still go out, and either it answers
+        /// or the connection drops and they fail.
+        stalled: bool,
+    },
     Offline {
         reason: String,
     },
@@ -72,6 +86,13 @@ pub enum Connection {
         daemon_min: u32,
         daemon_max: u32,
     },
+}
+
+impl Connection {
+    /// Whether commands can be sent, which a stalled connection still takes.
+    pub fn is_online(&self) -> bool {
+        matches!(self, Connection::Online { .. })
+    }
 }
 
 /// Tells a UI what to redraw. Read the new values with [`Engine::devices`] and
@@ -84,11 +105,12 @@ pub enum Update {
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    #[error("machine {0} is offline")]
-    Offline(MachineId),
+    /// With the device's name, or its ID if it has never connected.
+    #[error("{0} is offline")]
+    Offline(String),
     /// The connection dropped before the answer came. The command may or may
     /// not have run, so the engine doesn't retry it.
-    #[error("the connection dropped before the daemon answered")]
+    #[error("the connection dropped before the device answered")]
     Disconnected,
     #[error("{}", .0.message)]
     Command(CommandError),
@@ -112,6 +134,8 @@ struct AttachedTerminal {
 enum Outgoing {
     Message(ClientMessage),
     Frame(Vec<u8>),
+    /// Asks the daemon's websocket for a pong, which shows it's still there.
+    Ping,
 }
 
 /// What this client needs to reach daemons on other machines.
@@ -188,6 +212,19 @@ impl Shared {
             .outgoing
             .as_ref()
     }
+
+    /// What to call a machine in an error: its device's name, or its ID if it has never
+    /// connected.
+    fn name_of(&self, machine_id: &MachineId) -> String {
+        self.daemons
+            .values()
+            .filter_map(|daemon| daemon.device.state.as_ref())
+            .find(|state| &state.machine.id == machine_id)
+            .map_or_else(
+                || machine_id.to_string(),
+                |state| state.machine.name.clone(),
+            )
+    }
 }
 
 struct Inner {
@@ -196,6 +233,9 @@ struct Inner {
     next_request: AtomicU64,
     client_name: String,
     remote: Option<RemoteSetup>,
+    liveness: Liveness,
+    /// Wakes every connection that's waiting to try again.
+    retry: Notify,
 }
 
 impl Inner {
@@ -261,9 +301,28 @@ impl Engine {
                 next_request: AtomicU64::new(1),
                 client_name,
                 remote,
+                liveness: Liveness::default(),
+                retry: Notify::new(),
             }),
             tasks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Changes how soon a quiet connection is given up on, which tests shorten. It only
+    /// works before the first daemon is added.
+    pub fn with_liveness(mut self, liveness: Liveness) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("liveness is set before any daemon is added")
+            .liveness = liveness;
+        self
+    }
+
+    /// Tries every device that isn't connected again now, instead of after its wait. An
+    /// attempt already under way starts over, because one at a device that was away
+    /// resends at growing gaps and a fresh one gets through sooner. So this is for when
+    /// someone asks or comes back, not for calling in a loop.
+    pub fn reconnect(&self) {
+        self.inner.retry.notify_waiters();
     }
 
     /// Adds a daemon and starts connecting to it. Adding one twice does nothing.
@@ -412,7 +471,8 @@ impl Engine {
         }
     }
 
-    /// Runs a command on a machine. It fails right away if the machine is offline.
+    /// Runs a command on a machine. It fails right away if the machine is offline, and
+    /// with [`EngineError::Disconnected`] if the connection drops before the answer.
     pub async fn request(
         &self,
         machine_id: &MachineId,
@@ -421,15 +481,14 @@ impl Engine {
         let id = self.inner.next_request.fetch_add(1, Ordering::Relaxed);
         let answer = {
             let mut shared = self.inner.lock();
-            let daemon = shared
-                .daemons
-                .values_mut()
-                .find(|daemon| {
-                    daemon.outgoing.is_some()
-                        && daemon.device.state.as_ref().map(|state| &state.machine.id)
-                            == Some(machine_id)
-                })
-                .ok_or_else(|| EngineError::Offline(machine_id.clone()))?;
+            let reachable = shared.daemons.values_mut().find(|daemon| {
+                daemon.outgoing.is_some()
+                    && daemon.device.state.as_ref().map(|state| &state.machine.id)
+                        == Some(machine_id)
+            });
+            let Some(daemon) = reachable else {
+                return Err(EngineError::Offline(shared.name_of(machine_id)));
+            };
             let (answer_tx, answer_rx) = oneshot::channel();
             daemon.waiting.insert(id, answer_tx);
             if let Some(outgoing) = &daemon.outgoing {
@@ -553,7 +612,7 @@ impl Engine {
         let shared = self.inner.lock();
         let outgoing = shared
             .outgoing(machine_id)
-            .ok_or_else(|| EngineError::Offline(machine_id.clone()))?;
+            .ok_or_else(|| EngineError::Offline(shared.name_of(machine_id)))?;
         let frame = frame::encode(Kind::Input, terminal_id, data);
         outgoing
             .send(Outgoing::Frame(frame))
@@ -580,14 +639,31 @@ impl Engine {
     }
 }
 
+/// Why a connection ended, or never started.
+enum Lost {
+    /// What to show until the next attempt.
+    Because(String),
+    /// Asked to try again in the middle of an attempt. What's shown stays as it is, and
+    /// the next attempt starts straight away.
+    Retry,
+}
+
+impl From<String> for Lost {
+    fn from(reason: String) -> Self {
+        Lost::Because(reason)
+    }
+}
+
 /// Keeps one daemon connected for as long as the engine lives.
 async fn maintain_connection(inner: Arc<Inner>, url: String) {
     let mut backoff = MIN_BACKOFF;
     loop {
-        let (outcome, was_online) = run_connection(&inner, &url).await;
+        let mut was_online = false;
+        let outcome = connect_and_run(&inner, &url, &mut was_online).await;
         if was_online {
             backoff = MIN_BACKOFF;
         }
+        let retry_now = matches!(outcome, Err(Lost::Retry));
         {
             let mut shared = inner.lock();
             let Some(daemon) = shared.daemons.get_mut(&url) else {
@@ -599,11 +675,23 @@ async fn maintain_connection(inner: Arc<Inner>, url: String) {
             if was_online {
                 daemon.device.last_seen_ms = Some(now_ms());
             }
-            daemon.device.connection = outcome;
+            match outcome {
+                Ok(state) => daemon.device.connection = state,
+                Err(Lost::Because(reason)) => {
+                    daemon.device.connection = Connection::Offline { reason };
+                }
+                Err(Lost::Retry) => {}
+            }
         }
         inner.device_changed(&url);
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(MAX_BACKOFF);
+        if retry_now {
+            backoff = MIN_BACKOFF;
+            continue;
+        }
+        tokio::select! {
+            () = tokio::time::sleep(backoff) => backoff = (backoff * 2).min(MAX_BACKOFF),
+            () = inner.retry.notified() => backoff = MIN_BACKOFF,
+        }
     }
 }
 
@@ -692,24 +780,16 @@ fn describe_write(error: iroh::endpoint::WriteError) -> String {
     }
 }
 
-/// Runs one connection until it ends. Returns the resulting connection state
-/// and whether this attempt ever got online.
-async fn run_connection(inner: &Inner, url: &str) -> (Connection, bool) {
-    let mut online = false;
-    let result = connect_and_run(inner, url, &mut online).await;
-    let state = match result {
-        Ok(state) => state,
-        Err(reason) => Connection::Offline { reason },
-    };
-    (state, online)
+enum Handshake {
+    /// The iroh connection comes along, because dropping it would close the stream.
+    Ready(Box<Socket>, Option<iroh::endpoint::Connection>),
+    /// The daemon answered, and this client can't talk to it.
+    Refused(Connection),
 }
 
-async fn connect_and_run(
-    inner: &Inner,
-    url: &str,
-    online: &mut bool,
-) -> Result<Connection, String> {
-    let (mut socket, _connection) = open(inner, url).await?;
+/// Connects and agrees on a protocol version.
+async fn handshake(inner: &Inner, url: &str) -> Result<Handshake, String> {
+    let (mut socket, connection) = open(inner, url).await?;
     send(
         &mut socket,
         Outgoing::Message(ClientMessage::Hello {
@@ -723,40 +803,112 @@ async fn connect_and_run(
     let welcome = loop {
         match next_message(&mut socket).await? {
             Incoming::Message(message) => break *message,
-            Incoming::Frame(_) => {}
+            Incoming::Frame(_) | Incoming::Alive => {}
         }
+    };
+    let refused = |daemon_min, daemon_max| {
+        Handshake::Refused(Connection::Incompatible {
+            daemon_min,
+            daemon_max,
+        })
     };
     match welcome {
         ServerMessage::Welcome { version, .. }
-            if (MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&version) => {}
-        ServerMessage::Welcome { version, .. } => {
-            return Ok(Connection::Incompatible {
-                daemon_min: version,
-                daemon_max: version,
-            });
+            if (MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&version) =>
+        {
+            Ok(Handshake::Ready(Box::new(socket), connection))
         }
+        ServerMessage::Welcome { version, .. } => Ok(refused(version, version)),
         ServerMessage::VersionRejected {
             min_version,
             max_version,
-        } => {
-            return Ok(Connection::Incompatible {
-                daemon_min: min_version,
-                daemon_max: max_version,
-            });
-        }
-        other => return Err(format!("expected a welcome, got {other:?}")),
+        } => Ok(refused(min_version, max_version)),
+        other => Err(format!("expected a welcome, got {other:?}")),
     }
+}
 
+/// Runs one connection until it ends. Returns what to show from then on, and sets
+/// `online` once the daemon's state has arrived.
+async fn connect_and_run(inner: &Inner, url: &str, online: &mut bool) -> Result<Connection, Lost> {
+    let attempt = tokio::time::timeout(CONNECT_TIMEOUT, handshake(inner, url));
+    let (mut socket, connection) = tokio::select! {
+        result = attempt => {
+            match result.map_err(|_| "the device didn't answer in time".to_owned())?? {
+                Handshake::Ready(socket, connection) => (*socket, connection),
+                Handshake::Refused(state) => return Ok(state),
+            }
+        }
+        () = inner.retry.notified() => return Err(Lost::Retry),
+    };
+
+    let liveness = inner.liveness;
+    let quiet = || "the device stopped answering".to_owned();
+    let mut ping =
+        tokio::time::interval_at(Instant::now() + liveness.ping_every, liveness.ping_every);
+    ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut heard = Instant::now();
+    let mut stalled = false;
+    let mut sleep = SleepWatch::start();
     let (outgoing, mut to_send) = mpsc::unbounded_channel();
     loop {
+        let deadline = heard + liveness.silence_limit;
         tokio::select! {
-            message = next_message(&mut socket) => match message? {
-                Incoming::Message(message) => handle_message(inner, url, *message, &outgoing, online),
-                Incoming::Frame(data) => handle_frame(inner, url, data),
-            },
-            Some(message) = to_send.recv() => send(&mut socket, message).await?,
+            message = next_message(&mut socket) => {
+                let message = message?;
+                heard = Instant::now();
+                if stalled {
+                    stalled = false;
+                    set_stalled(inner, url, false);
+                }
+                match message {
+                    Incoming::Message(message) => handle_message(inner, url, *message, &outgoing, online),
+                    Incoming::Frame(data) => handle_frame(inner, url, data),
+                    Incoming::Alive => {}
+                }
+            }
+            // A daemon that stopped reading would hold a send up for good, and the limit
+            // with it, so the limit covers sends too.
+            Some(message) = to_send.recv() => {
+                tokio::time::timeout_at(deadline, send(&mut socket, message))
+                    .await
+                    .map_err(|_| quiet())??;
+            }
+            _ = ping.tick() => {
+                // Timers stood still while this machine slept, but a daemon on another
+                // machine counted the silence and has let go of this connection. One on
+                // this machine slept too, and its connection is as it was.
+                if connection.is_some() && sleep.slept() >= liveness.daemon_limit() {
+                    return Err("this machine was asleep".to_owned().into());
+                }
+                if !stalled && heard.elapsed() >= liveness.stalled_after {
+                    stalled = true;
+                    set_stalled(inner, url, true);
+                }
+                tokio::time::timeout_at(deadline, send(&mut socket, Outgoing::Ping))
+                    .await
+                    .map_err(|_| quiet())??;
+            }
+            () = tokio::time::sleep_until(deadline) => return Err(quiet().into()),
         }
     }
+}
+
+/// Shows an online device as not responding, or as responding again.
+fn set_stalled(inner: &Inner, url: &str, stalled: bool) {
+    {
+        let mut shared = inner.lock();
+        let Some(daemon) = shared.daemons.get_mut(url) else {
+            return;
+        };
+        let Connection::Online { stalled: shown } = &mut daemon.device.connection else {
+            return;
+        };
+        if *shown == stalled {
+            return;
+        }
+        *shown = stalled;
+    }
+    inner.device_changed(url);
 }
 
 /// Hands a terminal's frame to whoever shows it, outside the lock.
@@ -810,7 +962,7 @@ fn handle_message(
                 if !*online {
                     resubscribe(open, terminals, &state.machine, outgoing);
                     daemon.outgoing = Some(outgoing.clone());
-                    daemon.device.connection = Connection::Online;
+                    daemon.device.connection = Connection::Online { stalled: false };
                     *online = true;
                 }
                 daemon.device.state = Some(state);
@@ -896,22 +1048,21 @@ fn resubscribe(
 enum Incoming {
     Message(Box<ServerMessage>),
     Frame(Vec<u8>),
+    /// A pong, or a ping: nothing but a sign that the daemon is there.
+    Alive,
 }
 
 async fn next_message(socket: &mut Socket) -> Result<Incoming, String> {
-    while let Some(frame) = socket.next().await {
-        match frame.map_err(|error| error.to_string())? {
-            Message::Text(text) => {
-                return serde_json::from_str(&text)
-                    .map(|message| Incoming::Message(Box::new(message)))
-                    .map_err(|error| format!("invalid daemon message: {error}"));
-            }
-            Message::Binary(data) => return Ok(Incoming::Frame(data.to_vec())),
-            Message::Close(_) => break,
-            _ => {}
-        }
+    let closed = || "the device closed the connection".to_owned();
+    let frame = socket.next().await.ok_or_else(closed)?;
+    match frame.map_err(|error| error.to_string())? {
+        Message::Text(text) => serde_json::from_str(&text)
+            .map(|message| Incoming::Message(Box::new(message)))
+            .map_err(|error| format!("invalid daemon message: {error}")),
+        Message::Binary(data) => Ok(Incoming::Frame(data.to_vec())),
+        Message::Close(_) => Err(closed()),
+        _ => Ok(Incoming::Alive),
     }
-    Err("the daemon closed the connection".to_owned())
 }
 
 async fn send(socket: &mut Socket, message: Outgoing) -> Result<(), String> {
@@ -920,6 +1071,7 @@ async fn send(socket: &mut Socket, message: Outgoing) -> Result<(), String> {
             Message::text(serde_json::to_string(&message).map_err(|error| error.to_string())?)
         }
         Outgoing::Frame(frame) => Message::binary(frame),
+        Outgoing::Ping => Message::Ping(Default::default()),
     };
     socket
         .send(message)

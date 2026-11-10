@@ -25,12 +25,14 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub use agents::{AgentLauncher, default_agents};
 use anyhow::{Context, Result};
 pub use awake::KeepAwakeCommand;
 pub use mcp::ConfigHome;
 use protocol::MachineId;
+use protocol::liveness::Liveness;
 pub use remote::Network;
 pub use terminal::Shell;
 use tokio::net::TcpListener;
@@ -58,6 +60,10 @@ pub struct Config {
     /// What starts in a new terminal.
     pub shell: Shell,
     pub network: Network,
+    /// How long a client may send nothing before its connection ends. Clients ping more
+    /// often than this, so one that's this quiet has gone, or gave up on this daemon while
+    /// it couldn't be reached.
+    pub client_silence: Duration,
 }
 
 impl Config {
@@ -71,6 +77,7 @@ impl Config {
             mcp_home: ConfigHome::from_env(),
             shell: Shell::login(),
             network: Network::default(),
+            client_silence: Liveness::default().daemon_limit(),
         }
     }
 }
@@ -116,6 +123,7 @@ impl Daemon {
                 config_home: config.mcp_home,
                 shell: config.shell,
                 network: config.network,
+                client_silence: config.client_silence,
             },
         )?;
         let machine_id = core.machine().id;

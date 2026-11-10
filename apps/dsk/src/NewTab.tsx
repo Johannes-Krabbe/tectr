@@ -49,6 +49,7 @@ const BUILT = KINDS.filter((k) => k.built);
  * straight away. */
 export function NewTab({
   entry,
+  online,
   state,
   onState,
   onSettings,
@@ -58,6 +59,8 @@ export function NewTab({
   onStalled,
 }: {
   entry: TopicEntry;
+  /** Nothing can be opened on a device that's away. */
+  online: boolean;
   state: NewTabState;
   onState: (state: NewTabState) => void;
   onSettings: (machineId: string) => void;
@@ -72,7 +75,7 @@ export function NewTab({
   const { machineId, topic } = entry;
 
   const choose = (kind: TabKind) => {
-    if (!KINDS.some((k) => k.kind === kind && k.built)) return;
+    if (!online || !KINDS.some((k) => k.kind === kind && k.built)) return;
     if (kind === "terminal") {
       onTerminal();
       return;
@@ -123,10 +126,10 @@ export function NewTab({
       />
     );
   }
-  return <Kinds onChoose={choose} />;
+  return <Kinds online={online} onChoose={choose} />;
 }
 
-function Kinds({ onChoose }: { onChoose: (kind: TabKind) => void }) {
+function Kinds({ online, onChoose }: { online: boolean; onChoose: (kind: TabKind) => void }) {
   const list = useRef<HTMLDivElement>(null);
   // Read through a ref, because the listener is added once.
   const chooseRef = useRef(onChoose);
@@ -171,7 +174,7 @@ function Kinds({ onChoose }: { onChoose: (kind: TabKind) => void }) {
             type="button"
             role="menuitem"
             className="new-tab-kind"
-            disabled={!k.built}
+            disabled={!k.built || !online}
             onClick={() => onChoose(k.kind)}
           >
             <Icon name={k.icon} />

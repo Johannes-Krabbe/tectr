@@ -11,7 +11,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use bytes::Bytes;
 use daemon::{AgentLauncher, Config, ConfigHome, Daemon};
-use engine::{Connection, Engine};
+use engine::Engine;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
@@ -90,7 +90,7 @@ impl Fixture {
         let engine = Engine::new("mcp-e2e");
         engine.add_daemon(&format!("ws://{}", daemon.addr()));
         engine.wait_until_settled().await;
-        assert_eq!(engine.devices()[0].connection, Connection::Online);
+        assert!(engine.devices()[0].connection.is_online());
         let machine = daemon.machine_id().clone();
         Self {
             _dir: dir,

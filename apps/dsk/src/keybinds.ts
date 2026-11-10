@@ -83,6 +83,7 @@ export type ActionId =
   | "global.import_conversation"
   | "global.pair_machine"
   | "global.add_device"
+  | "global.reconnect"
   | "global.topic_mcp"
   | "sidebar.up"
   | "sidebar.down"

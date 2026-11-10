@@ -39,7 +39,7 @@ Every other icon comes from Lucide through `apps/dsk/src/ui/Icon.tsx`, by a name
 The fixed section header that groups workspaces. It never collapses and isn't indented.
 
 - **Parts:** online dot, name, last seen when offline.
-- **States:** online (`status.online` dot), offline (hollow dot, name in `text.tertiary`).
+- **States:** online (`status.online` dot), not responding (the same dot, "Not responding" in `status.waiting`), offline (hollow dot, name in `text.tertiary`).
 - **iOS:** a `List` section header.
 
 ## WorkspaceRow

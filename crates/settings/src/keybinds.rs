@@ -280,6 +280,7 @@ pub const ACTIONS: &[Action] = &[
         "Add a device from another machine",
         &[],
     ),
+    once("global.reconnect", "Reconnect to offline devices", &[]),
     follows("sidebar.up", "Move up", "nav.up"),
     follows("sidebar.down", "Move down", "nav.down"),
     follows("sidebar.first", "Go to the first row", "nav.first"),

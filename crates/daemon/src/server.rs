@@ -9,14 +9,21 @@
 //!
 //! Terminals send their frames to the connections showing them, which pass them on as
 //! binary messages. Keeping up is up to each terminal, through what clients acknowledge.
+//!
+//! A client pings every couple of seconds. One that goes quiet for longer than
+//! `Config::client_silence` has gone or has given up on this daemon, and so has one that
+//! was kept waiting while this machine slept. Either way the connection ends before
+//! anything more is read from it, so what a client sent and stopped waiting for never
+//! runs later. See [`protocol::liveness`].
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use protocol::frame::{self, Kind};
+use protocol::liveness::SleepWatch;
 use protocol::{
     ClientMessage, Command, CommandError, CommandOutput, ErrorCode, MIN_PROTOCOL_VERSION,
     PROTOCOL_VERSION, ServerMessage, SessionId, StateChange, TerminalId, negotiate_version,
@@ -25,6 +32,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -180,6 +188,8 @@ async fn serve_socket(core: Arc<Core>, mut socket: Socket, peer: Peer) -> Result
     send(&mut socket, &ServerMessage::Snapshot { state }).await?;
 
     let (terminal_frames, mut frames) = mpsc::unbounded_channel();
+    let (responses, mut finished) = mpsc::unbounded_channel();
+    let silence = core.client_silence();
     let mut connection = Connection {
         core,
         socket,
@@ -187,55 +197,19 @@ async fn serve_socket(core: Arc<Core>, mut socket: Socket, peer: Peer) -> Result
         subscriptions: HashMap::new(),
         terminals: HashMap::new(),
         terminal_frames,
+        responses,
         peer,
+        sleep: SleepWatch::start(),
     };
-    let (responses, mut finished) =
-        mpsc::unbounded_channel::<(u64, Result<CommandOutput, CommandError>)>();
 
+    let mut heard = Instant::now();
     loop {
         tokio::select! {
-            message = next_message(&mut connection.socket) => match message? {
-                None => return Ok(()),
-                Some(Incoming::Frame(data)) => connection.frame(&data),
-                Some(Incoming::Message(ClientMessage::Request { id, command }))
-                    if connection.peer != Peer::Loopback
-                        && matches!(command, Command::StartPairing | Command::CancelPairing) =>
-                {
-                    let refusal = CommandError {
-                        code: ErrorCode::InvalidInput,
-                        message: "pairing only starts on the device itself".to_owned(),
-                    };
-                    connection.send_response(id, Err(refusal)).await?;
-                }
-                Some(Incoming::Message(ClientMessage::Request { id, command })) => {
-                    // Commands such as creating a worktree take time, and the
-                    // event stream shouldn't stall while they run.
-                    let core = connection.core.clone();
-                    let responses = responses.clone();
-                    tokio::spawn(async move {
-                        let _ = responses.send((id, core.handle(command).await));
-                    });
-                }
-                Some(Incoming::Message(ClientMessage::Subscribe { session_id, after_seq })) => {
-                    connection.subscribe(session_id, after_seq).await?;
-                }
-                Some(Incoming::Message(ClientMessage::Unsubscribe { session_id })) => {
-                    connection.subscriptions.remove(&session_id);
-                }
-                Some(Incoming::Message(ClientMessage::AttachTerminal {
-                    terminal_id,
-                    cols,
-                    rows,
-                    colors,
-                })) => connection.attach_terminal(terminal_id, cols, rows, colors),
-                Some(Incoming::Message(ClientMessage::DetachTerminal { terminal_id })) => {
-                    connection.detach_terminal(&terminal_id);
-                }
-                Some(Incoming::Message(ClientMessage::ResizeTerminal { terminal_id, cols, rows })) => {
-                    connection.core.resize_terminal(&terminal_id, cols, rows);
-                }
-                Some(Incoming::Message(ClientMessage::Hello { .. } | ClientMessage::Unknown)) => {}
-            },
+            message = next_message(&mut connection.socket) => {
+                let Some(incoming) = message? else { return Ok(()) };
+                heard = Instant::now();
+                connection.incoming(incoming, silence).await?;
+            }
             Some(frame) = frames.recv() => {
                 connection.socket.send(Message::binary(frame)).await?;
             }
@@ -247,9 +221,23 @@ async fn serve_socket(core: Arc<Core>, mut socket: Socket, peer: Peer) -> Result
             Some((id, result)) = finished.recv() => {
                 connection.send_response(id, result).await?;
             }
+            () = tokio::time::sleep_until(heard + silence) => {
+                // A long send can keep this loop from reading for longer than the limit,
+                // so what's already here gets one look before the client counts as gone.
+                match next_message(&mut connection.socket).now_or_never() {
+                    Some(message) => {
+                        let Some(incoming) = message? else { return Ok(()) };
+                        heard = Instant::now();
+                        connection.incoming(incoming, silence).await?;
+                    }
+                    None => bail!("the client went quiet"),
+                }
+            }
         }
     }
 }
+
+type Finished = (u64, Result<CommandOutput, CommandError>);
 
 struct Connection {
     core: Arc<Core>,
@@ -260,7 +248,10 @@ struct Connection {
     /// The terminals this client shows, with what each knows it as.
     terminals: HashMap<TerminalId, u64>,
     terminal_frames: mpsc::UnboundedSender<Vec<u8>>,
+    /// Where commands put their results once they finish.
+    responses: mpsc::UnboundedSender<Finished>,
     peer: Peer,
+    sleep: SleepWatch,
 }
 
 impl Drop for Connection {
@@ -272,6 +263,67 @@ impl Drop for Connection {
 }
 
 impl Connection {
+    /// Handles one thing the client sent.
+    async fn incoming(&mut self, incoming: Incoming, silence: Duration) -> Result<()> {
+        // Timers stood still while this machine slept, but a client on another machine
+        // counted the silence and gave up on this connection. What it sent before that,
+        // this included, is only arriving now and mustn't run. A client on this machine
+        // slept too, and is still waiting.
+        if self.peer != Peer::Loopback && self.sleep.slept() >= silence {
+            bail!("this machine slept for longer than the client waits");
+        }
+        match incoming {
+            Incoming::Alive
+            | Incoming::Message(ClientMessage::Hello { .. } | ClientMessage::Unknown) => {}
+            Incoming::Frame(data) => self.frame(&data),
+            Incoming::Message(ClientMessage::Request { id, command })
+                if self.peer != Peer::Loopback
+                    && matches!(command, Command::StartPairing | Command::CancelPairing) =>
+            {
+                let refusal = CommandError {
+                    code: ErrorCode::InvalidInput,
+                    message: "pairing only starts on the device itself".to_owned(),
+                };
+                self.send_response(id, Err(refusal)).await?;
+            }
+            Incoming::Message(ClientMessage::Request { id, command }) => {
+                // Commands such as creating a worktree take time, and the
+                // event stream shouldn't stall while they run.
+                let core = self.core.clone();
+                let responses = self.responses.clone();
+                tokio::spawn(async move {
+                    let _ = responses.send((id, core.handle(command).await));
+                });
+            }
+            Incoming::Message(ClientMessage::Subscribe {
+                session_id,
+                after_seq,
+            }) => {
+                self.subscribe(session_id, after_seq).await?;
+            }
+            Incoming::Message(ClientMessage::Unsubscribe { session_id }) => {
+                self.subscriptions.remove(&session_id);
+            }
+            Incoming::Message(ClientMessage::AttachTerminal {
+                terminal_id,
+                cols,
+                rows,
+                colors,
+            }) => self.attach_terminal(terminal_id, cols, rows, colors),
+            Incoming::Message(ClientMessage::DetachTerminal { terminal_id }) => {
+                self.detach_terminal(&terminal_id);
+            }
+            Incoming::Message(ClientMessage::ResizeTerminal {
+                terminal_id,
+                cols,
+                rows,
+            }) => {
+                self.core.resize_terminal(&terminal_id, cols, rows);
+            }
+        }
+        Ok(())
+    }
+
     fn attach_terminal(
         &mut self,
         id: TerminalId,
@@ -420,23 +472,23 @@ enum Incoming {
     Message(ClientMessage),
     /// A binary terminal frame.
     Frame(Vec<u8>),
+    /// A ping, which the websocket answers by itself: nothing but a sign the client is there.
+    Alive,
 }
 
-/// Returns the next protocol message, or `None` once the client has gone.
+/// Returns the next thing the client sent, or `None` once it has gone.
 async fn next_message(socket: &mut Socket) -> Result<Option<Incoming>> {
-    while let Some(frame) = socket.next().await {
-        match frame? {
-            Message::Text(text) => {
-                return Ok(Some(Incoming::Message(
-                    serde_json::from_str(&text).context("invalid client message")?,
-                )));
-            }
-            Message::Binary(data) => return Ok(Some(Incoming::Frame(data.to_vec()))),
-            Message::Close(_) => return Ok(None),
-            _ => {}
-        }
-    }
-    Ok(None)
+    let Some(frame) = socket.next().await else {
+        return Ok(None);
+    };
+    Ok(match frame? {
+        Message::Text(text) => Some(Incoming::Message(
+            serde_json::from_str(&text).context("invalid client message")?,
+        )),
+        Message::Binary(data) => Some(Incoming::Frame(data.to_vec())),
+        Message::Close(_) => None,
+        _ => Some(Incoming::Alive),
+    })
 }
 
 async fn send(socket: &mut Socket, message: &ServerMessage) -> Result<()> {

@@ -519,6 +519,10 @@ button.side-search:hover {
 
 .terminal-host:focus { outline: 0; }
 
+/* Its device is away, so this is what it last showed, and typing goes nowhere. Dimmed like a
+   disabled button. */
+.terminal.stale .terminal-host { opacity: 0.5; }
+
 .terminal .xterm { height: 100%; }
 
 /* The grid is whole cells, so a sliver of the host shows past it. xterm.js paints that black
@@ -820,6 +824,17 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 }
 
 .main-error { padding: var(--space-xs) var(--space-lg); }
+
+/* What's keeping the shown topic's device from answering, above its pane. */
+.main-notice {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-xs) var(--space-lg);
+  color: var(--color-status-waiting);
+  font: var(--text-meta);
+}
 
 .dock {
   flex: none;

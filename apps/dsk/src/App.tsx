@@ -9,10 +9,12 @@ import {
   errorText,
   type PromptImage,
   forgetDevice,
+  reconnect,
   request,
   type Session,
   type Topic,
   useDevices,
+  useWaiting,
   type Workspace,
 } from "./engine";
 import {
@@ -40,6 +42,7 @@ import {
 import {
   allTopics,
   conversationsFor,
+  deviceNotice,
   folderName,
   isOnline,
   keepsAwake,
@@ -283,6 +286,9 @@ export function App() {
     .map((item) => item.approval);
 
   const reportFailure = (reason: unknown) => setError(errorText(reason));
+
+  /** Tries the devices that are away now, rather than whenever their next attempt is due. */
+  const reconnectNow = () => void reconnect().catch(reportFailure);
 
   const show = (next: View | null) => {
     const workspaceId =
@@ -768,12 +774,14 @@ export function App() {
         requests: requests.length,
         unread: unreadTopics.length,
         online: devices.some(isOnline),
+        away: devices.some((device) => !isOnline(device)),
         local: localDevice?.state?.machine.name,
       }),
       {
         next: nextRequest,
         "mark-all-read": markAllRead,
         "archived-topics": () => void findArchived().catch(reportFailure),
+        reconnect: reconnectNow,
         "add-device": () => setSheet({ kind: "add_device" }),
         "pair-machine": () => {
           if (localDevice) void pairWith(localDevice).catch(reportFailure);
@@ -1038,6 +1046,7 @@ export function App() {
         ],
         ["global.pair_machine", () => localDevice && void pairWith(localDevice).catch(reportFailure)],
         ["global.add_device", () => setSheet({ kind: "add_device" })],
+        ["global.reconnect", reconnectNow],
         ["global.topic_mcp", () => openTopicMcp()],
       ];
       TAB_ACTIONS.forEach((id, index) => {
@@ -1205,6 +1214,7 @@ export function App() {
                   <Icon name="more" />
                 </MenuButton>
               </div>
+              <DeviceNoticeLine device={entry.device} onReconnect={reconnectNow} />
               {error && <p className="error main-error">{error}</p>}
               {session ? (
                 <AgentPane
@@ -1234,6 +1244,7 @@ export function App() {
                 <NewTab
                   key={entry.topic.id}
                   entry={entry}
+                  online={isOnline(entry.device)}
                   state={newTabStates[entry.topic.id] ?? NEW_TAB_STATE}
                   onState={(state) => setNewTabState(entry.topic.id, state)}
                   onSettings={openSettings}
@@ -1290,6 +1301,30 @@ export function App() {
       {shownValue("general.show_shortcuts") === true && <ShortcutBar />}
       <Toasts />
     </div>
+  );
+}
+
+/** Says so while the shown topic's device is away, slow to answer or not answering, so a key
+ * that seems to do nothing has its reason on screen. */
+function DeviceNoticeLine({ device, onReconnect }: { device: Device; onReconnect: () => void }) {
+  const waiting = useWaiting(device.state?.machine.id);
+  const notice = deviceNotice(device, waiting);
+  if (!notice) return null;
+  return (
+    <p className="main-notice" role="status" title={notice.detail}>
+      <span>{notice.text}</span>
+      {notice.reconnect && (
+        // Focus stays in the pane, where the keys are.
+        <button
+          className="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={onReconnect}
+        >
+          Reconnect
+          <Keys action="global.reconnect" />
+        </button>
+      )}
+    </p>
   );
 }
 

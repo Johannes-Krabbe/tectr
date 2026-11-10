@@ -524,7 +524,7 @@ async fn main() -> Result<()> {
                 bail!("no paired device matches {device}");
             };
             if let Some(state) = &found.state
-                && found.connection == Connection::Online
+                && found.connection.is_online()
             {
                 let key = store.key()?.public().to_string();
                 // It may already have removed this machine itself.
@@ -592,7 +592,7 @@ fn online_devices(engine: &Engine) -> Vec<Device> {
     engine
         .devices()
         .into_iter()
-        .filter(|device| device.connection == Connection::Online)
+        .filter(|device| device.connection.is_online())
         .collect()
 }
 
@@ -755,7 +755,8 @@ fn print_status(engine: &Engine) {
     for device in engine.devices() {
         let connection = match &device.connection {
             Connection::Connecting => "connecting".to_owned(),
-            Connection::Online => "online".to_owned(),
+            Connection::Online { stalled: false } => "online".to_owned(),
+            Connection::Online { stalled: true } => "not responding".to_owned(),
             Connection::Offline { .. } => "offline".to_owned(),
             Connection::Incompatible {
                 daemon_min,

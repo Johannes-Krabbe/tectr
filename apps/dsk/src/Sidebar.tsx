@@ -2,7 +2,7 @@ import type { KeyboardEvent } from "react";
 import type { Device, Workspace } from "./engine";
 import type { View } from "./navigation";
 import { act } from "./keybinds";
-import { ago, isOnline, STATE_LABEL, topicState } from "./model";
+import { ago, connectionProblem, deviceName, isOnline, STATE_LABEL, topicState } from "./model";
 import { Icon } from "./ui/Icon";
 import { MenuButton, type MenuGroups, RightClickMenu } from "./ui/Menu";
 import { Keys, StatusIcon } from "./ui/StatusIcon";
@@ -26,7 +26,7 @@ interface Props {
 function deviceMeta(device: Device): string | null {
   switch (device.connection.state) {
     case "online":
-      return null;
+      return device.connection.stalled ? "Not responding" : null;
     case "connecting":
       return "Connecting";
     case "incompatible":
@@ -126,19 +126,21 @@ export function Sidebar({
         {devices.map((device) => {
           const online = isOnline(device);
           const machineId = device.state?.machine.id;
-          const name = device.state?.machine.name ?? device.url;
+          const name = deviceName(device);
           const refusal = `${name} is offline, so nothing can be created there`;
           return (
             <section key={device.url}>
               <div
                 className={`row device ${online ? "" : "off"}`}
-                title={offlineReason(device)}
+                title={connectionProblem(device)}
                 data-nav={online ? "" : undefined}
                 tabIndex={-1}
               >
                 <span className={`dot ${online ? "" : "off"}`} />
                 <span className="name">{name}</span>
-                {deviceMeta(device) && <span className="meta">{deviceMeta(device)}</span>}
+                {deviceMeta(device) && (
+                  <span className={online ? "meta alert" : "meta"}>{deviceMeta(device)}</span>
+                )}
                 <button
                   className="gear"
                   disabled={!online}
@@ -247,13 +249,4 @@ export function Sidebar({
       </div>
     </aside>
   );
-}
-
-function offlineReason(device: Device): string | undefined {
-  const { connection } = device;
-  if (connection.state === "offline") return connection.reason;
-  if (connection.state === "incompatible") {
-    return `The daemon speaks protocol ${connection.daemon_min} to ${connection.daemon_max}, which this app doesn't`;
-  }
-  return undefined;
 }

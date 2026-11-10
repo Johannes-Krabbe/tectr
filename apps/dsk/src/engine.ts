@@ -3,7 +3,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { trackRequests } from "./requests";
 
 export type PermissionMode = "manual" | "auto" | "yolo" | "unknown";
 
@@ -268,7 +269,9 @@ export interface DeviceSettings {
 
 export type Connection =
   | { state: "connecting" }
-  | { state: "online" }
+  /** Stalled: it hasn't answered for a while. Commands still go out, and either it answers or
+   * the connection drops and they fail. */
+  | { state: "online"; stalled: boolean }
   | { state: "offline"; reason: string }
   | { state: "incompatible"; daemon_min: number; daemon_max: number };
 
@@ -405,9 +408,38 @@ export type CommandOutput =
   | { output: "done" }
   | { output: "unknown" };
 
-/** Rejects with the daemon's message, which is written to be shown as is. */
+const requests = trackRequests<Command, CommandOutput>((machineId, command) =>
+  invoke("request", { machineId, command }),
+);
+
+/** Rejects with the daemon's message, which is written to be shown as is. A command sent again
+ * before its answer is back is the same press, and gets the same answer. */
 export function request(machineId: string, command: Command): Promise<CommandOutput> {
-  return invoke("request", { machineId, command });
+  return requests.request(machineId, command);
+}
+
+/** How long a command goes unanswered before the wait is worth showing. A device that's there
+ * answers sooner, even over a relay. */
+const WAIT_SHOWN_MS = 1000;
+
+/** Whether a device has kept a command waiting long enough to say so. */
+export function useWaiting(machineId: string | undefined): boolean {
+  const since = useSyncExternalStore(requests.subscribe, () =>
+    machineId === undefined ? null : requests.waitingSince(machineId),
+  );
+  const [late, setLate] = useState(false);
+  useEffect(() => {
+    setLate(false);
+    if (since === null) return;
+    const timer = setTimeout(() => setLate(true), Math.max(0, since + WAIT_SHOWN_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [since]);
+  return since !== null && late;
+}
+
+/** Tries the devices that aren't connected again now, instead of after their wait. */
+export function reconnect(): Promise<void> {
+  return invoke("reconnect");
 }
 
 /** Pairs with a device on another machine using the code it showed, and keeps it. */

@@ -14,7 +14,7 @@ function status(device: Device): string {
     case "connecting":
       return "Connecting";
     case "online":
-      return "Online";
+      return device.connection.stalled ? "Not responding" : "Online";
     case "offline":
       return "Offline";
     case "incompatible":

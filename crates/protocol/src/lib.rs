@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod frame;
+pub mod liveness;
 
 /// The newest protocol version this build speaks. It's separate from crate
 /// versions because components ship independently.

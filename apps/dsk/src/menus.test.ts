@@ -51,6 +51,12 @@ test("the app's menu only offers what would do something", () => {
   assert.equal(busy[1][1].inPalette, "Pair another machine with Laptop");
 });
 
+test("reconnecting is only offered while a device is away", () => {
+  const away = appItems({ requests: 0, unread: 0, online: true, away: true });
+  assert.deepEqual(ids(away)[1], ["reconnect", "add-device"]);
+  assert.equal(away[1][0].key, "global.reconnect");
+});
+
 test("every item gets what runs it, and empty groups go", () => {
   const ran: string[] = [];
   const run = (id: string) => () => ran.push(id);
@@ -58,6 +64,7 @@ test("every item gets what runs it, and empty groups go", () => {
     next: run("next"),
     "mark-all-read": run("mark-all-read"),
     "archived-topics": run("archived-topics"),
+    reconnect: run("reconnect"),
     "add-device": run("add-device"),
     "pair-machine": run("pair-machine"),
   });
