@@ -7,9 +7,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use protocol::{
     AgentCommand, Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, Machine,
-    MachineId, McpServer, McpServerId, PermissionMode, Provider, Session, SessionEvent,
-    SessionEventKind, SessionId, SessionRef, SessionStatus, Terminal, TerminalId, TerminalStatus,
-    Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId,
+    MachineId, McpServer, McpServerId, PairedClient, PermissionMode, Provider, Session,
+    SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, Terminal, TerminalId,
+    TerminalStatus, Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId,
 };
 
 use crate::oauth::Login;
@@ -121,6 +121,13 @@ const MIGRATIONS: &[&str] = &[
         closed_at_ms INTEGER
     );
 ",
+    "
+    CREATE TABLE paired_clients (
+        key TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        paired_at_ms INTEGER NOT NULL
+    );
+",
 ];
 
 pub struct Store {
@@ -166,6 +173,44 @@ impl Store {
             [&id],
         )?;
         Ok(MachineId(id))
+    }
+
+    /// The secret half of the key this daemon is reached by over iroh, made the first
+    /// time something asks. It's what a paired client checks it's talking to.
+    pub fn remote_key(&self, generate: impl FnOnce() -> String) -> Result<String> {
+        let existing: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'remote_key'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if let Some(key) = existing {
+            return Ok(key);
+        }
+        let key = generate();
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('remote_key', ?1)",
+            [&key],
+        )?;
+        Ok(key)
+    }
+
+    pub fn insert_paired_client(&self, client: &PairedClient) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO paired_clients (key, name, paired_at_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT (key) DO UPDATE SET name = excluded.name,
+                 paired_at_ms = excluded.paired_at_ms",
+            params![client.key, client.name, client.paired_at_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Whether there was one to remove.
+    pub fn delete_paired_client(&self, key: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM paired_clients WHERE key = ?1", [key])?
+            > 0)
     }
 
     /// The name someone gave this machine, if they did.
@@ -248,6 +293,17 @@ impl Store {
                 .iter()
                 .filter_map(|server| serde_json::from_str(server).ok())
                 .collect(),
+            paired_clients: self.collect(
+                "SELECT key, name, paired_at_ms FROM paired_clients ORDER BY rowid",
+                [],
+                |row| {
+                    Ok(PairedClient {
+                        key: row.get(0)?,
+                        name: row.get(1)?,
+                        paired_at_ms: row.get(2)?,
+                    })
+                },
+            )?,
         })
     }
 
@@ -898,6 +954,40 @@ mod tests {
         assert_eq!(store.machine_name().unwrap().as_deref(), Some("Laptop"));
         store.set_machine_name(None).unwrap();
         assert_eq!(store.machine_name().unwrap(), None);
+    }
+
+    #[test]
+    fn paired_clients_and_the_remote_key_survive_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tectr.db");
+        let client = PairedClient {
+            key: "k".into(),
+            name: "Laptop".into(),
+            paired_at_ms: 5,
+        };
+        {
+            let store = Store::open(&path).unwrap();
+            assert_eq!(store.remote_key(|| "secret".into()).unwrap(), "secret");
+            store.insert_paired_client(&client).unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store
+                .remote_key(|| unreachable!("the key is kept"))
+                .unwrap(),
+            "secret"
+        );
+        let state = store.load_state(machine()).unwrap();
+        assert_eq!(state.paired_clients, vec![client]);
+        assert!(store.delete_paired_client("k").unwrap());
+        assert!(!store.delete_paired_client("k").unwrap());
+        assert!(
+            store
+                .load_state(machine())
+                .unwrap()
+                .paired_clients
+                .is_empty()
+        );
     }
 
     #[test]

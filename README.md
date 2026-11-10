@@ -34,7 +34,7 @@ This installs the app, the `tectr` CLI and `tectr-daemon`, and runs the daemon a
 
 Anything built from source is a dev build: its daemon uses port 7769, `~/Library/Application Support/tectr-dev` and `~/.config/tectr-dev`, so it runs next to the installed app without sharing anything. Only `mise run release` builds use the installed app's port 7767 and `tectr` folders.
 
-Start the daemon. It listens on loopback only:
+Start the daemon. Its websocket listens on loopback only, and other machines reach it over iroh once paired (see below):
 
 ```sh
 cargo run -p daemon
@@ -75,7 +75,18 @@ tectr mcp off github --topic <topic>   # also: on, default, rm, login, logout, i
 
 Topics can be named by their exact name or an ID prefix. Single-quote `${VAR}` values so the daemon, not your shell, fills them in.
 
-To use several daemons, repeat `--daemon` or set `TECTR_DAEMONS` to a comma-separated list of URLs.
+To reach a daemon on another machine, pair with it. No VPN or port forwarding is needed: connections go over [iroh](https://iroh.computer), directly when the network allows and otherwise through n0's public relays, end-to-end encrypted either way.
+
+```sh
+tectr pair                             # on the machine to reach: prints a code that works once, for 5 minutes
+tectr add-device <code>                # on the machine that wants in
+tectr unpair <client> [--on <device>]  # take a machine off a device's allowed list
+tectr remove-device <device>           # stop reaching a paired device
+```
+
+In the desktop app, the same is "Pair another machine" and "Add a device" in the palette, and a device's Pairing settings.
+
+Without `--daemon`, the CLI and the app use this machine's daemon and every device paired from this machine. To choose daemons yourself, repeat `--daemon` or set `TECTR_DAEMONS` to a comma-separated list of URLs.
 
 Permission modes are `manual`, `auto` (the default), and `yolo`. `yolo` never asks before running anything.
 

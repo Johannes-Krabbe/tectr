@@ -190,6 +190,15 @@ export interface DaemonState {
   settings?: DeviceSettings;
   /** The MCP servers agents on this device get, device-wide and per topic. */
   mcp_servers?: McpServer[];
+  /** The clients on other machines that may connect, oldest first. */
+  paired_clients?: PairedClient[];
+}
+
+/** A client on another machine that may connect to a daemon, by the key it proves. */
+export interface PairedClient {
+  key: string;
+  name: string;
+  paired_at_ms: number;
 }
 
 /** How agents reach an MCP server. Values may name the daemon's environment as `${NAME}`. */
@@ -322,7 +331,10 @@ export type Command =
   | { command: "login_mcp_server"; id: string }
   | { command: "complete_mcp_login"; state: string; code: string }
   | { command: "logout_mcp_server"; id: string }
-  | { command: "import_mcp_servers" };
+  | { command: "import_mcp_servers" }
+  | { command: "start_pairing" }
+  | { command: "cancel_pairing" }
+  | { command: "remove_paired_client"; key: string };
 
 export type CommandOutput =
   | { output: "workspace"; workspace: Workspace }
@@ -339,12 +351,29 @@ export type CommandOutput =
   | { output: "mcp_login"; url: string }
   /** The names added, and why each one left out was. */
   | { output: "mcp_import"; added: string[]; skipped: string[] }
+  /** A code that pairs one more machine, once, until it expires. */
+  | { output: "pairing"; code: string; expires_at_ms: number }
   | { output: "done" }
   | { output: "unknown" };
 
 /** Rejects with the daemon's message, which is written to be shown as is. */
 export function request(machineId: string, command: Command): Promise<CommandOutput> {
   return invoke("request", { machineId, command });
+}
+
+/** Pairs with a device on another machine using the code it showed, and keeps it. */
+export function pairDevice(code: string): Promise<void> {
+  return invoke("pair_device", { code });
+}
+
+/** Stops reaching a paired device, taking this app off its allowed list if it's online. */
+export function forgetDevice(url: string): Promise<void> {
+  return invoke("forget_device", { url });
+}
+
+/** The key this app proves to other machines, which their paired clients list. */
+export function clientKey(): Promise<string> {
+  return invoke("client_key");
 }
 
 export function errorText(error: unknown): string {

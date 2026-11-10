@@ -7,6 +7,7 @@ import {
   type Approval,
   type Device,
   errorText,
+  forgetDevice,
   request,
   type Session,
   type Topic,
@@ -318,6 +319,28 @@ export function App() {
     if (!device.state) return;
     const { id, name } = device.state.machine;
     setSheet({ kind: "workspace", machineId: id, deviceName: name, local: isLoopback(device.url) });
+  };
+
+  // Pairing starts on the device itself, which is the one reached over loopback.
+  const localDevice = devices.find((d) => isLoopback(d.url) && isOnline(d));
+
+  const pairWith = async (device: Device) => {
+    if (!device.state || !isOnline(device)) return;
+    const { id, name } = device.state.machine;
+    const output = await request(id, { command: "start_pairing" });
+    if (output.output !== "pairing") return;
+    setSheet({
+      kind: "pairing",
+      machineId: id,
+      deviceName: name,
+      code: output.code,
+      expiresAtMs: output.expires_at_ms,
+    });
+  };
+
+  const forget = async (device: Device) => {
+    if (device === settingsDevice) closeSettings();
+    await forgetDevice(device.url);
   };
 
   // Editing a name in place ends once its device's General settings aren't showing.
@@ -805,6 +828,30 @@ export function App() {
         run: () => void findArchived().catch(reportFailure),
       });
     }
+    if (localDevice?.state) {
+      const device = localDevice;
+      items.push({
+        id: "pair-machine",
+        label: `Pair another machine with ${localDevice.state.machine.name}`,
+        keys: keysLabel("global.pair_machine"),
+        run: () => void pairWith(device).catch(reportFailure),
+      });
+    }
+    items.push({
+      id: "add-device",
+      label: "Add a device",
+      detail: "From another machine",
+      keys: keysLabel("global.add_device"),
+      run: () => setSheet({ kind: "add_device" }),
+    });
+    for (const device of devices.filter((d) => !isLoopback(d.url))) {
+      items.push({
+        id: `forget-device/${device.url}`,
+        label: `Remove ${device.state?.machine.name ?? device.url} from this app`,
+        keys: device === settingsDevice ? keysLabel("pairing.forget") : undefined,
+        run: () => void forget(device).catch(reportFailure),
+      });
+    }
     items.push({
       id: "sidebar",
       label: "Go to the sidebar",
@@ -822,6 +869,12 @@ export function App() {
       label: "Appearance",
       detail: "Theme, fonts and layout",
       run: () => openAppSettings("appearance"),
+    });
+    items.push({
+      id: "devices",
+      label: "Devices",
+      detail: "The devices this app reaches",
+      run: () => openAppSettings("devices"),
     });
     for (const t of topics) {
       items.push({
@@ -936,6 +989,8 @@ export function App() {
         ["global.toggle_vim", () => toggleVim().catch(reportFailure)],
         ["global.move_topic", () => entry && pickFolder(entry)],
         ["global.archived_topics", () => void findArchived().catch(reportFailure)],
+        ["global.pair_machine", () => localDevice && void pairWith(localDevice).catch(reportFailure)],
+        ["global.add_device", () => setSheet({ kind: "add_device" })],
         ["global.topic_mcp", openTopicMcp],
       ];
       TAB_ACTIONS.forEach((id, index) => {
@@ -990,6 +1045,11 @@ export function App() {
           section={view.section}
           onSection={(section) => show({ kind: "app_settings", section })}
           onClose={closeSettings}
+          devices={devices}
+          onAddDevice={() => setSheet({ kind: "add_device" })}
+          onPair={localDevice && (() => void pairWith(localDevice).catch(reportFailure))}
+          onForget={(device) => void forget(device).catch(reportFailure)}
+          onOpenDevice={(device) => device.state && openSettings(device.state.machine.id)}
         />
       ) : settingsDevice ? (
         <DeviceSettings
@@ -1001,6 +1061,8 @@ export function App() {
           renaming={renamingDevice === settingsDevice.state?.machine.id}
           onRename={() => renameDevice(settingsDevice)}
           onRenameEnd={() => setRenamingDevice(null)}
+          onPair={() => void pairWith(settingsDevice).catch(reportFailure)}
+          onForget={() => void forget(settingsDevice).catch(reportFailure)}
           onClose={closeSettings}
         />
       ) : (
@@ -1110,11 +1172,13 @@ export function App() {
         <Sheets
           sheet={sheet}
           workspaces={
-            devices.find((d) => d.state?.machine.id === sheet.machineId)?.state?.workspaces ?? []
+            ("machineId" in sheet
+              ? devices.find((d) => d.state?.machine.id === sheet.machineId)?.state?.workspaces
+              : undefined) ?? []
           }
           onClose={() => setSheet(null)}
           onDone={(output) => {
-            if (output.output === "workspace") {
+            if (output.output === "workspace" && sheet.kind === "workspace") {
               open(landingIn(navigation, sheet.machineId, output.workspace));
             }
             // The tab can already be gone by now, so this can't wait for the change.

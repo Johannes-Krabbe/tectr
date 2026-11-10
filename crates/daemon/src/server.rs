@@ -1,4 +1,6 @@
-//! The websocket server. Each connection handles its own subscriptions.
+//! The websocket server. Each connection handles its own subscriptions. Loopback
+//! connections arrive over TCP, and paired remote clients over a QUIC stream from
+//! `crate::remote`, with the same protocol on both.
 //!
 //! A session's events can reach a connection from two places: stored history
 //! and the live broadcast. Tracking the last sequence number sent per session
@@ -16,9 +18,10 @@ use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use protocol::frame::{self, Kind};
 use protocol::{
-    ClientMessage, CommandError, CommandOutput, MIN_PROTOCOL_VERSION, PROTOCOL_VERSION,
-    ServerMessage, SessionId, TerminalId, negotiate_version,
+    ClientMessage, Command, CommandError, CommandOutput, ErrorCode, MIN_PROTOCOL_VERSION,
+    PROTOCOL_VERSION, ServerMessage, SessionId, StateChange, TerminalId, negotiate_version,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinSet;
@@ -33,7 +36,32 @@ use crate::terminal::Subscriber;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const REPLAY_PAGE_SIZE: usize = 500;
 
-type Socket = WebSocketStream<TcpStream>;
+/// A byte stream a websocket can run over: TCP, or a QUIC stream.
+pub(crate) trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
+
+type Socket = WebSocketStream<Box<dyn Io>>;
+
+/// Who is on the other end of a connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Peer {
+    /// A client on this machine.
+    Loopback,
+    /// A paired client on another machine, by its public key.
+    Remote { key: String },
+}
+
+impl Peer {
+    /// The client went off the allowed list, so this connection has to end.
+    fn removed_by(&self, change: &StateChange) -> bool {
+        match (self, change) {
+            (Peer::Remote { key }, StateChange::PairedClientRemoved { key: removed }) => {
+                key == removed
+            }
+            _ => false,
+        }
+    }
+}
 
 pub async fn accept_loop(
     core: Arc<Core>,
@@ -83,10 +111,31 @@ async fn serve(core: Arc<Core>, stream: TcpStream) -> Result<()> {
     }
     // Each keystroke's echo is a small write, which shouldn't wait to be combined with others.
     let _ = stream.set_nodelay(true);
-    let mut socket = tokio_tungstenite::accept_hdr_async(stream, reject_browsers)
+    let stream: Box<dyn Io> = Box::new(stream);
+    let socket = tokio_tungstenite::accept_hdr_async(stream, reject_browsers)
         .await
         .context("websocket handshake failed")?;
+    serve_socket(core, socket, Peer::Loopback).await
+}
 
+/// Serves a paired client on another machine. `crate::remote` has checked its key.
+pub(crate) async fn serve_remote(
+    core: Arc<Core>,
+    stream: impl Io + 'static,
+    key: String,
+) -> Result<()> {
+    let stream: Box<dyn Io> = Box::new(stream);
+    let socket = tokio::time::timeout(
+        HELLO_TIMEOUT,
+        tokio_tungstenite::accept_hdr_async(stream, reject_browsers),
+    )
+    .await
+    .context("no websocket handshake in time")?
+    .context("websocket handshake failed")?;
+    serve_socket(core, socket, Peer::Remote { key }).await
+}
+
+async fn serve_socket(core: Arc<Core>, mut socket: Socket, peer: Peer) -> Result<()> {
     let hello = tokio::time::timeout(HELLO_TIMEOUT, next_message(&mut socket))
         .await
         .context("no hello in time")??;
@@ -122,6 +171,12 @@ async fn serve(core: Arc<Core>, stream: TcpStream) -> Result<()> {
     .await?;
 
     let (state, signals) = core.snapshot_and_subscribe();
+    // The key was checked before the handshake, and could have been removed since.
+    if let Peer::Remote { key } = &peer
+        && !state.paired_clients.iter().any(|client| &client.key == key)
+    {
+        bail!("no longer paired");
+    }
     send(&mut socket, &ServerMessage::Snapshot { state }).await?;
 
     let (terminal_frames, mut frames) = mpsc::unbounded_channel();
@@ -132,6 +187,7 @@ async fn serve(core: Arc<Core>, stream: TcpStream) -> Result<()> {
         subscriptions: HashMap::new(),
         terminals: HashMap::new(),
         terminal_frames,
+        peer,
     };
     let (responses, mut finished) =
         mpsc::unbounded_channel::<(u64, Result<CommandOutput, CommandError>)>();
@@ -141,6 +197,16 @@ async fn serve(core: Arc<Core>, stream: TcpStream) -> Result<()> {
             message = next_message(&mut connection.socket) => match message? {
                 None => return Ok(()),
                 Some(Incoming::Frame(data)) => connection.frame(&data),
+                Some(Incoming::Message(ClientMessage::Request { id, command }))
+                    if connection.peer != Peer::Loopback
+                        && matches!(command, Command::StartPairing | Command::CancelPairing) =>
+                {
+                    let refusal = CommandError {
+                        code: ErrorCode::InvalidInput,
+                        message: "pairing only starts on the device itself".to_owned(),
+                    };
+                    connection.send_response(id, Err(refusal)).await?;
+                }
                 Some(Incoming::Message(ClientMessage::Request { id, command })) => {
                     // Commands such as creating a worktree take time, and the
                     // event stream shouldn't stall while they run.
@@ -194,6 +260,7 @@ struct Connection {
     /// The terminals this client shows, with what each knows it as.
     terminals: HashMap<TerminalId, u64>,
     terminal_frames: mpsc::UnboundedSender<Vec<u8>>,
+    peer: Peer,
 }
 
 impl Drop for Connection {
@@ -264,6 +331,9 @@ impl Connection {
     async fn forward(&mut self, signal: Signal) -> Result<()> {
         match signal {
             Signal::State(change) => {
+                if self.peer.removed_by(&change) {
+                    bail!("no longer paired");
+                }
                 let change = (*change).clone();
                 send(&mut self.socket, &ServerMessage::StateChanged { change }).await
             }
@@ -290,6 +360,12 @@ impl Connection {
     async fn resynchronize(&mut self) -> Result<()> {
         tracing::debug!("a client fell behind, resynchronizing");
         let (state, signals) = self.core.snapshot_and_subscribe();
+        // A removal could be among the changes this client missed.
+        if let Peer::Remote { key } = &self.peer
+            && !state.paired_clients.iter().any(|client| &client.key == key)
+        {
+            bail!("no longer paired");
+        }
         self.signals = signals;
         send(&mut self.socket, &ServerMessage::Snapshot { state }).await?;
         let sessions: Vec<SessionId> = self.subscriptions.keys().cloned().collect();

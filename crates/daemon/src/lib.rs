@@ -1,6 +1,7 @@
 //! The tectr daemon. It runs on each machine, owns that machine's workspaces,
 //! topics, and sessions, and drives agents over ACP. Clients come and go over a
-//! loopback websocket and always see the same event schema.
+//! loopback websocket, or over iroh from a paired machine, and always see the same
+//! event schema.
 
 mod acp;
 mod agents;
@@ -11,6 +12,7 @@ mod git;
 mod http;
 mod mcp;
 mod oauth;
+mod remote;
 mod server;
 #[cfg(unix)]
 pub mod shell_env;
@@ -27,6 +29,7 @@ use anyhow::{Context, Result};
 pub use awake::KeepAwakeCommand;
 pub use mcp::ConfigHome;
 use protocol::MachineId;
+pub use remote::Network;
 pub use terminal::Shell;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -40,8 +43,8 @@ const DEFAULT_EVENT_BUFFER: usize = 4096;
 
 pub struct Config {
     pub data_dir: PathBuf,
-    /// The daemon only ever listens on loopback. A network listener has to
-    /// wait for pairing, because whoever can connect can run agents here.
+    /// The websocket only ever listens on loopback, because whoever can connect can
+    /// run agents here. Other machines come in over iroh, and only once paired.
     pub port: u16,
     pub agents: BTreeMap<String, AgentLauncher>,
     pub event_buffer: usize,
@@ -51,6 +54,7 @@ pub struct Config {
     pub mcp_home: ConfigHome,
     /// What starts in a new terminal.
     pub shell: Shell,
+    pub network: Network,
 }
 
 impl Config {
@@ -63,6 +67,7 @@ impl Config {
             keep_awake: KeepAwakeCommand::system(),
             mcp_home: ConfigHome::from_env(),
             shell: Shell::login(),
+            network: Network::default(),
         }
     }
 }
@@ -107,9 +112,16 @@ impl Daemon {
                 port: addr.port(),
                 config_home: config.mcp_home,
                 shell: config.shell,
+                network: config.network,
             },
         )?;
         let machine_id = core.machine().id;
+        if core.has_paired_clients()
+            && let Err(error) = core.ensure_remote().await
+        {
+            // Loopback clients can still work, and a pairing tries again.
+            tracing::error!("{error:#}");
+        }
         tokio::spawn(core.clone().refresh_providers());
         tokio::spawn(core.clone().refresh_branches(None));
         let (shutdown, shutdown_rx) = watch::channel(false);
@@ -130,6 +142,13 @@ impl Daemon {
 
     pub fn machine_id(&self) -> &MachineId {
         &self.machine_id
+    }
+
+    /// Where remote clients reach this daemon, once it listens for them. The key is
+    /// all a client needs on the public network. Tests on [`Network::Local`] also need
+    /// the addresses.
+    pub fn remote_addr(&self) -> Option<iroh::EndpointAddr> {
+        self.core.remote_addr()
     }
 
     /// Closes all connections and stops all agents.

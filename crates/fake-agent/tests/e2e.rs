@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use daemon::{AgentLauncher, Config, Daemon, Shell};
-use engine::{Connection, Engine, EngineError};
+use engine::{Connection, Engine, EngineError, Remote};
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
     AgentCommand, Approval, ArchiveRisk, ClientMessage, Command, CommandOutput, DaemonState,
@@ -2748,5 +2748,182 @@ async fn closing_a_terminal_removes_its_tab_and_what_it_showed() {
         (!history.exists()).then_some(())
     })
     .await;
+    daemon.shutdown().await;
+}
+
+// Remote clients, over iroh on loopback: no relay, and addresses come from a lookup the test fills in.
+
+async fn remote_daemon(fixture: &Fixture, name: &str) -> Daemon {
+    Daemon::start(Config {
+        network: daemon::Network::Local,
+        ..fixture.config(name, 0)
+    })
+    .await
+    .unwrap()
+}
+
+async fn pairing_code(local: &Engine, machine: &MachineId) -> String {
+    match local.request(machine, Command::StartPairing).await.unwrap() {
+        CommandOutput::Pairing { code, .. } => code,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+/// A client on "another machine", which finds the daemon only through the lookup.
+fn remote_engine(daemon: &Daemon) -> Engine {
+    let lookup = iroh::address_lookup::MemoryLookup::new();
+    lookup.add_endpoint_info(daemon.remote_addr().expect("the daemon listens remotely"));
+    Engine::with_remote(
+        "e2e-remote",
+        Remote {
+            key: iroh::SecretKey::generate(),
+            network: engine::Network::Local(lookup),
+        },
+    )
+}
+
+fn connection(engine: &Engine, url: &str) -> Option<Connection> {
+    engine
+        .devices()
+        .into_iter()
+        .find(|device| device.url == url)
+        .map(|device| device.connection)
+}
+
+#[tokio::test]
+async fn a_paired_client_works_over_iroh_until_it_is_removed() {
+    let fixture = Fixture::new();
+    let daemon = remote_daemon(&fixture, "d").await;
+    let machine = daemon.machine_id().clone();
+    let local = connect(&daemon).await;
+    assert!(
+        daemon.remote_addr().is_none(),
+        "nothing listens before a pairing"
+    );
+    let code = pairing_code(&local, &machine).await;
+
+    let remote = remote_engine(&daemon);
+    let url = remote.pair(&code, "Phone").await.unwrap();
+    remote.wait_until_settled().await;
+    assert_eq!(connection(&remote, &url), Some(Connection::Online));
+    let client = wait_for("the paired client", || {
+        local.devices()[0]
+            .state
+            .as_ref()
+            .and_then(|state| state.paired_clients.first().cloned())
+    })
+    .await;
+    assert_eq!(client.name, "Phone");
+
+    // The same protocol as loopback, agents included.
+    let (_, session) =
+        start_ready_session(&remote, &machine, &fixture.repo, PermissionMode::Auto).await;
+    prompt(&remote, &session, "echo over iroh").await.unwrap();
+    wait_for("the echo", || {
+        (agent_text(&remote, &session) == ["over", "iroh"]).then_some(())
+    })
+    .await;
+
+    let refused = remote
+        .request(&machine, Command::StartPairing)
+        .await
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("only starts on the device itself"),
+        "{refused}"
+    );
+
+    local
+        .request(&machine, Command::RemovePairedClient { key: client.key })
+        .await
+        .unwrap();
+    let reason = wait_for("the removed client to go offline", || {
+        match connection(&remote, &url) {
+            Some(Connection::Offline { reason }) if reason.contains("not paired") => Some(reason),
+            _ => None,
+        }
+    })
+    .await;
+    assert!(reason.contains("not paired"), "{reason}");
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn strangers_and_wrong_codes_are_refused() {
+    let fixture = Fixture::new();
+    let daemon = remote_daemon(&fixture, "d").await;
+    let machine = daemon.machine_id().clone();
+    let local = connect(&daemon).await;
+    let code = pairing_code(&local, &machine).await;
+    let parsed = protocol::PairingCode::parse(&code).unwrap();
+
+    // Knowing the key isn't enough to connect.
+    let stranger = remote_engine(&daemon);
+    let url = protocol::remote_daemon_url(&parsed.daemon_key);
+    stranger.add_daemon(&url);
+    stranger.wait_until_settled().await;
+    match connection(&stranger, &url) {
+        Some(Connection::Offline { reason }) => assert!(reason.contains("not paired"), "{reason}"),
+        other => panic!("a stranger got {other:?}"),
+    }
+
+    let wrong = protocol::PairingCode {
+        secret: "0".repeat(32),
+        ..parsed.clone()
+    };
+    let error = stranger.pair(&wrong.to_string(), "x").await.unwrap_err();
+    assert!(error.to_string().contains("wrong"), "{error}");
+    assert!(stranger.pair("not a code", "x").await.is_err());
+
+    local
+        .request(&machine, Command::CancelPairing)
+        .await
+        .unwrap();
+    let error = stranger.pair(&code, "x").await.unwrap_err();
+    assert!(error.to_string().contains("isn't pairing"), "{error}");
+    let state = local.devices()[0].state.clone().unwrap();
+    assert!(state.paired_clients.is_empty());
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_paired_daemon_listens_again_after_a_restart() {
+    let fixture = Fixture::new();
+    let daemon = remote_daemon(&fixture, "d").await;
+    let machine = daemon.machine_id().clone();
+    let local = connect(&daemon).await;
+    let code = pairing_code(&local, &machine).await;
+    let key = iroh::SecretKey::generate();
+    let lookup = iroh::address_lookup::MemoryLookup::new();
+    lookup.add_endpoint_info(daemon.remote_addr().unwrap());
+    let remote = Engine::with_remote(
+        "e2e-remote",
+        Remote {
+            key: key.clone(),
+            network: engine::Network::Local(lookup.clone()),
+        },
+    );
+    let url = remote.pair(&code, "Laptop").await.unwrap();
+    drop(remote);
+    drop(local);
+    daemon.shutdown().await;
+
+    let daemon = remote_daemon(&fixture, "d").await;
+    let addr = daemon
+        .remote_addr()
+        .expect("a daemon with paired clients listens straight away");
+    lookup.set_endpoint_info(addr);
+    let remote = Engine::with_remote(
+        "e2e-remote",
+        Remote {
+            key,
+            network: engine::Network::Local(lookup),
+        },
+    );
+    remote.add_daemon(&url);
+    remote.wait_until_settled().await;
+    assert_eq!(connection(&remote, &url), Some(Connection::Online));
     daemon.shutdown().await;
 }

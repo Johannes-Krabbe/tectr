@@ -19,6 +19,10 @@
 //!
 //! Every enum that can grow has an `Unknown` variant, so an older client can
 //! skip a message or value it doesn't understand.
+//!
+//! The websocket runs over loopback, or over a QUIC stream from iroh for a client on
+//! another machine. That one speaks [`REMOTE_ALPN`], and a client that isn't paired yet
+//! speaks [`PAIRING_ALPN`] once to become paired.
 
 use std::collections::BTreeMap;
 
@@ -72,6 +76,85 @@ impl Channel {
 /// The daemon on this machine for this build's channel.
 pub fn local_daemon_url() -> String {
     format!("ws://127.0.0.1:{}", Channel::current().default_port())
+}
+
+/// Over iroh, a paired client speaks this protocol on one bidirectional stream.
+pub const REMOTE_ALPN: &[u8] = b"tectr/1";
+/// Over iroh, a client that isn't paired yet speaks this to become paired: one
+/// [`PairRequest`] line, answered by one [`PairResponse`] line.
+pub const PAIRING_ALPN: &[u8] = b"tectr-pair/1";
+const REMOTE_SCHEME: &str = "iroh://";
+
+/// The address of a daemon on another machine, reached over iroh by its public key.
+pub fn remote_daemon_url(daemon_key: &str) -> String {
+    format!("{REMOTE_SCHEME}{daemon_key}")
+}
+
+/// The daemon's public key, if this is the address of a daemon reached over iroh.
+pub fn remote_daemon_key(url: &str) -> Option<&str> {
+    url.strip_prefix(REMOTE_SCHEME)
+        .filter(|key| !key.is_empty())
+}
+
+/// What a daemon shows to pair a new client: its public key, which is also where to
+/// reach it, and a secret that only works once and only for a few minutes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairingCode {
+    pub daemon_key: String,
+    pub secret: String,
+}
+
+impl PairingCode {
+    const PREFIX: &str = "tectr-";
+
+    /// Accepts the code with whatever space copying it added around it.
+    pub fn parse(text: &str) -> Option<Self> {
+        let rest = text.trim().strip_prefix(Self::PREFIX)?;
+        let (daemon_key, secret) = rest.split_once('-')?;
+        let valid =
+            |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric());
+        (valid(daemon_key) && valid(secret)).then(|| Self {
+            daemon_key: daemon_key.to_owned(),
+            secret: secret.to_owned(),
+        })
+    }
+}
+
+impl std::fmt::Display for PairingCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}-{}", Self::PREFIX, self.daemon_key, self.secret)
+    }
+}
+
+/// The one message a client that isn't paired yet sends, over [`PAIRING_ALPN`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairRequest {
+    pub secret: String,
+    /// What the daemon lists this client as, such as its machine's name.
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum PairResponse {
+    /// The client's key is on the allowed list now, so it can connect over [`REMOTE_ALPN`].
+    Paired {
+        machine: Machine,
+    },
+    Refused {
+        reason: String,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+/// A client on another machine that may connect to this daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedClient {
+    /// Its public key, which is what it proves when it connects.
+    pub key: String,
+    pub name: String,
+    pub paired_at_ms: i64,
 }
 
 /// Picks the highest version both sides support, if there is one.
@@ -389,6 +472,16 @@ pub enum Command {
     /// Copy the MCP servers configured for Claude Code, Codex and OpenCode on this device into
     /// its own servers. A name that's already taken is skipped.
     ImportMcpServers,
+    /// Show a code that pairs one more client from another machine, answered with
+    /// [`CommandOutput::Pairing`]. Only a client on the daemon's own machine can ask, so
+    /// letting a new machine in needs someone at this one. A new code replaces the last.
+    StartPairing,
+    /// Stop a code from [`Command::StartPairing`] from working before it expires.
+    CancelPairing,
+    /// Take a client off the allowed list. If it's connected, it's disconnected.
+    RemovePairedClient {
+        key: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -440,6 +533,11 @@ pub enum CommandOutput {
         added: Vec<String>,
         /// Why each server that wasn't added was left out.
         skipped: Vec<String>,
+    },
+    Pairing {
+        /// The [`PairingCode`] as text.
+        code: String,
+        expires_at_ms: i64,
     },
     Done,
     #[serde(other)]
@@ -567,6 +665,9 @@ pub struct DaemonState {
     /// The MCP servers agents on this device get, device-wide and per topic.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<McpServer>,
+    /// The clients on other machines that may connect, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paired_clients: Vec<PairedClient>,
 }
 
 impl DaemonState {
@@ -698,6 +799,12 @@ impl DaemonState {
                 if let Some(topic) = self.topic_mut(topic_id) {
                     topic.mcp = mcp.clone();
                 }
+            }
+            StateChange::ClientPaired { client } => {
+                upsert(&mut self.paired_clients, client.clone(), |c| &c.key);
+            }
+            StateChange::PairedClientRemoved { key } => {
+                self.paired_clients.retain(|c| &c.key != key);
             }
             StateChange::Unknown => {}
         }
@@ -1179,6 +1286,13 @@ pub enum StateChange {
         topic_id: TopicId,
         mcp: BTreeMap<McpServerId, bool>,
     },
+    ClientPaired {
+        client: PairedClient,
+    },
+    /// The daemon has also closed its connections.
+    PairedClientRemoved {
+        key: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -1341,6 +1455,36 @@ pub enum StopReason {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pairing_code_survives_being_copied() {
+        let code = PairingCode {
+            daemon_key: "abc123".into(),
+            secret: "f00d".into(),
+        };
+        let text = code.to_string();
+        assert_eq!(text, "tectr-abc123-f00d");
+        assert_eq!(PairingCode::parse(&format!("  {text}\n")), Some(code));
+        for broken in [
+            "",
+            "tectr-",
+            "tectr-abc",
+            "tectr-abc-",
+            "abc-f00d",
+            "tectr-a b-c",
+            "tectr-a-b-c",
+        ] {
+            assert_eq!(PairingCode::parse(broken), None, "{broken:?}");
+        }
+    }
+
+    #[test]
+    fn remote_urls_carry_the_daemon_key() {
+        let url = remote_daemon_url("abc");
+        assert_eq!(remote_daemon_key(&url), Some("abc"));
+        assert_eq!(remote_daemon_key("iroh://"), None);
+        assert_eq!(remote_daemon_key("ws://127.0.0.1:7769"), None);
+    }
+
     use super::*;
 
     #[test]
@@ -1430,6 +1574,7 @@ mod tests {
                 server("mine-off", Some("t"), false),
                 server("theirs", Some("other"), true),
             ],
+            paired_clients: vec![],
         };
         let names = |topic: &Topic| -> Vec<String> {
             state
@@ -1459,6 +1604,7 @@ mod tests {
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
             mcp_servers: vec![],
+            paired_clients: vec![],
         };
         let change = StateChange::WorkspaceAdded {
             workspace: Workspace {
@@ -1548,6 +1694,7 @@ mod tests {
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
             mcp_servers: vec![],
+            paired_clients: vec![],
         };
         let usage = vec![AgentCommand {
             name: "usage".into(),

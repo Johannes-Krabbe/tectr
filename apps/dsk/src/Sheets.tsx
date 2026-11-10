@@ -9,11 +9,13 @@ import {
   useState,
 } from "react";
 import { shownValue } from "./appearance";
+import { invoke } from "@tauri-apps/api/core";
 import {
   type ArchiveRisk,
   type CommandOutput,
   errorText,
   type Folder,
+  pairDevice,
   request,
   type Session,
   type Topic,
@@ -46,7 +48,9 @@ export type SheetRequest =
       /** Where the keyboard goes back to, because the row it was on is going away. */
       fromSidebar: boolean;
     }
-  | { kind: "move"; machineId: string; topic: Topic; choice: MoveChoice };
+  | { kind: "move"; machineId: string; topic: Topic; choice: MoveChoice }
+  | { kind: "pairing"; machineId: string; deviceName: string; code: string; expiresAtMs: number }
+  | { kind: "add_device" };
 
 const CANCEL_KEY: [ActionId, string][] = [["sheet.cancel", "Escape"]];
 
@@ -527,6 +531,94 @@ function MoveSheet({
   );
 }
 
+/** Shows the code that lets one more machine in. Copying keeps it working until it's used or
+ * expires, and cancelling stops it straight away. */
+function PairingSheet({
+  sheet,
+  onClose,
+  onDone,
+}: {
+  sheet: Extract<SheetRequest, { kind: "pairing" }>;
+  onClose: () => void;
+  onDone: (output: CommandOutput) => void;
+}) {
+  const copied = useRef(false);
+  const until = new Date(sheet.expiresAtMs).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return (
+    <Sheet
+      where={`Pair another machine with ${sheet.deviceName}`}
+      action="Copy"
+      hint={`Paste it in Add a device on the other machine. It works once, until ${until}.`}
+      canSubmit
+      focusAction
+      returnsFocus
+      run={async () => {
+        await invoke("write_clipboard", { text: sheet.code });
+        copied.current = true;
+        return { output: "done" };
+      }}
+      onClose={() => {
+        if (!copied.current) {
+          request(sheet.machineId, { command: "cancel_pairing" }).catch(() => {});
+        }
+        onClose();
+      }}
+      onDone={onDone}
+    >
+      <input
+        className="sheet-name code"
+        readOnly
+        value={sheet.code}
+        aria-label="Pairing code"
+        spellCheck={false}
+      />
+    </Sheet>
+  );
+}
+
+/** A code looks like `tectr-<key>-<secret>`, which is all this checks before asking. */
+const looksLikeCode = (text: string) => /^tectr-[A-Za-z0-9]+-[A-Za-z0-9]+$/.test(text.trim());
+
+function AddDeviceSheet({
+  onClose,
+  onDone,
+}: {
+  onClose: () => void;
+  onDone: (output: CommandOutput) => void;
+}) {
+  const [code, setCode] = useState("");
+  return (
+    <Sheet
+      where="Add a device"
+      action="Pair"
+      hint="Pair another machine shows the code there"
+      canSubmit={looksLikeCode(code)}
+      run={async () => {
+        await pairDevice(code.trim());
+        return { output: "done" };
+      }}
+      onClose={onClose}
+      onDone={onDone}
+      input={code}
+    >
+      <input
+        className="sheet-name"
+        autoFocus
+        value={code}
+        placeholder="tectr-..."
+        aria-label="Pairing code"
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
+        onChange={(event) => setCode(event.target.value)}
+      />
+    </Sheet>
+  );
+}
+
 export function Sheets({
   sheet,
   workspaces,
@@ -552,5 +644,9 @@ export function Sheets({
       return <ArchiveSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
     case "move":
       return <MoveSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
+    case "pairing":
+      return <PairingSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
+    case "add_device":
+      return <AddDeviceSheet onClose={onClose} onDone={onDone} />;
   }
 }
