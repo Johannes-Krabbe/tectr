@@ -3152,6 +3152,7 @@ async fn an_imported_conversation_shows_its_history_and_carries_on_where_it_was(
         xdg_config: None,
         opencode_config: None,
         opencode_content: None,
+        claude_code: None,
     };
     let daemon = Daemon::start(config).await.unwrap();
     let engine = connect(&daemon).await;

@@ -49,6 +49,8 @@
 {"type":"attach_terminal","terminal_id":"x1","cols":100,"rows":30}
 {"type":"resize_terminal","terminal_id":"x1","cols":100,"rows":30}
 {"type":"detach_terminal","terminal_id":"x1"}
+{"type":"request","id":1,"command":{"command":"refresh_mcp_connectors"}}
+{"type":"request","id":1,"command":{"command":"save_mcp_server","id":"c1","name":"claude.ai Slack","transport":{"type":"claude_connector","url":"https://mcp.slack.com/mcp"},"enabled":true}}
 {"type":"request","id":1,"command":{"command":"list_conversations"}}
 {"type":"request","id":1,"command":{"command":"import_conversation","topic_id":"t1","agent":"claude","id":"10c95b72-5e91-4c10-b6ab-32d05e963631"}}
 {"type":"request","id":1,"command":{"command":"fork_session","session_id":"s1","after_seq":42}}

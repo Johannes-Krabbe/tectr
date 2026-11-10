@@ -191,6 +191,7 @@ export type ActionId =
   | "mcp.login"
   | "mcp.logout"
   | "mcp.import"
+  | "mcp.connectors"
   | "pairing.add"
   | "pairing.add_device"
   | "pairing.remove"

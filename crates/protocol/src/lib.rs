@@ -496,6 +496,10 @@ pub enum Command {
     /// Copy the MCP servers configured for Claude Code, Codex and OpenCode on this device into
     /// its own servers. A name that's already taken is skipped.
     ImportMcpServers,
+    /// Ask the added Claude and Codex agents for their connectors, and keep the list of
+    /// connector servers in step: new ones are added switched off, gone ones are removed. An
+    /// agent that can't be asked keeps the connectors it had.
+    RefreshMcpConnectors,
     /// List the conversations Claude Code and Codex keep on this device, newest first, for
     /// agents added here. One already open in a tab is left out.
     ListConversations,
@@ -580,6 +584,13 @@ pub enum CommandOutput {
         added: Vec<String>,
         /// Why each server that wasn't added was left out.
         skipped: Vec<String>,
+    },
+    McpConnectors {
+        /// The names of the connectors added and removed.
+        added: Vec<String>,
+        removed: Vec<String>,
+        /// Why an agent's connectors couldn't be listed.
+        problems: Vec<String>,
     },
     /// Newest first.
     Conversations {
@@ -1110,12 +1121,12 @@ pub fn refused_prompt(prompt: &str) -> Option<String> {
 }
 
 /// An MCP server that tectr gives agents. Each agent's own MCP configuration is switched off,
-/// so these are the only ones it gets.
+/// so these are the only ones it gets, along with the connectors turned on here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServer {
     pub id: McpServerId,
     /// What agents call it. Letters, digits, `-` and `_`, and unique among the servers a topic
-    /// can get.
+    /// can get. A connector has its agent's name for it instead, like `claude.ai Slack`.
     pub name: String,
     /// The topic that has this server to itself. `None` is a device-wide server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1153,8 +1164,24 @@ pub enum McpTransport {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         oauth_client_id: Option<String>,
     },
+    /// A claude.ai connector, which only Claude agents get. Anthropic hosts the login, and
+    /// Claude Code connects to it by itself. Always device-wide, and added by
+    /// [`Command::RefreshMcpConnectors`] rather than by hand.
+    ClaudeConnector {
+        /// The service's own address, which is how Claude Code tells connectors apart.
+        url: String,
+    },
+    /// A ChatGPT app, which only Codex agents get. OpenAI hosts the login. Always device-wide,
+    /// and added by [`Command::RefreshMcpConnectors`] rather than by hand.
+    CodexApp { id: String },
     #[serde(other)]
     Unknown,
+}
+
+impl McpTransport {
+    pub fn is_connector(&self) -> bool {
+        matches!(self, Self::ClaudeConnector { .. } | Self::CodexApp { .. })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

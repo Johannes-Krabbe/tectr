@@ -49,6 +49,7 @@ fn empty_home(root: &Path) -> ConfigHome {
         xdg_config: None,
         opencode_config: None,
         opencode_content: None,
+        claude_code: None,
     }
 }
 

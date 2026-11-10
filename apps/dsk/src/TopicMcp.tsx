@@ -5,6 +5,8 @@ import { act, type ActionId, remapNative } from "./keybinds";
 import {
   canLogIn,
   canLogOut,
+  connectorAgent,
+  connectors,
   deviceServers,
   flippedTopicMcp,
   mcpAuthLabel,
@@ -24,8 +26,8 @@ const BACK_KEY: [ActionId, string][] = [["mcp.back", "Escape"]];
 
 type RowAction = { label: string; action: ActionId; run: () => void };
 
-/** Which MCP servers a topic's agents get: the device's, each following its default or turned
- * on or off here, and the topic's own. */
+/** Which MCP servers a topic's agents get: the device's and its agents' connectors, each
+ * following its default or turned on or off here, and the topic's own. */
 export function TopicMcpSheet({
   state,
   topic,
@@ -39,8 +41,9 @@ export function TopicMcpSheet({
 }) {
   const machineId = state.machine.id;
   const fromDevice = deviceServers(state);
+  const connected = connectors(state);
   const own = ownServers(state, topic.id);
-  const rows = [...fromDevice, ...own];
+  const rows = [...fromDevice, ...connected, ...own];
   const requests = useMcpRequests(machineId);
   const [cursor, setCursor] = useState(0);
   // A topic's own server being added or changed. Undefined adds one.
@@ -146,6 +149,7 @@ export function TopicMcpSheet({
         <span className="server-name code">{server.name}</span>
         <span className="server-summary code">{mcpSummary(server.transport)}</span>
         {doing && <span className="meta">{doing}</span>}
+        {connectorAgent(server) && <span className="meta">{connectorAgent(server)}</span>}
         {auth && <span className={`meta ${server.auth === "needs_login" ? "alert" : ""}`}>{auth}</span>}
         <span className="meta">
           {server.topic_id ? (server.enabled ? "On" : "Off") : topicMcpLabel(topic, server)}
@@ -179,6 +183,8 @@ export function TopicMcpSheet({
             <p className="sheet-group">From {state.machine.name}</p>
             {fromDevice.length === 0 && <p className="sheet-group-empty">None</p>}
             {fromDevice.map(row)}
+            {connected.length > 0 && <p className="sheet-group">Connectors</p>}
+            {connected.map(row)}
             <p className="sheet-group">Only this topic</p>
             {own.length === 0 && <p className="sheet-group-empty">None</p>}
             {own.map(row)}

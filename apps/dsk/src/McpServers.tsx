@@ -14,6 +14,11 @@ import {
   canEdit,
   canLogIn,
   canLogOut,
+  canRemove,
+  canToggle,
+  connectorAgent,
+  connectorLines,
+  connectors,
   deviceServers,
   draftOf,
   draftReady,
@@ -94,8 +99,10 @@ export function serverActions(
   toggleLabel: string,
 ): { label: string; action: ActionId; run: () => void }[] {
   const actions: { label: string; action: ActionId; run: () => void }[] = [];
-  if (canEdit(server)) {
+  if (canToggle(server)) {
     actions.push({ label: toggleLabel, action: "mcp.toggle", run: () => requests.toggle(server) });
+  }
+  if (canEdit(server)) {
     actions.push({ label: "Edit", action: "mcp.edit", run: () => onEdit(server) });
   }
   if (canLogIn(server)) {
@@ -104,7 +111,9 @@ export function serverActions(
   if (canLogOut(server)) {
     actions.push({ label: "Log out", action: "mcp.logout", run: () => requests.logOut(server) });
   }
-  actions.push({ label: "Remove", action: "mcp.remove", run: () => requests.remove(server) });
+  if (canRemove(server)) {
+    actions.push({ label: "Remove", action: "mcp.remove", run: () => requests.remove(server) });
+  }
   return actions;
 }
 
@@ -302,7 +311,8 @@ function paletteLabel(server: McpServer, action: ActionId): string {
   }
 }
 
-/** The device's own servers, which every topic gets unless it turns one off. */
+/** The device's own servers, which every topic gets unless it turns one off, and its agents'
+ * connectors. */
 export function McpSettings({
   device,
   active,
@@ -319,15 +329,20 @@ export function McpSettings({
   const machineId = state?.machine.id;
   const online = isOnline(device);
   const servers = state ? deviceServers(state) : [];
+  const connected = state ? connectors(state) : [];
+  // One list for the keyboard, shown as two groups.
+  const rows = [...servers, ...connected];
   const requests = useMcpRequests(machineId);
   const [cursor, setCursor] = useState(0);
   const [form, setForm] = useState<Form>(null);
   const [importing, setImporting] = useState(false);
-  const [imported, setImported] = useState<string[] | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  // What the last import or refresh said.
+  const [report, setReport] = useState<string[] | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
 
-  const selected = Math.max(Math.min(cursor, servers.length - 1), 0);
-  const server = servers[selected];
+  const selected = Math.max(Math.min(cursor, rows.length - 1), 0);
+  const server = rows[selected];
   const deviceName = state?.machine.name ?? device.url;
 
   const add = () => {
@@ -343,11 +358,27 @@ export function McpSettings({
     setImportError(null);
     try {
       const output = await request(machineId, { command: "import_mcp_servers" });
-      if (output.output === "mcp_import") setImported(importLines(output.added, output.skipped));
+      if (output.output === "mcp_import") setReport(importLines(output.added, output.skipped));
     } catch (reason) {
       setImportError(errorText(reason));
     } finally {
       setImporting(false);
+    }
+  };
+
+  const runRefresh = async () => {
+    if (!machineId || !online || refreshing) return;
+    setRefreshing(true);
+    setImportError(null);
+    try {
+      const output = await request(machineId, { command: "refresh_mcp_connectors" });
+      if (output.output === "mcp_connectors") {
+        setReport(connectorLines(output.added, output.removed, output.problems));
+      }
+    } catch (reason) {
+      setImportError(errorText(reason));
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -359,7 +390,9 @@ export function McpSettings({
     "pane",
     active
       ? [
-          ...(online ? [hint("Add", "mcp.add"), hint("Import", "mcp.import")] : []),
+          ...(online
+            ? [hint("Add", "mcp.add"), hint("Import", "mcp.import"), hint("Connectors", "mcp.connectors")]
+            : []),
           ...(server ? rowActions(server).map(({ label, action }) => hint(label, action)) : []),
           ...SETTINGS_MOVES,
         ]
@@ -387,13 +420,20 @@ export function McpSettings({
         keys: keysLabel("mcp.import"),
         run: then(() => void runImport()),
       },
+      {
+        id: "mcp-connectors",
+        label: `Refresh connectors on ${deviceName}`,
+        detail: "The claude.ai connectors and ChatGPT apps of Claude and Codex",
+        keys: keysLabel("mcp.connectors"),
+        run: then(() => void runRefresh()),
+      },
     );
-    for (const target of servers) {
+    for (const target of rows) {
       for (const { action, run } of rowActions(target)) {
         paletteItems.push({
           id: `mcp/${target.id}/${action}`,
           label: paletteLabel(target, action),
-          detail: "MCP server",
+          detail: connectorAgent(target) ? `${connectorAgent(target)} connector` : "MCP server",
           keys: target === server && active ? keysLabel(action) : undefined,
           run: then(run),
         });
@@ -411,9 +451,10 @@ export function McpSettings({
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (!inPane(event)) return;
       const commands: [ActionId, () => void][] = [
-        ...listMoves(selected, servers.length, setCursor, onLeave),
+        ...listMoves(selected, rows.length, setCursor, onLeave),
         ["mcp.add", add],
         ["mcp.import", () => void runImport()],
+        ["mcp.connectors", () => void runRefresh()],
       ];
       if (commands.some(([id, run]) => act(event, id, run))) return;
       if (server) actOnServer(event, rowActions(server));
@@ -421,6 +462,51 @@ export function McpSettings({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+
+  const row = (target: McpServer) => {
+    const index = rows.indexOf(target);
+    const current = active && index === selected;
+    const busy = requests.busy[target.id];
+    const auth = mcpAuthLabel(target);
+    const agent = connectorAgent(target);
+    return (
+      <div
+        key={target.id}
+        className={`keybind ${current ? "current" : ""}`}
+        // Moving, rather than entering: a row scrolling under a pointer that
+        // isn't moving must not take the keyboard or the selection.
+        onMouseMove={(event) => {
+          if (event.movementX === 0 && event.movementY === 0) return;
+          setCursor(index);
+          onActivate();
+        }}
+      >
+        <span className="name code">{target.name}</span>
+        {busy ? (
+          <span className="meta">{busy}</span>
+        ) : requests.errors[target.id] ? (
+          <span className="meta bad">Failed</span>
+        ) : auth ? (
+          <span className={`meta ${target.auth === "needs_login" ? "alert" : ""}`}>{auth}</span>
+        ) : (
+          agent && <span className="meta">{agent}</span>
+        )}
+        <button
+          className="picker"
+          tabIndex={-1}
+          role="switch"
+          aria-checked={target.enabled}
+          aria-label={`${target.name} on for topics by default`}
+          disabled={!online || !canToggle(target)}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => requests.toggle(target)}
+        >
+          {target.enabled ? "On" : "Off"}
+          {current && online && canToggle(target) && <Keys action="mcp.toggle" />}
+        </button>
+      </div>
+    );
+  };
 
   const doing = server && requests.busy[server.id];
   const serverError = server && requests.errors[server.id];
@@ -451,7 +537,7 @@ export function McpSettings({
     <>
       <SettingsPage error={importError} footer={footer}>
         {!online && <p className="settings-note">This device is offline</p>}
-        {imported?.map((line, index) => (
+        {report?.map((line, index) => (
           <p key={index} className="settings-note">
             {line}
           </p>
@@ -485,52 +571,27 @@ export function McpSettings({
               and OpenCode have. Add takes a URL, a command or a config from the docs.
             </p>
           )}
-          <div className="keybinds">
-            {servers.map((target, index) => {
-              const current = active && index === selected;
-              const busy = requests.busy[target.id];
-              const auth = mcpAuthLabel(target);
-              return (
-                <div
-                  key={target.id}
-                  className={`keybind ${current ? "current" : ""}`}
-                  // Moving, rather than entering: a row scrolling under a pointer that
-                  // isn't moving must not take the keyboard or the selection.
-                  onMouseMove={(event) => {
-                    if (event.movementX === 0 && event.movementY === 0) return;
-                    setCursor(index);
-                    onActivate();
-                  }}
-                >
-                  <span className="name code">{target.name}</span>
-                  {busy ? (
-                    <span className="meta">{busy}</span>
-                  ) : requests.errors[target.id] ? (
-                    <span className="meta bad">Failed</span>
-                  ) : (
-                    auth && (
-                      <span className={`meta ${target.auth === "needs_login" ? "alert" : ""}`}>
-                        {auth}
-                      </span>
-                    )
-                  )}
-                  <button
-                    className="picker"
-                    tabIndex={-1}
-                    role="switch"
-                    aria-checked={target.enabled}
-                    aria-label={`${target.name} on for topics by default`}
-                    disabled={!online || !canEdit(target)}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => requests.toggle(target)}
-                  >
-                    {target.enabled ? "On" : "Off"}
-                    {current && online && canEdit(target) && <Keys action="mcp.toggle" />}
-                  </button>
-                </div>
-              );
-            })}
+          <div className="keybinds">{servers.map(row)}</div>
+        </section>
+        <section className="settings-group">
+          <div className="settings-group-head">
+            <h3 className="settings-group-title">Connectors</h3>
+            <button
+              className={`button ${connected.length === 0 ? "primary" : ""}`}
+              disabled={!online || refreshing}
+              onClick={() => void runRefresh()}
+            >
+              {refreshing ? "Refreshing" : "Refresh"}
+              {active && <Keys action="mcp.connectors" />}
+            </button>
           </div>
+          {online && connected.length === 0 && (
+            <p className="settings-note">
+              Refresh brings in the claude.ai connectors of Claude and the ChatGPT apps of Codex.
+              Each one starts off, and only its own agent gets it.
+            </p>
+          )}
+          <div className="keybinds">{connected.map(row)}</div>
         </section>
         <p className="settings-note settings-group">
           Topics get the servers that are on, and each topic can change that.

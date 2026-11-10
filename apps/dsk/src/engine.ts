@@ -239,6 +239,10 @@ export type McpTransport =
       /** For a server that doesn't register clients by itself. */
       oauth_client_id?: string | null;
     }
+  /** A claude.ai connector, which only Claude agents get. The address is the service's own. */
+  | { type: "claude_connector"; url: string }
+  /** A ChatGPT app, which only Codex agents get. */
+  | { type: "codex_app"; id: string }
   | { type: "unknown" };
 
 /** Whether the daemon holds a login. Left out while it's `none`. */
@@ -365,6 +369,7 @@ export type Command =
   | { command: "complete_mcp_login"; state: string; code: string }
   | { command: "logout_mcp_server"; id: string }
   | { command: "import_mcp_servers" }
+  | { command: "refresh_mcp_connectors" }
   | { command: "list_conversations" }
   | { command: "import_conversation"; topic_id: string; agent: string; id: string }
   /** `after_seq` is the answer's `turn_ended`. Answered with `session`. */
@@ -388,6 +393,8 @@ export type CommandOutput =
   | { output: "mcp_login"; url: string }
   /** The names added, and why each one left out was. */
   | { output: "mcp_import"; added: string[]; skipped: string[] }
+  /** The connectors added and removed, and why an agent's couldn't be listed. */
+  | { output: "mcp_connectors"; added: string[]; removed: string[]; problems: string[] }
   /** Newest first. */
   | { output: "conversations"; conversations: Conversation[] }
   | { output: "image_added"; id: string }
