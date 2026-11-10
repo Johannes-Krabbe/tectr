@@ -262,31 +262,57 @@ button.row:hover { background: var(--color-surface-raised); }
 .side .row:focus-visible,
 .settings-side.active .row.current { background: var(--color-accent-tint); }
 
-.settings-side .tree { padding-top: var(--space-md); }
-
-/* Whose settings these are. */
-.settings-side-head {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2xs);
-  min-width: 0;
-  padding: var(--space-sm) var(--space-sm) 0;
-}
-
 .settings-side-heading {
+  flex: none;
+  padding: var(--space-sm) var(--space-sm) 0;
   font: var(--text-heading);
   font-size: calc(13.5 * var(--unit));
 }
 
-.settings-side-head .meta {
+/* Whose settings a run of sections are: this app's, or one device's. */
+.side-group {
+  margin-top: var(--space-md);
+  padding: var(--space-xs) var(--space-sm);
   overflow: hidden;
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
+/* The palette's way in, drawn as the box it opens. */
+.side-search {
+  flex: none;
+  background: var(--color-surface-raised);
+  color: var(--color-text-tertiary);
+}
+
+/* Named as a button so it outranks the hover every row gets. */
+button.side-search:hover {
+  background: var(--color-surface-control);
+  color: var(--color-text-secondary);
+}
+
+.side-search:hover .kbd { background: var(--color-surface-control-hover); }
+
+/* Under the tree: settings, and a menu for what isn't about one topic. */
+.side-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  margin-top: var(--space-xs);
+}
+
+.side-foot .row {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
 .add,
-.gear {
+.gear,
+.icon-button {
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -298,7 +324,9 @@ button.row:hover { background: var(--color-surface-raised); }
 }
 
 .add:hover:not(:disabled),
-.gear:hover:not(:disabled) {
+.gear:hover:not(:disabled),
+.icon-button:hover:not(:disabled),
+.icon-button[data-popup-open] {
   background: var(--color-surface-control-hover);
   color: var(--color-text-primary);
 }
@@ -342,14 +370,25 @@ button.row:hover { background: var(--color-surface-raised); }
   font-size: calc(13.5 * var(--unit));
 }
 
-.tabs {
+/* The tabs scroll when there are many, and the topic's menu stays put at the end. */
+.tab-bar {
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  height: calc(34 * var(--unit));
+  padding-right: var(--space-sm);
+  border-bottom: 1px solid var(--color-line-subtle);
+}
+
+.tabs {
+  flex: 1;
   display: flex;
   align-items: stretch;
   gap: var(--space-2xs);
-  height: calc(34 * var(--unit));
-  padding: 0 var(--space-sm);
-  border-bottom: 1px solid var(--color-line-subtle);
+  min-width: 0;
+  height: 100%;
+  padding-left: var(--space-sm);
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -358,13 +397,49 @@ button.row:hover { background: var(--color-surface-raised); }
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-2xs);
   min-width: 0;
   max-width: 260px;
-  padding: 0 var(--space-sm);
+  padding: 0 var(--space-xs) 0 var(--space-sm);
   color: var(--color-text-tertiary);
   font: var(--text-label);
   white-space: nowrap;
+}
+
+/* A tab that can't be closed has no button to make room for. */
+.tab:not(:has(.tab-close)) { padding-right: var(--space-sm); }
+
+.tab-open {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  height: 100%;
+}
+
+/* Its room is always there, so pointing at a tab doesn't move the ones after it. */
+.tab-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(16 * var(--unit));
+  height: calc(16 * var(--unit));
+  border-radius: var(--radius-xs);
+  color: var(--color-text-tertiary);
+  visibility: hidden;
+}
+
+.tab:hover .tab-close { visibility: visible; }
+
+.tab-close:hover {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-primary);
+}
+
+.tab-close .icon {
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
 }
 
 /* A label that doesn't fit fades out rather than being cut, at the max width and when many
@@ -1189,11 +1264,6 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   text-overflow: ellipsis;
 }
 
-.side-settings {
-  flex: none;
-  margin-top: var(--space-xs);
-}
-
 /* Appearance */
 .appearance-preview {
   flex: none;
@@ -1413,6 +1483,52 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   padding: var(--space-xs) var(--space-sm);
   color: var(--color-text-tertiary);
   font: var(--text-meta);
+}
+
+/* Between the groups of a menu, edge to edge. */
+.menu-separator {
+  height: 1px;
+  margin: var(--space-xs) calc(-1 * var(--space-xs));
+  background: var(--color-line-subtle);
+}
+
+/* What just happened, for a few seconds. It never takes a click. */
+.toasts {
+  position: fixed;
+  z-index: 2;
+  left: 50%;
+  bottom: var(--space-xl);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+:root:has(.shortcut-bar) .toasts { bottom: calc(var(--shortcut-bar-height) + var(--space-xl)); }
+
+.toast {
+  max-width: min(480px, calc(100vw - 2 * var(--space-2xl)));
+  padding: var(--space-sm) var(--space-md);
+  overflow: hidden;
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-popover);
+  color: var(--color-text-primary);
+  font: var(--text-label);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  animation: toast-in var(--motion-normal) ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(4px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
 }
 
 /* Sheets */

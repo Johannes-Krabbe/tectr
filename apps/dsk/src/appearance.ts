@@ -16,7 +16,6 @@ export interface AppearanceField {
   id: string;
   group: string;
   label: string;
-  about: string;
   kind: FieldKind;
   value: AppearanceValue;
   customized: boolean;
@@ -30,8 +29,16 @@ export interface Theme {
   colors: Record<string, string>;
 }
 
+export interface FieldGroup {
+  id: string;
+  title: string;
+  /** The settings page it's shown on. */
+  page: string;
+}
+
 export interface Appearance {
-  groups: { id: string; title: string }[];
+  pages: { id: string; title: string }[];
+  groups: FieldGroup[];
   fields: AppearanceField[];
   themes: Theme[];
 }
@@ -54,6 +61,24 @@ export interface Option {
   theme?: Theme;
 }
 
+/** One page of settings: its groups, and its rows in the order they're shown, which is the
+ * order the cursor moves through them. */
+export function pageOf(
+  appearance: Pick<Appearance, "groups" | "fields">,
+  page: string,
+): { groups: FieldGroup[]; rows: AppearanceField[] } {
+  const groups = appearance.groups.filter((group) => group.page === page);
+  const rows = groups.flatMap((group) =>
+    appearance.fields.filter((field) => field.group === group.id),
+  );
+  return { groups, rows };
+}
+
+// A setting's ID is where it is in the settings file. These three decide which theme shows.
+const MODE = "appearance.mode";
+const DARK_THEME = "appearance.dark_theme";
+const LIGHT_THEME = "appearance.light_theme";
+
 function reader(appearance: Appearance, preview: AppearancePreview | null) {
   return (id: string): AppearanceValue | undefined =>
     id === preview?.id ? preview.value : appearance.fields.find((field) => field.id === id)?.value;
@@ -65,9 +90,9 @@ export function schemeOf(
   systemIsDark: boolean,
   preview: AppearancePreview | null = null,
 ): Scheme {
-  if (preview?.id === "dark_theme") return "dark";
-  if (preview?.id === "light_theme") return "light";
-  const mode = reader(appearance, preview)("mode");
+  if (preview?.id === DARK_THEME) return "dark";
+  if (preview?.id === LIGHT_THEME) return "light";
+  const mode = reader(appearance, preview)(MODE);
   if (mode === "dark" || mode === "light") return mode;
   return systemIsDark ? "dark" : "light";
 }
@@ -78,9 +103,9 @@ export function previewedTheme(
   systemIsDark: boolean,
   preview: AppearancePreview | null,
 ): string | null {
-  if (!preview || !["mode", "dark_theme", "light_theme"].includes(preview.id)) return null;
+  if (!preview || ![MODE, DARK_THEME, LIGHT_THEME].includes(preview.id)) return null;
   const scheme = schemeOf(appearance, systemIsDark, preview);
-  return String(reader(appearance, preview)(scheme === "dark" ? "dark_theme" : "light_theme"));
+  return String(reader(appearance, preview)(scheme === "dark" ? DARK_THEME : LIGHT_THEME));
 }
 
 // CSS's own names for fonts, which stop meaning that in quotes.
@@ -111,21 +136,21 @@ export function cssVariables(
   preview: AppearancePreview | null = null,
 ): Record<string, string> {
   const read = reader(appearance, preview);
-  const themeId = read(scheme === "dark" ? "dark_theme" : "light_theme");
+  const themeId = read(scheme === "dark" ? DARK_THEME : LIGHT_THEME);
   const theme = appearance.themes.find((candidate) => candidate.id === themeId);
   const variables: Record<string, string> = {
-    "--font-ui": fontStack(String(read("text.family") ?? ""), "--font-ui-stack"),
-    "--font-code": fontStack(String(read("code.family") ?? ""), "--font-code-stack"),
-    "--font-ui-size": `${read("text.size")}px`,
-    "--font-code-size": `${read("code.size")}px`,
-    "--font-reading-line-height": String(read("text.line_height")),
-    "--font-code-line-height": String(read("code.line_height")),
-    "--font-code-ligatures": read("code.ligatures") ? "normal" : "none",
-    "--font-smoothing": String(read("text.smoothing")),
-    "--density": String(Number(read("layout.density")) / 100),
-    "--corners": String(Number(read("layout.corners")) / 100),
-    "--layout-sidebar-width": `${read("layout.sidebar_width")}px`,
-    "--layout-content-width": `${read("layout.content_width")}px`,
+    "--font-ui": fontStack(String(read("appearance.text.family") ?? ""), "--font-ui-stack"),
+    "--font-code": fontStack(String(read("appearance.code.family") ?? ""), "--font-code-stack"),
+    "--font-ui-size": `${read("appearance.text.size")}px`,
+    "--font-code-size": `${read("appearance.code.size")}px`,
+    "--font-reading-line-height": String(read("appearance.text.line_height")),
+    "--font-code-line-height": String(read("appearance.code.line_height")),
+    "--font-code-ligatures": read("appearance.code.ligatures") ? "normal" : "none",
+    "--font-smoothing": String(read("appearance.text.smoothing")),
+    "--density": String(Number(read("appearance.layout.density")) / 100),
+    "--corners": String(Number(read("appearance.layout.corners")) / 100),
+    "--layout-sidebar-width": `${read("appearance.layout.sidebar_width")}px`,
+    "--layout-content-width": `${read("appearance.layout.content_width")}px`,
   };
   for (const [token, color] of Object.entries(theme?.colors ?? {})) {
     variables[`--color-${token.replaceAll(".", "-")}`] = color;
@@ -216,7 +241,7 @@ function paint() {
   root.dataset.theme = scheme;
   // Reduce Motion is handled in CSS, so it applies even before the settings arrive.
   root.dataset.statusMotion =
-    reader(shown, preview)("layout.animate_status") === false ? "off" : "on";
+    reader(shown, preview)("appearance.motion.status_icons") === false ? "off" : "on";
   for (const [name, value] of Object.entries(cssVariables(shown, scheme, preview))) {
     root.style.setProperty(name, value);
   }
@@ -235,7 +260,7 @@ export const shownValue = (id: string): AppearanceValue | undefined =>
 
 /** Whether things should move: the setting, and the system's Reduce Motion. */
 export const motionAllowed = () =>
-  shownValue("transcript.animate") !== false &&
+  shownValue("appearance.motion.transcript") !== false &&
   !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /** Shows a value in the webview without saving it. Null goes back to the settings. */
@@ -253,8 +278,13 @@ export function restoreAppearance() {
   try {
     const remembered = localStorage.getItem(STORAGE_KEY);
     if (remembered) {
-      shown = JSON.parse(remembered) as Appearance;
-      paint();
+      const last = JSON.parse(remembered) as Appearance;
+      // One from before the settings moved has nothing under the names read here, which
+      // makes it as good as none.
+      if (last.fields.some((field) => field.id === MODE)) {
+        shown = last;
+        paint();
+      }
     }
   } catch {
     shown = null;

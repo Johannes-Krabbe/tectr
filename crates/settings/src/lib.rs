@@ -1,13 +1,15 @@
 //! The desktop app's settings file. People and agents edit it directly, and the
 //! settings screen changes it one value at a time, so it keeps its comments and layout.
 //!
-//! The file holds only what differs from the defaults, which live in code. To add a
-//! section: add it to `SECTIONS`, give `Values` a field for it, and read it in
-//! `parse_document`.
+//! The file holds only what differs from the defaults, which live in code. It starts with
+//! the version of its layout, and `migrate` brings a file from an older tectr up to date.
+//! A new page of settings is a `Page` in `appearance`. Moving or renaming anything that's
+//! already in people's files is a new version with a step in `migrate`.
 
 mod appearance;
 mod fonts;
 mod keybinds;
+mod migrate;
 
 use std::collections::HashMap;
 use std::fs;
@@ -20,18 +22,22 @@ pub use appearance::{Appearance, Scheme, Value};
 pub use fonts::{InstalledFont, installed_fonts};
 pub use keybinds::{Binding, GROUPS, Group, ResolvedAction};
 
-const SECTIONS: &[&str] = &["appearance", "keybinds"];
+const KEYBINDS: &str = "keybinds";
 
-const STARTER: &str = "\
-# tectr desktop settings. Changes apply as soon as this file is saved.
-# Only put what differs from the defaults here. Every setting and its default
-# is in dsk.defaults.toml, next to this file.
-";
+/// What a new settings file holds: the header, and the version of the layout.
+fn starter() -> String {
+    migrate::stamped(migrate::HEADER)
+}
 
-const REFERENCE_HEADER: &str = "\
+const REFERENCE_INTRO: &str = "\
 # Every tectr desktop setting and its default. Don't edit this file: the app rewrites
 # it on launch. Copy what you want to change into dsk.toml, next to this file.
-#
+
+# Which layout the file is in. dsk.toml starts with the same line. The app writes it, and
+# brings a file from an older tectr up to date, keeping a copy of what it was next to it.
+";
+
+const REFERENCE_KEYBINDS: &str = "\
 # Keybinds
 #
 #   new_topic = \"mod+n\"                         one key
@@ -86,16 +92,16 @@ struct Values {
 
 fn parse_document(document: &DocumentMut, problems: &mut Vec<String>) -> Values {
     let mut values = Values::default();
+    problems.extend(migrate::problem(document));
     for (name, item) in document.as_table().iter() {
-        if !SECTIONS.contains(&name) {
-            problems.push(format!("{name} isn't a known setting, so it's ignored"));
-        } else if name == "appearance" {
-            values.appearance = appearance::parse(item, problems);
-        } else if name == "keybinds" {
+        if name == KEYBINDS {
             values.keybinds = keybinds::parse(item, problems);
             values.sequence_timeout_ms = keybinds::parse_timeout(item, problems);
+        } else if name != migrate::KEY && !appearance::sections().any(|known| known == name) {
+            problems.push(format!("{name} isn't a known setting, so it's ignored"));
         }
     }
+    values.appearance = appearance::parse(document.as_table(), problems);
     values
 }
 
@@ -146,11 +152,13 @@ impl Store {
                 .map_err(|error| format!("Couldn't create {}: {error}", folder.display()))?;
         }
         if !self.path.exists() {
-            write_atomically(&self.path, STARTER)?;
+            write_atomically(&self.path, &starter())?;
         }
         let reference = self.path.with_file_name("dsk.defaults.toml");
         let contents = format!(
-            "{REFERENCE_HEADER}{}{}",
+            "{REFERENCE_INTRO}{} = {}\n\n{REFERENCE_KEYBINDS}{}{}",
+            migrate::KEY,
+            migrate::CURRENT,
             keybinds::reference(),
             appearance::reference()
         );
@@ -170,13 +178,41 @@ impl Store {
         self.notices.push(notice);
     }
 
+    /// Brings a document from an older tectr up to date and saves it, keeping the file as it
+    /// was next to it. The result is what's read either way: if it couldn't be saved, the
+    /// settings still apply, and the problem says the file is as it was.
+    fn upgrade(&self, text: &str, document: DocumentMut) -> (DocumentMut, Option<String>) {
+        let Some((from, upgraded)) = migrate::upgraded(&document) else {
+            return (document, None);
+        };
+        let Ok(current) = upgraded.parse::<DocumentMut>() else {
+            return (document, None);
+        };
+        let kept = self.path.with_file_name(format!("dsk.v{from}.toml"));
+        let saved = fs::write(&kept, text)
+            .map_err(|error| format!("Couldn't write {}: {error}", kept.display()))
+            .and_then(|()| write_atomically(&self.path, &upgraded));
+        let problem = saved.err().map(|problem| {
+            format!(
+                "{} is from an older tectr and couldn't be brought up to date, so it's read \
+                 as it would be: {problem}",
+                self.path.display()
+            )
+        });
+        (current, problem)
+    }
+
     /// Reads the file again. Returns whether anything the UI shows has changed.
     pub fn reload(&mut self) -> bool {
         let before = self.settings();
         let mut problems = Vec::new();
         match fs::read_to_string(&self.path) {
             Ok(text) => match text.parse::<DocumentMut>() {
-                Ok(document) => self.values = parse_document(&document, &mut problems),
+                Ok(document) => {
+                    let (document, problem) = self.upgrade(&text, document);
+                    problems.extend(problem);
+                    self.values = parse_document(&document, &mut problems);
+                }
                 Err(error) => problems.push(format!(
                     "{} has a syntax error, so the last good settings are still in use: {error}",
                     self.path.display()
@@ -235,15 +271,27 @@ impl Store {
     ) -> Result<(), String> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => STARTER.to_owned(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => starter(),
             Err(error) => return Err(format!("Couldn't read {}: {error}", self.path.display())),
         };
-        let mut document = text.parse::<DocumentMut>().map_err(|error| {
+        let document = text.parse::<DocumentMut>().map_err(|error| {
             format!(
                 "{} has a syntax error, so nothing was saved. Fix it first: {error}",
                 self.path.display()
             )
         })?;
+        // A change is written in this tectr's layout, which a newer one may have moved on from.
+        if migrate::version(&document).is_ok_and(|version| version > migrate::CURRENT) {
+            return Err(format!(
+                "{} is from a newer tectr than this one, so nothing was saved. Update tectr first.",
+                self.path.display()
+            ));
+        }
+        // An older file is brought up to date first, so the change lands in the right place.
+        let (mut document, problem) = self.upgrade(&text, document);
+        if let Some(problem) = problem {
+            return Err(problem);
+        }
         change(&mut document)?;
         write_atomically(&self.path, &document.to_string())?;
         self.reload();
@@ -267,7 +315,7 @@ impl Store {
             .collect::<Result<Vec<_>, String>>()?;
         let value = keybinds::value_of(action, &bindings);
         self.edit(|document| {
-            let section = keybinds::subtable(document.as_table_mut(), "keybinds")?;
+            let section = keybinds::subtable(document.as_table_mut(), KEYBINDS)?;
             let context = keybinds::subtable(section, context)?;
             context.insert(name, Item::Value(value));
             Ok(())
@@ -280,10 +328,7 @@ impl Store {
             .split_once('.')
             .ok_or_else(|| format!("{id} has no section"))?;
         self.edit(|document| {
-            let Some(section) = document
-                .get_mut("keybinds")
-                .and_then(Item::as_table_like_mut)
-            else {
+            let Some(section) = document.get_mut(KEYBINDS).and_then(Item::as_table_like_mut) else {
                 return Ok(());
             };
             let Some(actions) = section.get_mut(context).and_then(Item::as_table_like_mut) else {
@@ -305,25 +350,19 @@ impl Store {
         })
     }
 
-    /// Sets one appearance setting, if it's something that setting can be.
+    /// Sets one of the settings that are rows on a page, if it's something that setting can be.
     pub fn set_appearance(&mut self, id: &str, value: Value) -> Result<(), String> {
         self.edit(|document| {
             // Read from what's being edited, in case a theme was added since the last read.
             let mut problems = Vec::new();
-            let current = document
-                .get("appearance")
-                .map(|section| appearance::parse(section, &mut problems))
-                .unwrap_or_default();
+            let current = appearance::parse(document.as_table(), &mut problems);
             appearance::set(document, &current, id, value)
         })
     }
 
-    /// Takes an appearance setting out of the file, so it's back to its default.
+    /// Takes one of those settings out of the file, so it's back to its default.
     pub fn reset_appearance(&mut self, id: &str) -> Result<(), String> {
-        self.edit(|document| {
-            appearance::remove(document, id);
-            Ok(())
-        })
+        self.edit(|document| appearance::remove(document, id))
     }
 }
 
@@ -371,7 +410,7 @@ mod tests {
         let path = folder.path().join("tectr").join("dsk.toml");
         let store = Store::open(path.clone());
         assert_eq!(store.settings().problems, Vec::<String>::new());
-        assert_eq!(fs::read_to_string(&path).unwrap(), STARTER);
+        assert_eq!(fs::read_to_string(&path).unwrap(), starter());
 
         let reference = fs::read_to_string(path.with_file_name("dsk.defaults.toml")).unwrap();
         let copied = Store::open({
@@ -734,22 +773,31 @@ mod tests {
     fn appearance_saves_to_a_file_that_reads_back_the_same() {
         let (_folder, mut store) = store_with("");
         store
-            .set_appearance("mode", Value::Text("dark".to_owned()))
+            .set_appearance("appearance.mode", Value::Text("dark".to_owned()))
             .unwrap();
         store
-            .set_appearance("dark_theme", Value::Text("nord".to_owned()))
+            .set_appearance("appearance.dark_theme", Value::Text("nord".to_owned()))
             .unwrap();
         store
-            .set_appearance("text.size", Value::Number(14.0))
+            .set_appearance("appearance.text.size", Value::Number(14.0))
             .unwrap();
         store
-            .set_appearance("code.line_height", Value::Number(1.6 + 1e-9))
+            .set_appearance("appearance.code.line_height", Value::Number(1.6 + 1e-9))
             .unwrap();
         store
-            .set_appearance("code.ligatures", Value::Flag(false))
+            .set_appearance("appearance.code.ligatures", Value::Flag(false))
             .unwrap();
         store
-            .set_appearance("code.family", Value::Text("JetBrains Mono".to_owned()))
+            .set_appearance(
+                "appearance.code.family",
+                Value::Text("JetBrains Mono".to_owned()),
+            )
+            .unwrap();
+        store
+            .set_appearance("vim.enabled", Value::Flag(true))
+            .unwrap();
+        store
+            .set_appearance("conversation.images.transcript", Value::Flag(false))
             .unwrap();
 
         let saved = fs::read_to_string(store.path()).unwrap();
@@ -762,34 +810,50 @@ mod tests {
             "line_height = 1.6\n",
             "ligatures = false",
             "family = \"JetBrains Mono\"",
+            "[vim]\nenabled = true\n",
+            "[conversation.images]\ntranscript = false\n",
         ] {
             assert!(saved.contains(expected), "{expected} in:\n{saved}");
         }
 
         let again = Store::open(store.path().to_owned());
         assert_eq!(again.settings().problems, Vec::<String>::new());
-        assert_eq!(appearance_value(&again, "text.size"), Value::Number(14.0));
         assert_eq!(
-            appearance_value(&again, "code.ligatures"),
+            appearance_value(&again, "appearance.text.size"),
+            Value::Number(14.0)
+        );
+        assert_eq!(
+            appearance_value(&again, "appearance.code.ligatures"),
             Value::Flag(false)
         );
+        assert_eq!(appearance_value(&again, "vim.enabled"), Value::Flag(true));
         assert_eq!(again.forced_scheme(), Some(Scheme::Dark));
     }
 
     #[test]
     fn appearance_saving_refuses_bad_input_and_leaves_the_file_alone() {
-        let (_folder, mut store) = store_with("# Mine\n");
+        let mine = "version = 2\n# Mine\n[keybinds.global]\npalette = \"mod+y\"\n";
+        let (_folder, mut store) = store_with(mine);
         for (id, value) in [
             ("nope", Value::Flag(true)),
-            ("mode", Value::Text("dusk".to_owned())),
-            ("dark_theme", Value::Text("github-light".to_owned())),
-            ("text.size", Value::Number(1000.0)),
-            ("text.size", Value::Text("big".to_owned())),
-            ("code.family", Value::Text("a; b".to_owned())),
+            // Where it was before every page had a section of its own.
+            ("text.size", Value::Number(14.0)),
+            ("appearance.mode", Value::Text("dusk".to_owned())),
+            (
+                "appearance.dark_theme",
+                Value::Text("github-light".to_owned()),
+            ),
+            ("appearance.text.size", Value::Number(1000.0)),
+            ("appearance.text.size", Value::Text("big".to_owned())),
+            ("appearance.code.family", Value::Text("a; b".to_owned())),
         ] {
             assert!(store.set_appearance(id, value).is_err(), "{id}");
         }
-        assert_eq!(fs::read_to_string(store.path()).unwrap(), "# Mine\n");
+        // Resetting names a setting too, and nothing else in the file.
+        for id in ["nope", "keybinds", "keybinds.global.palette", "appearance"] {
+            assert!(store.reset_appearance(id).is_err(), "{id}");
+        }
+        assert_eq!(fs::read_to_string(store.path()).unwrap(), mine);
     }
 
     #[test]
@@ -801,7 +865,7 @@ mod tests {
         )
         .unwrap();
         store
-            .set_appearance("dark_theme", Value::Text("mine".to_owned()))
+            .set_appearance("appearance.dark_theme", Value::Text("mine".to_owned()))
             .unwrap();
         assert_eq!(store.settings().problems, Vec::<String>::new());
         assert_eq!(store.window_color(Scheme::Dark), [0x27, 0x2c, 0x36]);
@@ -813,14 +877,17 @@ mod tests {
             "[appearance]\nmode = \"dark\"\n[appearance.text]\nsize = 14\n\
              # Keep this note\n[appearance.code]\nsize = 14\n",
         );
-        store.reset_appearance("mode").unwrap();
-        store.reset_appearance("text.size").unwrap();
-        store.reset_appearance("code.size").unwrap();
+        store.reset_appearance("appearance.mode").unwrap();
+        store.reset_appearance("appearance.text.size").unwrap();
+        store.reset_appearance("appearance.code.size").unwrap();
         assert_eq!(
-            appearance_value(&store, "mode"),
+            appearance_value(&store, "appearance.mode"),
             Value::Text("system".to_owned())
         );
-        assert_eq!(appearance_value(&store, "text.size"), Value::Number(13.0));
+        assert_eq!(
+            appearance_value(&store, "appearance.text.size"),
+            Value::Number(13.0)
+        );
         let saved = fs::read_to_string(store.path()).unwrap();
         assert!(!saved.contains("appearance.text"), "{saved}");
         assert!(saved.contains("# Keep this note"), "{saved}");
@@ -828,9 +895,17 @@ mod tests {
 
     #[test]
     fn appearance_leaves_no_empty_header_behind() {
-        let (_folder, mut store) = store_with("[appearance]\nmode = \"dark\"\n");
-        store.reset_appearance("mode").unwrap();
-        assert_eq!(fs::read_to_string(store.path()).unwrap().trim(), "");
+        let (_folder, mut store) = store_with(
+            "version = 2\n\n[appearance]\nmode = \"dark\"\n\n[conversation.images]\ntranscript = false\n",
+        );
+        store.reset_appearance("appearance.mode").unwrap();
+        store
+            .reset_appearance("conversation.images.transcript")
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(store.path()).unwrap().trim(),
+            "version = 2"
+        );
     }
 
     #[test]
@@ -841,10 +916,160 @@ mod tests {
         assert_eq!(store.window_color(Scheme::Dark), [0x27, 0x2c, 0x36]);
         assert!(
             store
-                .set_appearance("mode", Value::Text("dark".to_owned()))
+                .set_appearance("appearance.mode", Value::Text("dark".to_owned()))
                 .unwrap_err()
                 .contains("syntax error")
         );
+    }
+
+    const OLD: &str = "\
+# tectr desktop settings. Changes apply as soon as this file is saved.
+# Only put what differs from the defaults here. Every setting and its default
+# is in dsk.defaults.toml, next to this file.
+
+[appearance]
+mode = \"dark\"
+
+[appearance.layout]
+show_shortcuts = true
+
+# Vim everywhere
+[appearance.vim]
+enabled = true
+
+[keybinds.global]
+new_topic = \"mod+g\"
+";
+
+    fn kept(store: &Store) -> Option<String> {
+        fs::read_to_string(store.path().with_file_name("dsk.v1.toml")).ok()
+    }
+
+    #[test]
+    fn a_new_file_starts_with_its_version() {
+        let folder = tempfile::tempdir().unwrap();
+        let store = Store::open(folder.path().join("dsk.toml"));
+        let written = fs::read_to_string(store.path()).unwrap();
+        assert!(
+            written.ends_with(&format!("\nversion = {}\n", migrate::CURRENT)),
+            "{written}"
+        );
+        // Nothing was brought up to date, so there's nothing to keep.
+        assert_eq!(kept(&store), None);
+    }
+
+    #[test]
+    fn a_file_from_an_older_tectr_is_brought_up_to_date_and_kept_as_it_was() {
+        let (_folder, store) = store_with(OLD);
+        assert_eq!(store.settings().problems, Vec::<String>::new());
+        assert_eq!(
+            appearance_value(&store, "general.show_shortcuts"),
+            Value::Flag(true)
+        );
+        assert_eq!(appearance_value(&store, "vim.enabled"), Value::Flag(true));
+        assert_eq!(store.forced_scheme(), Some(Scheme::Dark));
+        assert_eq!(keys(&store, "global.new_topic"), ["mod+g"]);
+
+        let saved = fs::read_to_string(store.path()).unwrap();
+        assert!(
+            saved.starts_with(&format!("{}version = 2\n\n[appearance]", migrate::HEADER)),
+            "{saved}"
+        );
+        assert!(
+            saved.contains("# Vim everywhere\n[vim]\nenabled = true\n"),
+            "{saved}"
+        );
+        assert!(
+            saved.contains("[general]\nshow_shortcuts = true\n"),
+            "{saved}"
+        );
+        assert!(!saved.contains("appearance.layout"), "{saved}");
+        assert_eq!(kept(&store).as_deref(), Some(OLD));
+
+        // Opening it again finds nothing left to do.
+        let again = Store::open(store.path().to_owned());
+        assert_eq!(fs::read_to_string(again.path()).unwrap(), saved);
+        assert_eq!(again.settings(), store.settings());
+    }
+
+    #[test]
+    fn an_older_file_put_in_place_while_running_is_brought_up_to_date_too() {
+        let (_folder, mut store) = store_with("");
+        fs::write(store.path(), OLD).unwrap();
+        assert!(store.reload());
+        assert_eq!(store.settings().problems, Vec::<String>::new());
+        assert_eq!(appearance_value(&store, "vim.enabled"), Value::Flag(true));
+        assert_eq!(kept(&store).as_deref(), Some(OLD));
+
+        // Saving right after one arrives lands in the new layout as well.
+        fs::write(store.path(), OLD).unwrap();
+        store
+            .set_appearance("vim.escape", Value::Text("jk".to_owned()))
+            .unwrap();
+        let saved = fs::read_to_string(store.path()).unwrap();
+        assert!(
+            saved.contains("[vim]\nenabled = true\nescape = \"jk\"\n"),
+            "{saved}"
+        );
+        assert_eq!(store.settings().problems, Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_old_places_mean_nothing_in_a_file_that_says_it_is_current() {
+        let (_folder, store) = store_with("version = 2\n[appearance.vim]\nenabled = true\n");
+        assert_eq!(appearance_value(&store, "vim.enabled"), Value::Flag(false));
+        let problems = store.settings().problems.join("\n");
+        assert!(
+            problems.contains("appearance.vim isn't a known setting"),
+            "{problems}"
+        );
+        assert_eq!(kept(&store), None);
+    }
+
+    #[test]
+    fn a_file_from_a_newer_tectr_is_read_as_far_as_possible_and_never_written() {
+        let newer = "version = 3\n[vim]\nenabled = true\n[later]\nx = 1\n";
+        let (_folder, mut store) = store_with(newer);
+        assert_eq!(appearance_value(&store, "vim.enabled"), Value::Flag(true));
+        let problems = store.settings().problems.join("\n");
+        assert!(problems.contains("from a newer tectr"), "{problems}");
+        for refused in [
+            store.set_appearance("vim.enabled", Value::Flag(false)),
+            store.reset_appearance("vim.enabled"),
+            store.set_keybind("global.palette", vec![on("mod+y")]),
+        ] {
+            assert!(refused.unwrap_err().contains("newer tectr"));
+        }
+        assert_eq!(fs::read_to_string(store.path()).unwrap(), newer);
+        assert_eq!(kept(&store), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_older_file_that_cannot_be_rewritten_still_applies() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let folder = tempfile::tempdir().unwrap();
+        let inside = folder.path().join("locked");
+        fs::create_dir_all(&inside).unwrap();
+        let path = inside.join("dsk.toml");
+        fs::write(&path, OLD).unwrap();
+        fs::write(path.with_file_name("dsk.defaults.toml"), "").unwrap();
+        fs::set_permissions(&inside, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let store = Store::open(path.clone());
+        let settings = store.settings();
+        fs::set_permissions(&inside, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(appearance_value(&store, "vim.enabled"), Value::Flag(true));
+        assert_eq!(fs::read_to_string(&path).unwrap(), OLD);
+        let problems = settings.problems.join("\n");
+        assert!(
+            problems.contains("couldn't be brought up to date"),
+            "{problems}"
+        );
+        // Only the one problem about the file: nothing in it reads as unknown.
+        assert!(!problems.contains("isn't a known setting"), "{problems}");
     }
 
     #[cfg(unix)]

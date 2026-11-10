@@ -228,7 +228,7 @@ const WORKSPACE_HINTS = [
 ];
 
 const remoteDelay = () => {
-  const delay = shownValue("layout.remote_path_delay");
+  const delay = shownValue("general.remote_path_delay");
   return typeof delay === "number" ? delay : 150;
 };
 
@@ -385,11 +385,7 @@ function CloseSheet({
     <Sheet
       where={`${sessionLabel(sheet.session)} is still running`}
       action="Stop and close"
-      hint={
-        again
-          ? `Closing its tab stops the agent. Press ${again} again to confirm.`
-          : "Closing its tab stops the agent."
-      }
+      hint={again ? `${again} again to confirm` : undefined}
       canSubmit
       focusAction
       run={() =>
@@ -513,7 +509,6 @@ function MoveSheet({
     <Sheet
       where={`An agent in ${sheet.topic.name} is still running`}
       action="Stop and move"
-      hint="Moving stops it. It picks up in the new folder with your next message."
       canSubmit
       focusAction
       returnsFocus

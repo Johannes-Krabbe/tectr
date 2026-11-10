@@ -68,7 +68,7 @@ pub const GROUPS: &[Group] = &[
     Group {
         id: "picker",
         title: "Pickers",
-        about: "While a dropdown is open.",
+        about: "While a dropdown or a menu is open.",
     },
     Group {
         id: "device",

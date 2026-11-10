@@ -211,7 +211,7 @@ export function TopicMcpSheet({
           )}
           <div className="sheet-foot">
             <span className="sheet-hint">
-              {online ? "Working agents get changes after their turn" : `${state.machine.name} is offline`}
+              {!online && `${state.machine.name} is offline`}
             </span>
             <button
               type="button"

@@ -1,4 +1,6 @@
-//! The `[appearance]` section: how the app looks, and the themes it can look like.
+//! Every setting that's a row on a settings page, and the themes the app can look like. The
+//! module is named after `[appearance]`, where all of them once were. Each page now has a
+//! section of its own: `[general]`, `[appearance]`, `[conversation]`, `[terminal]`, `[vim]`.
 //!
 //! `FIELDS` is the only place defaults live. The UI draws its rows from what's resolved
 //! here, and `apps/dsk/src/appearance.ts` turns the values into CSS variables. Themes are
@@ -10,16 +12,8 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table};
 
-const SUBTABLES: &[&str] = &[
-    "text",
-    "code",
-    "layout",
-    "transcript",
-    "terminal",
-    "images",
-    "vim",
-];
-const THEMES_KEY: &str = "themes";
+/// Where the file keeps themes of its own, each in a section under it.
+const THEMES: &str = "appearance.themes";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -98,53 +92,109 @@ impl DefaultValue {
 
 #[derive(Debug, Clone, Copy)]
 struct Field {
-    /// Its place in the file: `size` under `text` is `text.size`.
+    /// Its place in the file: `appearance.text.size` is `size` under `[appearance.text]`.
+    /// It starts with the page it's on, and settings in one section are listed together.
     id: &'static str,
     group: &'static str,
     label: &'static str,
-    about: &'static str,
     default: DefaultValue,
     kind: Kind,
 }
+
+/// A section of the app's settings, and the section of the file with the same name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Page {
+    pub id: &'static str,
+    pub title: &'static str,
+}
+
+pub const PAGES: &[Page] = &[
+    Page {
+        id: "general",
+        title: "General",
+    },
+    Page {
+        id: "appearance",
+        title: "Appearance",
+    },
+    Page {
+        id: "conversation",
+        title: "Conversation",
+    },
+    Page {
+        id: "terminal",
+        title: "Terminal",
+    },
+    Page {
+        id: "vim",
+        title: "Vim",
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct FieldGroup {
     pub id: &'static str,
     pub title: &'static str,
+    /// The page it's shown on.
+    pub page: &'static str,
 }
 
+/// In the order they're shown, page by page.
 pub const GROUPS: &[FieldGroup] = &[
+    FieldGroup {
+        id: "interface",
+        title: "Interface",
+        page: "general",
+    },
     FieldGroup {
         id: "theme",
         title: "Theme",
+        page: "appearance",
     },
     FieldGroup {
         id: "text",
         title: "Text",
+        page: "appearance",
     },
     FieldGroup {
         id: "code",
         title: "Code",
+        page: "appearance",
     },
     FieldGroup {
         id: "layout",
         title: "Layout",
+        page: "appearance",
+    },
+    FieldGroup {
+        id: "motion",
+        title: "Motion",
+        page: "appearance",
     },
     FieldGroup {
         id: "transcript",
         title: "Transcript",
-    },
-    FieldGroup {
-        id: "terminal",
-        title: "Terminal",
+        page: "conversation",
     },
     FieldGroup {
         id: "images",
         title: "Images",
+        page: "conversation",
+    },
+    FieldGroup {
+        id: "terminal_display",
+        title: "Display",
+        page: "terminal",
+    },
+    FieldGroup {
+        id: "terminal_behavior",
+        title: "Behavior",
+        page: "terminal",
     },
     FieldGroup {
         id: "vim",
-        title: "Vim",
+        title: "Message boxes",
+        page: "vim",
     },
 ];
 
@@ -235,198 +285,16 @@ const CURSORS: &[Choice] = &[
 
 const FIELDS: &[Field] = &[
     Field {
-        id: "mode",
-        group: "theme",
-        label: "Mode",
-        about: "Whether to use the dark theme or the light theme",
-        default: DefaultValue::Text("system"),
-        kind: Kind::Choice { options: MODES },
-    },
-    Field {
-        id: "dark_theme",
-        group: "theme",
-        label: "Dark theme",
-        about: "Used in dark mode",
-        default: DefaultValue::Text(DEFAULT_DARK_THEME),
-        kind: Kind::Theme {
-            scheme: Scheme::Dark,
-        },
-    },
-    Field {
-        id: "light_theme",
-        group: "theme",
-        label: "Light theme",
-        about: "Used in light mode",
-        default: DefaultValue::Text(DEFAULT_LIGHT_THEME),
-        kind: Kind::Theme {
-            scheme: Scheme::Light,
-        },
-    },
-    Field {
-        id: "text.family",
-        group: "text",
-        label: "Font",
-        about: "For everything that isn't code",
-        default: DefaultValue::Text(""),
-        kind: Kind::Font {
-            bundled: "Inter",
-            system: "system-ui",
-            monospace: false,
-        },
-    },
-    Field {
-        id: "text.size",
-        group: "text",
-        label: "Size",
-        about: "Other text, rows and icons grow in proportion",
-        default: DefaultValue::Number(13.0),
-        kind: Kind::Number {
-            min: 9.0,
-            max: 28.0,
-            step: 0.5,
-            unit: "px",
-        },
-    },
-    Field {
-        id: "text.line_height",
-        group: "text",
-        label: "Line height in messages",
-        about: "How much room agents' messages have between lines",
-        default: DefaultValue::Number(1.55),
-        kind: Kind::Number {
-            min: 1.0,
-            max: 2.5,
-            step: 0.05,
-            unit: "",
-        },
-    },
-    Field {
-        id: "text.smoothing",
-        group: "text",
-        label: "Font smoothing",
-        about: "How heavy letters look on macOS",
-        default: DefaultValue::Text("antialiased"),
-        kind: Kind::Choice { options: SMOOTHING },
-    },
-    Field {
-        id: "code.family",
-        group: "code",
-        label: "Font",
-        about: "For code, commands and paths",
-        default: DefaultValue::Text(""),
-        kind: Kind::Font {
-            bundled: "Geist Mono",
-            system: "ui-monospace",
-            monospace: true,
-        },
-    },
-    Field {
-        id: "code.size",
-        group: "code",
-        label: "Size",
-        about: "Code in messages follows this too",
-        default: DefaultValue::Number(12.5),
-        kind: Kind::Number {
-            min: 8.0,
-            max: 28.0,
-            step: 0.5,
-            unit: "px",
-        },
-    },
-    Field {
-        id: "code.line_height",
-        group: "code",
-        label: "Line height",
-        about: "How much room code has between lines",
-        default: DefaultValue::Number(1.55),
-        kind: Kind::Number {
-            min: 1.0,
-            max: 2.5,
-            step: 0.05,
-            unit: "",
-        },
-    },
-    Field {
-        id: "code.ligatures",
-        group: "code",
-        label: "Ligatures",
-        about: "Joins characters like -> in fonts that have them",
-        default: DefaultValue::Flag(true),
-        kind: Kind::Toggle,
-    },
-    Field {
-        id: "layout.density",
-        group: "layout",
-        label: "Density",
-        about: "Scales row heights and the space between things",
-        default: DefaultValue::Number(100.0),
-        kind: Kind::Number {
-            min: 70.0,
-            max: 150.0,
-            step: 5.0,
-            unit: "%",
-        },
-    },
-    Field {
-        id: "layout.corners",
-        group: "layout",
-        label: "Corner roundness",
-        about: "0% is square",
-        default: DefaultValue::Number(100.0),
-        kind: Kind::Number {
-            min: 0.0,
-            max: 300.0,
-            step: 25.0,
-            unit: "%",
-        },
-    },
-    Field {
-        id: "layout.sidebar_width",
-        group: "layout",
-        label: "Sidebar width",
-        about: "",
-        default: DefaultValue::Number(256.0),
-        kind: Kind::Number {
-            min: 160.0,
-            max: 560.0,
-            step: 8.0,
-            unit: "px",
-        },
-    },
-    Field {
-        id: "layout.content_width",
-        group: "layout",
-        label: "Message width",
-        about: "The widest messages and the message box get",
-        default: DefaultValue::Number(800.0),
-        kind: Kind::Number {
-            min: 480.0,
-            max: 2400.0,
-            step: 40.0,
-            unit: "px",
-        },
-    },
-    Field {
-        id: "layout.show_shortcuts",
-        group: "layout",
+        id: "general.show_shortcuts",
+        group: "interface",
         label: "Show keyboard shortcuts",
-        about: "A line along the bottom with the keys that work right now",
         default: DefaultValue::Flag(false),
         kind: Kind::Toggle,
     },
     Field {
-        id: "layout.animate_status",
-        group: "layout",
-        label: "Moving status icons",
-        about: "The working icon turns, and icons move from one state to the next. Reduce Motion in the system keeps them still too",
-        default: DefaultValue::Flag(true),
-        kind: Kind::Toggle,
-    },
-    Field {
-        id: "layout.remote_path_delay",
-        group: "layout",
+        id: "general.remote_path_delay",
+        group: "interface",
         label: "Remote path suggestions delay",
-        about: "How long to wait after typing before asking another device for its folders. This device never waits",
         default: DefaultValue::Number(150.0),
         kind: Kind::Number {
             min: 0.0,
@@ -436,42 +304,213 @@ const FIELDS: &[Field] = &[
         },
     },
     Field {
-        id: "transcript.steps",
+        id: "general.toast_duration",
+        group: "interface",
+        label: "Toast duration",
+        default: DefaultValue::Number(3.0),
+        kind: Kind::Number {
+            min: 1.0,
+            max: 15.0,
+            step: 0.5,
+            unit: "s",
+        },
+    },
+    Field {
+        id: "appearance.mode",
+        group: "theme",
+        label: "Mode",
+        default: DefaultValue::Text("system"),
+        kind: Kind::Choice { options: MODES },
+    },
+    Field {
+        id: "appearance.dark_theme",
+        group: "theme",
+        label: "Dark theme",
+        default: DefaultValue::Text(DEFAULT_DARK_THEME),
+        kind: Kind::Theme {
+            scheme: Scheme::Dark,
+        },
+    },
+    Field {
+        id: "appearance.light_theme",
+        group: "theme",
+        label: "Light theme",
+        default: DefaultValue::Text(DEFAULT_LIGHT_THEME),
+        kind: Kind::Theme {
+            scheme: Scheme::Light,
+        },
+    },
+    Field {
+        id: "appearance.text.family",
+        group: "text",
+        label: "Font",
+        default: DefaultValue::Text(""),
+        kind: Kind::Font {
+            bundled: "Inter",
+            system: "system-ui",
+            monospace: false,
+        },
+    },
+    Field {
+        id: "appearance.text.size",
+        group: "text",
+        label: "Size",
+        default: DefaultValue::Number(13.0),
+        kind: Kind::Number {
+            min: 9.0,
+            max: 28.0,
+            step: 0.5,
+            unit: "px",
+        },
+    },
+    Field {
+        id: "appearance.text.line_height",
+        group: "text",
+        label: "Line height in messages",
+        default: DefaultValue::Number(1.55),
+        kind: Kind::Number {
+            min: 1.0,
+            max: 2.5,
+            step: 0.05,
+            unit: "",
+        },
+    },
+    Field {
+        id: "appearance.text.smoothing",
+        group: "text",
+        label: "Font smoothing",
+        default: DefaultValue::Text("antialiased"),
+        kind: Kind::Choice { options: SMOOTHING },
+    },
+    Field {
+        id: "appearance.code.family",
+        group: "code",
+        label: "Font",
+        default: DefaultValue::Text(""),
+        kind: Kind::Font {
+            bundled: "Geist Mono",
+            system: "ui-monospace",
+            monospace: true,
+        },
+    },
+    Field {
+        id: "appearance.code.size",
+        group: "code",
+        label: "Size",
+        default: DefaultValue::Number(12.5),
+        kind: Kind::Number {
+            min: 8.0,
+            max: 28.0,
+            step: 0.5,
+            unit: "px",
+        },
+    },
+    Field {
+        id: "appearance.code.line_height",
+        group: "code",
+        label: "Line height",
+        default: DefaultValue::Number(1.55),
+        kind: Kind::Number {
+            min: 1.0,
+            max: 2.5,
+            step: 0.05,
+            unit: "",
+        },
+    },
+    Field {
+        id: "appearance.code.ligatures",
+        group: "code",
+        label: "Ligatures",
+        default: DefaultValue::Flag(true),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "appearance.layout.density",
+        group: "layout",
+        label: "Density",
+        default: DefaultValue::Number(100.0),
+        kind: Kind::Number {
+            min: 70.0,
+            max: 150.0,
+            step: 5.0,
+            unit: "%",
+        },
+    },
+    Field {
+        id: "appearance.layout.corners",
+        group: "layout",
+        label: "Corner roundness",
+        default: DefaultValue::Number(100.0),
+        kind: Kind::Number {
+            min: 0.0,
+            max: 300.0,
+            step: 25.0,
+            unit: "%",
+        },
+    },
+    Field {
+        id: "appearance.layout.sidebar_width",
+        group: "layout",
+        label: "Sidebar width",
+        default: DefaultValue::Number(256.0),
+        kind: Kind::Number {
+            min: 160.0,
+            max: 560.0,
+            step: 8.0,
+            unit: "px",
+        },
+    },
+    Field {
+        id: "appearance.layout.content_width",
+        group: "layout",
+        label: "Message width",
+        default: DefaultValue::Number(800.0),
+        kind: Kind::Number {
+            min: 480.0,
+            max: 2400.0,
+            step: 40.0,
+            unit: "px",
+        },
+    },
+    Field {
+        id: "appearance.motion.status_icons",
+        group: "motion",
+        label: "Status icons",
+        default: DefaultValue::Flag(true),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "appearance.motion.transcript",
+        group: "motion",
+        label: "Transcript",
+        default: DefaultValue::Flag(true),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "conversation.steps",
         group: "transcript",
         label: "Tool calls and thinking",
-        about: "What an agent does between its messages. Messages always show",
         default: DefaultValue::Text("folded"),
         kind: Kind::Choice { options: STEPS },
     },
     Field {
-        id: "transcript.animate",
-        group: "transcript",
-        label: "Animations",
-        about: "The sweep over what an agent is working on, messages typing out as they stream, and scrolling easing into place",
-        default: DefaultValue::Flag(true),
-        kind: Kind::Toggle,
-    },
-    Field {
-        id: "images.message_box",
+        id: "conversation.images.message_box",
         group: "images",
         label: "Thumbnails in the message box",
-        about: "The images you've pasted, above what you're typing. [Image #1] in the text shows each one either way",
         default: DefaultValue::Flag(true),
         kind: Kind::Toggle,
     },
     Field {
-        id: "images.transcript",
+        id: "conversation.images.transcript",
         group: "images",
         label: "Thumbnails above your messages",
-        about: "The images a sent message has. [Image #1] in its text shows each one either way",
         default: DefaultValue::Flag(true),
         kind: Kind::Toggle,
     },
     Field {
         id: "terminal.size",
-        group: "terminal",
-        label: "Size",
-        about: "Terminals use the code font",
+        group: "terminal_display",
+        label: "Text size",
         default: DefaultValue::Number(13.0),
         kind: Kind::Number {
             min: 8.0,
@@ -482,9 +521,8 @@ const FIELDS: &[Field] = &[
     },
     Field {
         id: "terminal.line_height",
-        group: "terminal",
+        group: "terminal_display",
         label: "Line height",
-        about: "Box drawing lines only join up at 1",
         default: DefaultValue::Number(1.0),
         kind: Kind::Number {
             min: 1.0,
@@ -495,33 +533,29 @@ const FIELDS: &[Field] = &[
     },
     Field {
         id: "terminal.cursor",
-        group: "terminal",
+        group: "terminal_display",
         label: "Cursor",
-        about: "Programs can change it while they run",
         default: DefaultValue::Text("block"),
         kind: Kind::Choice { options: CURSORS },
     },
     Field {
         id: "terminal.cursor_blink",
-        group: "terminal",
+        group: "terminal_display",
         label: "Blinking cursor",
-        about: "",
         default: DefaultValue::Flag(false),
         kind: Kind::Toggle,
     },
     Field {
         id: "terminal.option_as_meta",
-        group: "terminal",
+        group: "terminal_behavior",
         label: "Option as Meta",
-        about: "Option with a letter sends Esc and the letter, as shells and editors expect, instead of typing a special character",
         default: DefaultValue::Flag(false),
         kind: Kind::Toggle,
     },
     Field {
         id: "terminal.scrollback",
-        group: "terminal",
+        group: "terminal_behavior",
         label: "History",
-        about: "Lines you can scroll back through. The device keeps up to 10000",
         default: DefaultValue::Number(10000.0),
         kind: Kind::Number {
             min: 0.0,
@@ -534,7 +568,6 @@ const FIELDS: &[Field] = &[
         id: "vim.enabled",
         group: "vim",
         label: "Vim keys",
-        about: "Normal, insert and visual mode in the message box and the new topic box",
         default: DefaultValue::Flag(false),
         kind: Kind::Toggle,
     },
@@ -542,7 +575,6 @@ const FIELDS: &[Field] = &[
         id: "vim.start",
         group: "vim",
         label: "Starts in",
-        about: "The mode a box is in when you go to it",
         default: DefaultValue::Text("insert"),
         kind: Kind::Choice { options: VIM_MODES },
     },
@@ -550,7 +582,6 @@ const FIELDS: &[Field] = &[
         id: "vim.escape",
         group: "vim",
         label: "Leave insert mode with",
-        about: "Two letters typed quickly, as well as Esc. How quickly is keybinds.sequence_timeout_ms",
         default: DefaultValue::Text(""),
         kind: Kind::Choice {
             options: VIM_ESCAPES,
@@ -560,7 +591,6 @@ const FIELDS: &[Field] = &[
         id: "vim.system_clipboard",
         group: "vim",
         label: "Use the system clipboard",
-        about: "Yanking and deleting copy to it, and p pastes from it. Off keeps vim's register to itself",
         default: DefaultValue::Flag(true),
         kind: Kind::Toggle,
     },
@@ -576,7 +606,6 @@ pub struct ResolvedField {
     pub id: &'static str,
     pub group: &'static str,
     pub label: &'static str,
-    pub about: &'static str,
     pub kind: Kind,
     pub value: Value,
     /// The file sets this, so it can be reset.
@@ -598,6 +627,7 @@ pub struct Theme {
 /// What the UI needs to apply and show the appearance.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Appearance {
+    pub pages: &'static [Page],
     pub groups: &'static [FieldGroup],
     pub fields: Vec<ResolvedField>,
     pub themes: Vec<Theme>,
@@ -613,7 +643,7 @@ pub struct Values {
 impl Values {
     /// The mode, or None to follow the system.
     pub fn forced_scheme(&self) -> Option<Scheme> {
-        match self.text("mode") {
+        match self.text("appearance.mode") {
             "light" => Some(Scheme::Light),
             "dark" => Some(Scheme::Dark),
             _ => None,
@@ -623,8 +653,8 @@ impl Values {
     /// The color behind the window in this scheme, which the native title bar shows.
     pub fn window_color(&self, scheme: Scheme) -> [u8; 3] {
         let id = self.text(match scheme {
-            Scheme::Dark => "dark_theme",
-            Scheme::Light => "light_theme",
+            Scheme::Dark => "appearance.dark_theme",
+            Scheme::Light => "appearance.light_theme",
         });
         let theme = find_theme(&self.custom, id).unwrap_or_else(|| default_theme(scheme));
         base_color(theme)
@@ -653,7 +683,6 @@ impl Values {
                 id: field.id,
                 group: field.group,
                 label: field.label,
-                about: field.about,
                 kind: field.kind,
                 value: self
                     .overrides
@@ -669,6 +698,7 @@ impl Values {
             .chain(self.custom.iter().cloned())
             .collect();
         Appearance {
+            pages: PAGES,
             groups: GROUPS,
             fields,
             themes,
@@ -1175,26 +1205,21 @@ fn checked(field: &Field, value: Value, custom: &[Theme]) -> Result<Value, Strin
                 Ok(Value::Text(text))
             } else {
                 let list: Vec<&str> = options.iter().map(|option| option.value).collect();
-                Err(format!(
-                    "appearance.{id} has to be one of {}",
-                    list.join(", ")
-                ))
+                Err(format!("{id} has to be one of {}", list.join(", ")))
             }
         }
         (Kind::Theme { scheme }, Value::Text(text)) => match find_theme(custom, &text) {
             Some(theme) if theme.scheme == scheme => Ok(Value::Text(text)),
             Some(_) => Err(format!(
-                "appearance.{id} needs a {} theme, and \"{text}\" isn't one",
+                "{id} needs a {} theme, and \"{text}\" isn't one",
                 scheme.name()
             )),
-            None => Err(format!(
-                "appearance.{id}: there's no theme called \"{text}\""
-            )),
+            None => Err(format!("{id}: there's no theme called \"{text}\"")),
         },
         (Kind::Font { .. }, Value::Text(text)) => {
             let text = text.trim().to_owned();
             match family_problem(&text) {
-                Some(problem) => Err(format!("appearance.{id} {problem}")),
+                Some(problem) => Err(format!("{id} {problem}")),
                 None => Ok(Value::Text(text)),
             }
         }
@@ -1203,27 +1228,25 @@ fn checked(field: &Field, value: Value, custom: &[Theme]) -> Result<Value, Strin
                 // So that steps of 0.05 don't leave 1.6000000000000001 in the file.
                 Ok(Value::Number((number * 1000.0).round() / 1000.0))
             } else {
-                Err(format!("appearance.{id} has to be from {min} to {max}"))
+                Err(format!("{id} has to be from {min} to {max}"))
             }
         }
         (Kind::Toggle, Value::Flag(flag)) => Ok(Value::Flag(flag)),
         (kind, _) => Err(match kind {
-            Kind::Toggle => format!("appearance.{id} has to be true or false"),
-            Kind::Number { .. } => format!("appearance.{id} has to be a number"),
-            _ => format!("appearance.{id} has to be text"),
+            Kind::Toggle => format!("{id} has to be true or false"),
+            Kind::Number { .. } => format!("{id} has to be a number"),
+            _ => format!("{id} has to be text"),
         }),
     }
 }
 
 fn read_setting(id: &str, item: &Item, values: &mut Values, problems: &mut Vec<String>) {
     let Some(field) = field(id) else {
-        problems.push(format!(
-            "appearance.{id} isn't a known setting, so it's ignored"
-        ));
+        problems.push(format!("{id} isn't a known setting, so it's ignored"));
         return;
     };
     let Some(value) = value_of_item(item) else {
-        problems.push(format!("appearance.{id} isn't a value. Using the default."));
+        problems.push(format!("{id} isn't a value. Using the default."));
         return;
     };
     match checked(field, value, &values.custom) {
@@ -1234,31 +1257,60 @@ fn read_setting(id: &str, item: &Item, values: &mut Values, problems: &mut Vec<S
     }
 }
 
-/// Reads `[appearance]`. A bad entry is reported and left out, so it keeps its default.
-pub fn parse(section: &Item, problems: &mut Vec<String>) -> Values {
-    let mut values = Values::default();
-    let Some(table) = section.as_table_like() else {
-        problems.push("appearance has to be a section, like [appearance]".to_owned());
-        return values;
+/// Whether settings are kept under this place in the file, rather than at it.
+fn is_section(path: &str) -> bool {
+    FIELDS.iter().any(|field| {
+        field
+            .id
+            .strip_prefix(path)
+            .is_some_and(|rest| rest.starts_with('.'))
+    })
+}
+
+/// Reads a section and the ones inside it. A bad entry is reported and left out, so it
+/// keeps its default.
+fn read_section(path: &str, item: &Item, values: &mut Values, problems: &mut Vec<String>) {
+    let Some(table) = item.as_table_like() else {
+        problems.push(format!("{path} has to be a section, like [{path}]"));
+        return;
     };
-    // Themes first, because settings below can name them.
-    if let Some(themes) = table.get(THEMES_KEY) {
+    for (name, item) in table.iter() {
+        let inner = format!("{path}.{name}");
+        if inner == THEMES {
+            continue;
+        }
+        if is_section(&inner) {
+            read_section(&inner, item, values, problems);
+        } else {
+            read_setting(&inner, item, values, problems);
+        }
+    }
+}
+
+/// The names of the file's sections that are read here.
+pub fn sections() -> impl Iterator<Item = &'static str> {
+    PAGES.iter().map(|page| page.id)
+}
+
+fn item_at<'a>(table: &'a Table, path: &str) -> Option<&'a Item> {
+    let mut names = path.split('.');
+    let mut item = table.get(names.next()?)?;
+    for name in names {
+        item = item.as_table_like()?.get(name)?;
+    }
+    Some(item)
+}
+
+/// Reads every page's section from the file.
+pub fn parse(root: &Table, problems: &mut Vec<String>) -> Values {
+    let mut values = Values::default();
+    // Themes first, because settings can name them.
+    if let Some(themes) = item_at(root, THEMES) {
         values.custom = parse_themes(themes, problems);
     }
-    for (name, item) in table.iter() {
-        if name == THEMES_KEY {
-            continue;
-        }
-        if !SUBTABLES.contains(&name) {
-            read_setting(name, item, &mut values, problems);
-            continue;
-        }
-        let Some(subtable) = item.as_table_like() else {
-            problems.push(format!("appearance.{name} has to be a section"));
-            continue;
-        };
-        for (key, item) in subtable.iter() {
-            read_setting(&format!("{name}.{key}"), item, &mut values, problems);
+    for section in sections() {
+        if let Some(item) = root.get(section) {
+            read_section(section, item, &mut values, problems);
         }
     }
     values
@@ -1271,40 +1323,46 @@ pub fn set(
     id: &str,
     value: Value,
 ) -> Result<(), String> {
-    let field = field(id).ok_or_else(|| format!("{id} isn't a known appearance setting"))?;
+    let field = field(id).ok_or_else(|| format!("{id} isn't a known setting"))?;
     let value = checked(field, value, &current.custom)?;
-    let section = crate::keybinds::subtable(document.as_table_mut(), "appearance")?;
-    let (table, key): (&mut Table, &str) = match id.split_once('.') {
-        Some((subtable, key)) => (crate::keybinds::subtable(section, subtable)?, key),
-        None => (section, id),
-    };
+    let (section, key) = field
+        .id
+        .rsplit_once('.')
+        .ok_or_else(|| format!("{id} has no section"))?;
+    let mut table = document.as_table_mut();
+    for name in section.split('.') {
+        table = crate::keybinds::subtable(table, name)?;
+    }
     table.insert(key, toml_item(&value));
     Ok(())
 }
 
 /// Takes a value out of the file, and any section left empty, unless it has comments.
-pub fn remove(document: &mut DocumentMut, id: &str) {
-    let Some(section) = document
-        .get_mut("appearance")
-        .and_then(Item::as_table_like_mut)
-    else {
-        return;
-    };
-    match id.split_once('.') {
-        None => {
-            section.remove(id);
-        }
-        Some((subtable, key)) => {
-            if let Some(values) = section.get_mut(subtable).and_then(Item::as_table_like_mut) {
-                values.remove(key);
-            }
-            remove_if_empty(section, subtable);
-        }
-    }
-    remove_if_empty(document.as_table_mut(), "appearance");
+/// Only a setting can be named, because the name comes from the webview.
+pub fn remove(document: &mut DocumentMut, id: &str) -> Result<(), String> {
+    let field = field(id).ok_or_else(|| format!("{id} isn't a known setting"))?;
+    let path: Vec<&str> = field.id.split('.').collect();
+    remove_at(document.as_table_mut(), &path);
+    Ok(())
 }
 
-fn remove_if_empty(parent: &mut dyn toml_edit::TableLike, name: &str) {
+fn remove_at(table: &mut dyn toml_edit::TableLike, path: &[&str]) {
+    match path {
+        [] => {}
+        [key] => {
+            table.remove(key);
+        }
+        [name, rest @ ..] => {
+            if let Some(inner) = table.get_mut(name).and_then(Item::as_table_like_mut) {
+                remove_at(inner, rest);
+            }
+            remove_if_empty(table, name);
+        }
+    }
+}
+
+/// Takes out a section with nothing in it, unless a comment says something about it.
+pub fn remove_if_empty(parent: &mut dyn toml_edit::TableLike, name: &str) {
     let Some(table) = parent.get(name).and_then(Item::as_table) else {
         return;
     };
@@ -1331,12 +1389,12 @@ fn toml_item(value: &Value) -> Item {
 }
 
 fn default_line(field: &Field) -> String {
-    let key = field.id.split_once('.').map_or(field.id, |(_, key)| key);
+    let key = field.id.rsplit_once('.').map_or(field.id, |(_, key)| key);
     let value = toml_item(&field.default.value());
     format!("{key} = {}\n", value.to_string().trim())
 }
 
-/// The `[appearance]` part of `dsk.defaults.toml`.
+/// Every page's section in `dsk.defaults.toml`.
 pub fn reference() -> String {
     let dark: Vec<&str> = builtin_themes()
         .iter()
@@ -1354,7 +1412,7 @@ pub fn reference() -> String {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let mut out = format!(
+    let notes = format!(
         "\n# Appearance\n\
          #\n\
          # mode is system, light or dark.\n\
@@ -1372,22 +1430,22 @@ pub fn reference() -> String {
          #   \"accent.solid\" = \"#ff7a00\"      # the tints made from it follow\n\
          #\n\
          # A theme can set any of these, as \"#rrggbb\" or \"#rrggbbaa\":\n\
-         {tokens}\n\n",
+         {tokens}\n",
         dark.join(", "),
         light.join(", "),
     );
-    out.push_str("[appearance]\n");
-    for field in FIELDS.iter().filter(|field| !field.id.contains('.')) {
-        out.push_str(&default_line(field));
-    }
-    for subtable in SUBTABLES {
-        out.push_str(&format!("\n[appearance.{subtable}]\n"));
-        for field in FIELDS
-            .iter()
-            .filter(|field| field.id.starts_with(&format!("{subtable}.")))
-        {
-            out.push_str(&default_line(field));
+    let mut out = String::new();
+    let mut section = "";
+    for field in FIELDS {
+        let table = field.id.rsplit_once('.').map_or("", |(table, _)| table);
+        if table != section {
+            if table == "appearance" {
+                out.push_str(&notes);
+            }
+            out.push_str(&format!("\n[{table}]\n"));
+            section = table;
         }
+        out.push_str(&default_line(field));
     }
     out
 }
@@ -1422,7 +1480,7 @@ mod tests {
     fn parsed(contents: &str) -> (Values, Vec<String>) {
         let document = contents.parse::<DocumentMut>().unwrap();
         let mut problems = Vec::new();
-        let values = parse(document.get("appearance").unwrap(), &mut problems);
+        let values = parse(document.as_table(), &mut problems);
         (values, problems)
     }
 
@@ -1659,7 +1717,9 @@ mod tests {
             "code.size",
             "code.line_height",
         ] {
-            let Some(DefaultValue::Number(number)) = field(id).map(|field| field.default) else {
+            let place = format!("appearance.{id}");
+            let Some(DefaultValue::Number(number)) = field(&place).map(|field| field.default)
+            else {
                 panic!("{id} isn't a number");
             };
             assert_eq!(defaults["scale"][id].as_f64(), Some(number), "{id}");
@@ -1668,12 +1728,31 @@ mod tests {
 
     #[test]
     fn every_field_is_in_a_group_and_its_default_passes_its_own_check() {
-        for field in FIELDS {
+        for group in GROUPS {
             assert!(
-                GROUPS.iter().any(|group| group.id == field.group),
-                "{}",
-                field.id
+                PAGES.iter().any(|page| page.id == group.page),
+                "{} is on a page that doesn't exist",
+                group.id
             );
+            assert!(
+                FIELDS.iter().any(|field| field.group == group.id),
+                "{} has no settings",
+                group.id
+            );
+        }
+        // A page's groups are listed together, so the UI can show them in this order.
+        let pages: Vec<&str> = GROUPS.iter().map(|group| group.page).collect();
+        let mut in_order = pages.clone();
+        in_order.sort_by_key(|page| PAGES.iter().position(|known| known.id == *page));
+        assert_eq!(pages, in_order);
+        for field in FIELDS {
+            // Its place in the file is under the section of the page it shows on, which is
+            // also what makes it one of the sections that get read.
+            let page = GROUPS
+                .iter()
+                .find(|group| group.id == field.group)
+                .map(|group| group.page);
+            assert_eq!(field.id.split('.').next(), page, "{}", field.id);
             assert_eq!(
                 checked(field, field.default.value(), &[]),
                 Ok(field.default.value()),
@@ -1687,11 +1766,11 @@ mod tests {
     fn the_shortcut_line_is_off_until_the_file_turns_it_on() {
         let shown = |values: &Values| {
             let fields = values.resolve().fields;
-            let field = fields.iter().find(|f| f.id == "layout.show_shortcuts");
+            let field = fields.iter().find(|f| f.id == "general.show_shortcuts");
             field.map(|field| field.value.clone())
         };
         assert_eq!(shown(&Values::default()), Some(Value::Flag(false)));
-        let (values, problems) = parsed("[appearance.layout]\nshow_shortcuts = true\n");
+        let (values, problems) = parsed("[general]\nshow_shortcuts = true\n");
         assert_eq!(problems, Vec::<String>::new());
         assert_eq!(shown(&values), Some(Value::Flag(true)));
     }
@@ -1707,7 +1786,7 @@ mod tests {
         assert_eq!(value(&defaults, "vim.escape"), Value::Text(String::new()));
         assert_eq!(value(&defaults, "vim.system_clipboard"), Value::Flag(true));
         let (values, problems) = parsed(
-            "[appearance.vim]\nenabled = true\nstart = \"normal\"\nescape = \"jk\"\nsystem_clipboard = false\n",
+            "[vim]\nenabled = true\nstart = \"normal\"\nescape = \"jk\"\nsystem_clipboard = false\n",
         );
         assert_eq!(problems, Vec::<String>::new());
         assert_eq!(value(&values, "vim.enabled"), Value::Flag(true));
@@ -1717,48 +1796,69 @@ mod tests {
         );
         assert_eq!(value(&values, "vim.escape"), Value::Text("jk".to_owned()));
         assert_eq!(value(&values, "vim.system_clipboard"), Value::Flag(false));
-        let (_, problems) = parsed("[appearance.vim]\nstart = \"visual\"\nescape = \"qq\"\n");
+        let (_, problems) = parsed("[vim]\nstart = \"visual\"\nescape = \"qq\"\n");
         assert_eq!(problems.len(), 2, "{problems:?}");
     }
 
     #[test]
     fn status_icons_move_until_the_file_stills_them() {
         assert_eq!(
-            value(&Values::default(), "layout.animate_status"),
+            value(&Values::default(), "appearance.motion.status_icons"),
             Value::Flag(true)
         );
-        let (values, problems) = parsed("[appearance.layout]\nanimate_status = false\n");
+        let (values, problems) = parsed("[appearance.motion]\nstatus_icons = false\n");
         assert_eq!(problems, Vec::<String>::new());
-        assert_eq!(value(&values, "layout.animate_status"), Value::Flag(false));
+        assert_eq!(
+            value(&values, "appearance.motion.status_icons"),
+            Value::Flag(false)
+        );
     }
 
     #[test]
     fn steps_start_folded_and_animated_until_the_file_says_otherwise() {
         let defaults = Values::default();
         assert_eq!(
-            value(&defaults, "transcript.steps"),
+            value(&defaults, "conversation.steps"),
             Value::Text("folded".into())
         );
-        assert_eq!(value(&defaults, "transcript.animate"), Value::Flag(true));
+        assert_eq!(
+            value(&defaults, "appearance.motion.transcript"),
+            Value::Flag(true)
+        );
         let (values, problems) =
-            parsed("[appearance.transcript]\nsteps = \"shown\"\nanimate = false\n");
+            parsed("[conversation]\nsteps = \"shown\"\n[appearance.motion]\ntranscript = false\n");
         assert_eq!(problems, Vec::<String>::new());
         assert_eq!(
-            value(&values, "transcript.steps"),
+            value(&values, "conversation.steps"),
             Value::Text("shown".into())
         );
-        assert_eq!(value(&values, "transcript.animate"), Value::Flag(false));
+        assert_eq!(
+            value(&values, "appearance.motion.transcript"),
+            Value::Flag(false)
+        );
     }
 
     #[test]
     fn image_thumbnails_show_in_both_places_until_each_is_turned_off() {
         let defaults = Values::default();
-        assert_eq!(value(&defaults, "images.message_box"), Value::Flag(true));
-        assert_eq!(value(&defaults, "images.transcript"), Value::Flag(true));
-        let (values, problems) = parsed("[appearance.images]\ntranscript = false\n");
+        assert_eq!(
+            value(&defaults, "conversation.images.message_box"),
+            Value::Flag(true)
+        );
+        assert_eq!(
+            value(&defaults, "conversation.images.transcript"),
+            Value::Flag(true)
+        );
+        let (values, problems) = parsed("[conversation.images]\ntranscript = false\n");
         assert_eq!(problems, Vec::<String>::new());
-        assert_eq!(value(&values, "images.message_box"), Value::Flag(true));
-        assert_eq!(value(&values, "images.transcript"), Value::Flag(false));
+        assert_eq!(
+            value(&values, "conversation.images.message_box"),
+            Value::Flag(true)
+        );
+        assert_eq!(
+            value(&values, "conversation.images.transcript"),
+            Value::Flag(false)
+        );
     }
 
     #[test]
@@ -1791,11 +1891,11 @@ mod tests {
         let (values, problems) =
             parsed("[appearance]\ndark_theme = \"github-light\"\nlight_theme = \"missing\"\n");
         assert_eq!(
-            value(&values, "dark_theme"),
+            value(&values, "appearance.dark_theme"),
             Value::Text("tectr-dark".into())
         );
         assert_eq!(
-            value(&values, "light_theme"),
+            value(&values, "appearance.light_theme"),
             Value::Text("tectr-light".into())
         );
         let problems = problems.join("\n");
@@ -1878,11 +1978,11 @@ mod tests {
              [appearance.layout]\nsidebar_width = 20\n",
         );
         for id in [
-            "mode",
-            "text.size",
-            "text.family",
-            "code.ligatures",
-            "layout.sidebar_width",
+            "appearance.mode",
+            "appearance.text.size",
+            "appearance.text.family",
+            "appearance.code.ligatures",
+            "appearance.layout.sidebar_width",
         ] {
             assert_eq!(
                 value(&values, id),
@@ -1908,8 +2008,11 @@ mod tests {
     fn whole_and_fractional_numbers_are_both_numbers() {
         let (values, problems) = parsed("[appearance.text]\nsize = 14\nline_height = 1.6\n");
         assert_eq!(problems, Vec::<String>::new());
-        assert_eq!(value(&values, "text.size"), Value::Number(14.0));
-        assert_eq!(value(&values, "text.line_height"), Value::Number(1.6));
+        assert_eq!(value(&values, "appearance.text.size"), Value::Number(14.0));
+        assert_eq!(
+            value(&values, "appearance.text.line_height"),
+            Value::Number(1.6)
+        );
     }
 
     #[test]
@@ -1926,7 +2029,7 @@ mod tests {
 
     #[test]
     fn numbers_are_kept_tidy() {
-        let line_height = field("text.line_height").unwrap();
+        let line_height = field("appearance.text.line_height").unwrap();
         assert_eq!(
             checked(line_height, Value::Number(1.6 + 1e-9), &[]),
             Ok(Value::Number(1.6))
@@ -1935,7 +2038,7 @@ mod tests {
 
     #[test]
     fn a_family_can_be_a_name_with_spaces_but_not_more() {
-        let family = field("code.family").unwrap();
+        let family = field("appearance.code.family").unwrap();
         assert_eq!(
             checked(family, Value::Text(" JetBrains Mono ".into()), &[]),
             Ok(Value::Text("JetBrains Mono".into()))

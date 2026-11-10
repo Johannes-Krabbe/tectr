@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   type AppearanceField,
   type AppearanceValue,
@@ -6,6 +6,7 @@ import {
   type InstalledFont,
   type Option,
   optionsOf,
+  pageOf,
   stepped,
   type Theme,
 } from "./appearance";
@@ -22,7 +23,7 @@ import {
 import { inPane } from "./keys";
 import { hint, SETTINGS_MOVES, useHints } from "./shortcuts";
 import { Choice, Picker } from "./ui/Picker";
-import { listMoves, SettingsPage } from "./ui/SettingsPage";
+import { GoInHint, listMoves, SettingsPage } from "./ui/SettingsPage";
 import { Icon } from "./ui/Icon";
 import { Keys } from "./ui/StatusIcon";
 
@@ -101,21 +102,27 @@ function Preview() {
   );
 }
 
-/** How the app looks. The rows come from the settings crate, so one added there shows up here.
- * What can be done to the selected row stays in the bar at the bottom. */
+/** One page of the app's settings. The rows come from the settings crate, so one added there
+ * shows up here. What can be done to the selected row stays in the bar at the bottom. A row
+ * is its label and its value, with nothing explaining it.
+ * `children` is what the page has besides rows, and comes after them. */
 export function AppearanceSettings({
+  page,
   active,
   onActivate,
   onLeave,
+  children,
 }: {
+  page: string;
   /** This list has the keyboard, rather than the sections beside it. */
   active: boolean;
   onActivate: () => void;
   onLeave: () => void;
+  children?: ReactNode;
 }) {
   const settings = useSettings();
   const appearance = settings?.appearance;
-  const rows = appearance?.fields ?? [];
+  const { groups, rows } = appearance ? pageOf(appearance, page) : { groups: [], rows: [] };
   const fonts = useInstalledFonts();
   const [cursor, setCursor] = useState(0);
   const [picking, setPicking] = useState<string | null>(null);
@@ -208,7 +215,7 @@ export function AppearanceSettings({
   const footer =
     active && row ? (
       <>
-        <span className="settings-actions-what">{row.about || row.label}</span>
+        <span className="settings-actions-what" />
         {row.kind.type === "number" ? (
           <span className="settings-actions-what settings-actions-keys">
             <Keys action="settings.decrease" />
@@ -227,16 +234,14 @@ export function AppearanceSettings({
         </button>
       </>
     ) : (
-      <span className="settings-actions-what">
-        <Keys action="sections.confirm" /> Change these settings
-      </span>
+      <GoInHint />
     );
 
   return (
     <>
-      <Preview />
+      {page === "appearance" && <Preview />}
       <SettingsPage error={error} footer={footer}>
-        {appearance?.groups.map((group) => (
+        {groups.map((group) => (
           <section key={group.id} className="settings-group">
             <h3 className="settings-group-title">{group.title}</h3>
             <div className="keybinds">
@@ -274,10 +279,7 @@ export function AppearanceSettings({
             </div>
           </section>
         ))}
-        <p className="settings-note settings-group">
-          You can write your own themes in the settings file. dsk.defaults.toml, next to it, shows
-          how and lists every color.
-        </p>
+        {children}
       </SettingsPage>
     </>
   );

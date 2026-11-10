@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useSyncExternalStore } from "react";
 import { inTerminal } from "./keys";
+import { showToast, TOAST_SECONDS } from "./toast";
 import {
   type Appearance,
   type AppearancePreview,
@@ -299,11 +300,15 @@ export async function resetAppearance(id: string) {
   apply(await invoke<Settings>("reset_appearance", { id }));
 }
 
-export const showsSteps = () => shownValue("transcript.steps") === "shown";
+export const showsSteps = () => shownValue("conversation.steps") === "shown";
 
 /** Rejects with a message written to be shown as is. */
 export const toggleSteps = () =>
-  saveAppearance("transcript.steps", showsSteps() ? "folded" : "shown");
+  saveAppearance("conversation.steps", showsSteps() ? "folded" : "shown");
+
+/** Says what just happened, for as long as the settings keep a toast up. */
+export const notify = (text: string) =>
+  showToast(text, Number(shownValue("general.toast_duration") ?? TOAST_SECONDS));
 
 export const vimOn = () => shownValue("vim.enabled") === true;
 

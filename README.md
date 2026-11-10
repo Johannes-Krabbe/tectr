@@ -84,7 +84,7 @@ tectr unpair <client> [--on <device>]  # take a machine off a device's allowed l
 tectr remove-device <device>           # stop reaching a paired device
 ```
 
-In the desktop app, the same is "Pair another machine" and "Add a device" in the palette, and a device's Pairing settings.
+In the desktop app, the same is "Pair another machine" and "Add a device" in the palette, in the menu next to Settings and in Settings under Devices, and a device's Pairing settings.
 
 Without `--daemon`, the CLI and the app use this machine's daemon and every device paired from this machine. To choose daemons yourself, repeat `--daemon` or set `TECTR_DAEMONS` to a comma-separated list of URLs.
 
@@ -109,9 +109,9 @@ pnpm install
 cd apps/dsk && pnpm tauri dev
 ```
 
-It connects to the daemon on this machine, or to the ones in `TECTR_DAEMONS`. ⌘K lists every action with its shortcut.
+It connects to the daemon on this machine, or to the ones in `TECTR_DAEMONS`. ⌘K, or the row at the top of the sidebar, lists every action with its shortcut.
 
-The app's own settings live in `~/.config/tectr/dsk.toml` (`~/.config/tectr-dev/dsk.toml` when built from source), which holds only what differs from the defaults and applies as soon as it's saved. `dsk.defaults.toml` next to it lists every setting. Settings (⌘,) edits the same file, so people and agents can both change it. Shortcuts are the first section:
+The app's own settings live in `~/.config/tectr/dsk.toml` (`~/.config/tectr-dev/dsk.toml` when built from source), which holds only what differs from the defaults and applies as soon as it's saved. `dsk.defaults.toml` next to it lists every setting. The file starts with `version`, which says which layout it's in: the app writes it, and brings a file from an older tectr up to date when it reads it, keeping what it was as `dsk.v1.toml`. Settings (⌘,) edits the same file, so people and agents can both change it. Shortcuts are the first section:
 
 ```toml
 [keybinds.nav]                # the shared default for moving around
@@ -153,14 +153,28 @@ ligatures = false
 [appearance.layout]
 density = 90                  # also corners, sidebar_width and content_width
 
-[appearance.vim]
-enabled = true                # vim keys in the message box and the new topic box
-escape = "jk"                 # leave insert mode with jk as well as Esc
-system_clipboard = false      # keep yanks out of the system clipboard
-
 [appearance.themes.midnight]  # your own theme, which then shows up in the lists
 extends = "tokyo-night"
 "surface.base" = "#000000"
+```
+
+Every other page of Settings has a section of its own:
+
+```toml
+[general]
+show_shortcuts = true         # a line along the bottom with the keys that work right now
+
+[conversation]
+steps = "shown"               # tool calls and thinking, instead of folded into one line
+
+[terminal]
+size = 12
+cursor = "bar"
+
+[vim]
+enabled = true                # vim keys in the message box and the new topic box
+escape = "jk"                 # leave insert mode with jk as well as Esc
+system_clipboard = false      # keep yanks out of the system clipboard
 ```
 
 The app comes with its own two themes plus Catppuccin, Tokyo Night, Dracula, One, GitHub, Nord, Gruvbox, Solarized, Rosé Pine, Monokai and Vague, in dark and light where they have both.

@@ -55,7 +55,7 @@ function daemonColors(theme: ITheme): TerminalColors {
 /** The code font. A canvas can't read CSS variables, so the stack is spelled out. */
 function fontFamily(): string {
   const stack = cssValue("--font-code-stack");
-  const chosen = String(shownValue("code.family") ?? "");
+  const chosen = String(shownValue("appearance.code.family") ?? "");
   return chosen ? `"${chosen}", ${stack}` : stack;
 }
 

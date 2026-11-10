@@ -7,6 +7,7 @@ import {
   fontStack,
   formatValue,
   optionsOf,
+  pageOf,
   previewedTheme,
   schemeOf,
   stepped,
@@ -18,7 +19,6 @@ const number = (id: string, value: number, min: number, max: number, step: numbe
     id,
     group: "text",
     label: id,
-    about: "",
     kind: { type: "number", min, max, step, unit },
     value,
     customized: false,
@@ -29,7 +29,6 @@ const text = (id: string, value: string) =>
     id,
     group: "theme",
     label: id,
-    about: "",
     kind: { type: "theme", scheme: "dark" },
     value,
     customized: false,
@@ -45,23 +44,24 @@ const theme = (id: string, scheme: "dark" | "light", base: string): Theme => ({
 
 const appearance = (mode: string, overrides: AppearanceField[] = []): Appearance => {
   const fields: AppearanceField[] = [
-    text("mode", mode),
-    text("dark_theme", "night"),
-    text("light_theme", "day"),
-    text("text.family", ""),
-    number("text.size", 13, 9, 28, 0.5, "px"),
-    number("text.line_height", 1.55, 1, 2.5, 0.05),
-    text("text.smoothing", "antialiased"),
-    text("code.family", ""),
-    number("code.size", 12.5, 8, 28, 0.5, "px"),
-    number("code.line_height", 1.55, 1, 2.5, 0.05),
-    { ...text("code.ligatures", ""), kind: { type: "toggle" }, value: true },
-    number("layout.density", 100, 70, 150, 5, "%"),
-    number("layout.corners", 100, 0, 300, 25, "%"),
-    number("layout.sidebar_width", 256, 160, 560, 8, "px"),
-    number("layout.content_width", 800, 480, 2400, 40, "px"),
+    text("appearance.mode", mode),
+    text("appearance.dark_theme", "night"),
+    text("appearance.light_theme", "day"),
+    text("appearance.text.family", ""),
+    number("appearance.text.size", 13, 9, 28, 0.5, "px"),
+    number("appearance.text.line_height", 1.55, 1, 2.5, 0.05),
+    text("appearance.text.smoothing", "antialiased"),
+    text("appearance.code.family", ""),
+    number("appearance.code.size", 12.5, 8, 28, 0.5, "px"),
+    number("appearance.code.line_height", 1.55, 1, 2.5, 0.05),
+    { ...text("appearance.code.ligatures", ""), kind: { type: "toggle" }, value: true },
+    number("appearance.layout.density", 100, 70, 150, 5, "%"),
+    number("appearance.layout.corners", 100, 0, 300, 25, "%"),
+    number("appearance.layout.sidebar_width", 256, 160, 560, 8, "px"),
+    number("appearance.layout.content_width", 800, 480, 2400, 40, "px"),
   ];
   return {
+    pages: [],
     groups: [],
     fields: fields.map((field) => overrides.find((o) => o.id === field.id) ?? field),
     themes: [theme("night", "dark", "dark-base"), theme("day", "light", "light-base")],
@@ -76,20 +76,21 @@ test("the mode decides the scheme, and system follows the system", () => {
 });
 
 test("trying out a theme shows it whichever mode is on", () => {
-  const preview = { id: "dark_theme", value: "night" };
+  const preview = { id: "appearance.dark_theme", value: "night" };
   assert.equal(schemeOf(appearance("light"), false, preview), "dark");
-  const mode = { id: "mode", value: "dark" };
+  const mode = { id: "appearance.mode", value: "dark" };
   assert.equal(schemeOf(appearance("light"), false, mode), "dark");
 });
 
 test("the window follows a preview that changes the theme, and nothing else", () => {
   const shown = appearance("dark");
   assert.equal(previewedTheme(shown, false, null), null);
-  assert.equal(previewedTheme(shown, false, { id: "text.size", value: 15 }), null);
-  assert.equal(previewedTheme(shown, false, { id: "dark_theme", value: "other" }), "other");
-  assert.equal(previewedTheme(shown, false, { id: "light_theme", value: "other" }), "other");
-  assert.equal(previewedTheme(shown, false, { id: "mode", value: "light" }), "day");
-  assert.equal(previewedTheme(shown, true, { id: "mode", value: "system" }), "night");
+  assert.equal(previewedTheme(shown, false, { id: "appearance.text.size", value: 15 }), null);
+  for (const id of ["appearance.dark_theme", "appearance.light_theme"]) {
+    assert.equal(previewedTheme(shown, false, { id, value: "other" }), "other");
+  }
+  assert.equal(previewedTheme(shown, false, { id: "appearance.mode", value: "light" }), "day");
+  assert.equal(previewedTheme(shown, true, { id: "appearance.mode", value: "system" }), "night");
 });
 
 test("colors come from the theme for the scheme, under the names the tokens use", () => {
@@ -101,7 +102,7 @@ test("colors come from the theme for the scheme, under the names the tokens use"
 
 test("a preview changes what's painted, and only that", () => {
   const variables = cssVariables(appearance("dark"), "dark", {
-    id: "code.family",
+    id: "appearance.code.family",
     value: "Fira Code",
   });
   assert.equal(variables["--font-code"], '"Fira Code", var(--font-code-stack)');
@@ -111,9 +112,9 @@ test("a preview changes what's painted, and only that", () => {
 test("sizes and layout become CSS values", () => {
   const variables = cssVariables(
     appearance("dark", [
-      number("text.size", 15, 9, 28, 0.5, "px"),
-      number("layout.density", 85, 70, 150, 5, "%"),
-      { ...text("code.ligatures", ""), kind: { type: "toggle" }, value: false },
+      number("appearance.text.size", 15, 9, 28, 0.5, "px"),
+      number("appearance.layout.density", 85, 70, 150, 5, "%"),
+      { ...text("appearance.code.ligatures", ""), kind: { type: "toggle" }, value: false },
     ]),
     "dark",
   );
@@ -145,7 +146,7 @@ test("numbers step along whole steps and stop at the ends", () => {
 });
 
 test("choices step through their list and stop at the ends", () => {
-  const field = text("dark_theme", "b");
+  const field = text("appearance.dark_theme", "b");
   const options = [{ value: "a", label: "A" }, { value: "b", label: "B" }];
   assert.equal(stepped(field, -1, options), "a");
   assert.equal(stepped(field, 1, options), "b");
@@ -155,13 +156,13 @@ test("choices step through their list and stop at the ends", () => {
 
 test("a theme list holds that scheme's themes", () => {
   const themes = [theme("night", "dark", "x"), theme("day", "light", "x")];
-  const options = optionsOf(text("dark_theme", "night"), themes, null);
+  const options = optionsOf(text("appearance.dark_theme", "night"), themes, null);
   assert.deepEqual(options.map((option) => option.value), ["night"]);
 });
 
 test("a code font list has monospaced fonts first, and says when what's set isn't installed", () => {
   const field: AppearanceField = {
-    ...text("code.family", "Gone Mono"),
+    ...text("appearance.code.family", "Gone Mono"),
     kind: { type: "font", bundled: "Geist Mono", system: "ui-monospace", monospace: true },
   };
   const fonts = [
@@ -185,4 +186,35 @@ test("values are shown with their unit", () => {
     formatValue({ ...text("a", ""), kind: { type: "toggle" }, value: false }),
     "Off",
   );
+});
+
+test("a page shows its groups in order, and the cursor moves through rows the same way", () => {
+  const groups = [
+    { id: "interface", title: "Interface", page: "general" },
+    { id: "text", title: "Text", page: "appearance" },
+    { id: "motion", title: "Motion", page: "appearance" },
+  ];
+  // Not in the order the page shows them, which is group by group.
+  const fields = [
+    { ...number("appearance.text.size", 13, 9, 28, 0.5), group: "text" },
+    { ...number("general.show_shortcuts", 0, 0, 1, 1), group: "interface" },
+    { ...number("appearance.motion.status_icons", 1, 0, 1, 1), group: "motion" },
+    { ...number("appearance.text.line_height", 1.55, 1, 2.5, 0.05), group: "text" },
+    { ...number("appearance.motion.transcript", 1, 0, 1, 1), group: "motion" },
+  ];
+  const page = pageOf({ groups, fields }, "appearance");
+  assert.deepEqual(
+    page.groups.map((group) => group.id),
+    ["text", "motion"],
+  );
+  assert.deepEqual(
+    page.rows.map((row) => row.id),
+    [
+      "appearance.text.size",
+      "appearance.text.line_height",
+      "appearance.motion.status_icons",
+      "appearance.motion.transcript",
+    ],
+  );
+  assert.deepEqual(pageOf({ groups, fields }, "nowhere"), { groups: [], rows: [] });
 });

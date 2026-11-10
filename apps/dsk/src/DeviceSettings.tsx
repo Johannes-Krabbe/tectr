@@ -15,19 +15,17 @@ import { inPane } from "./keys";
 import { McpSettings } from "./McpServers";
 import { defaultEffort, isOnline, keepsAwake, modelLabel, withKeepAwakeToggled } from "./model";
 import { isLoopback } from "./pathInput";
+import { DEVICE_SECTIONS, sectionOf } from "./settingsNav";
 import { hint, type Hint, SETTINGS_MOVES, useHints } from "./shortcuts";
 import { Choice, Picker } from "./ui/Picker";
-import { listMoves, SettingsLayout, SettingsPage } from "./ui/SettingsPage";
+import {
+  GoInHint,
+  listMoves,
+  SettingsLayout,
+  type SettingsNav,
+  SettingsPage,
+} from "./ui/SettingsPage";
 import { Keys } from "./ui/StatusIcon";
-
-const SECTIONS = [
-  { id: "general", label: "General" },
-  { id: "providers", label: "Providers" },
-  { id: "mcp", label: "MCP servers" },
-  { id: "pairing", label: "Pairing" },
-] as const;
-
-type SectionId = (typeof SECTIONS)[number]["id"];
 
 /** A candidate, or a provider this daemon no longer knows how to run. */
 function rowsOf(candidates: ProviderCandidate[], providers: Provider[]): ProviderCandidate[] {
@@ -85,21 +83,22 @@ export function Row({
 export const keepFocus = (event: React.MouseEvent) => event.preventDefault();
 
 /** The settings of one device. They live on its daemon, so every client sees the same ones.
- * Like the app's settings, the list of sections has the keyboard first. */
+ * Its sections are in the same list as the app's. */
 export function DeviceSettings({
   device,
+  machineId,
   section: shown,
-  onSection,
+  nav,
   renaming,
   onRename,
   onRenameEnd,
   onPair,
   onForget,
-  onClose,
 }: {
   device: Device;
+  machineId: string;
   section: string | undefined;
-  onSection: (section: string) => void;
+  nav: SettingsNav;
   /** The name is being edited in place, which the palette can start from anywhere. */
   renaming: boolean;
   onRename: () => void;
@@ -108,51 +107,14 @@ export function DeviceSettings({
   onPair: () => void;
   /** Stops this app reaching the device. */
   onForget: () => void;
-  onClose: () => void;
 }) {
-  const section: SectionId = SECTIONS.find((s) => s.id === shown)?.id ?? "general";
+  const section = sectionOf(DEVICE_SECTIONS, shown).id;
   // Whether the section has the keyboard, rather than the list of sections.
   const [inside, setInside] = useState(false);
 
   useEffect(() => {
     if (renaming) setInside(true);
   }, [renaming]);
-
-  useHints(
-    "pane",
-    inside
-      ? null
-      : [
-          hint("Go in", "sections.confirm", "sections.open"),
-          hint("Section", "sections.up", "sections.down"),
-          hint("First, last", "sections.first", "sections.last"),
-          hint("Close", "sections.close"),
-        ],
-  );
-
-  useEffect(() => {
-    if (inside) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (!inPane(event)) return;
-      const index = SECTIONS.findIndex((s) => s.id === section);
-      const moveBy = (step: number) => () => {
-        const next = SECTIONS[index + step];
-        if (next) onSection(next.id);
-      };
-      const commands: [ActionId, () => void][] = [
-        ["sections.up", moveBy(-1)],
-        ["sections.down", moveBy(1)],
-        ["sections.first", () => onSection(SECTIONS[0].id)],
-        ["sections.last", () => onSection(SECTIONS[SECTIONS.length - 1].id)],
-        ["sections.open", () => setInside(true)],
-        ["sections.confirm", () => setInside(true)],
-        ["sections.close", onClose],
-      ];
-      commands.some(([id, run]) => act(event, id, run));
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
 
   const props = {
     device,
@@ -167,17 +129,10 @@ export function DeviceSettings({
 
   return (
     <SettingsLayout
-      heading="Device settings"
-      detail={device.state?.machine.name ?? device.url}
-      sections={SECTIONS}
-      section={section}
-      active={!inside}
-      closeKeys={inside ? undefined : "sections.close"}
-      onSelect={(id) => {
-        onSection(id);
-        props.onLeave();
-      }}
-      onClose={onClose}
+      nav={nav}
+      current={{ kind: "device_settings", machineId, section }}
+      inside={inside}
+      onInside={(next) => (next ? setInside(true) : props.onLeave())}
     >
       {section === "general" && (
         <General {...props} renaming={renaming} onRename={onRename} onRenameEnd={onRenameEnd} />
@@ -201,7 +156,6 @@ interface GeneralRow {
   id: string;
   label: string;
   value: string;
-  about: string;
   action: string;
   role?: "switch";
   run: () => void;
@@ -262,7 +216,6 @@ function General({
           id: "name",
           label: "Name",
           value: state.machine.name,
-          about: "What every client calls this device. Empty uses the hostname.",
           action: "Rename",
           run: onRename,
         },
@@ -270,7 +223,6 @@ function General({
           id: "keep_awake",
           label: "Keep awake while agents work",
           value: keepAwake ? "On" : "Off",
-          about: "Holds off idle sleep while an agent starts or works. Closing the lid still sleeps.",
           action: "Switch",
           role: "switch",
           run: toggleKeepAwake,
@@ -308,7 +260,7 @@ function General({
 
   const footer = editing ? (
     <>
-      <span className="settings-actions-what">Empty uses the hostname</span>
+      <span className="settings-actions-what" />
       <button className="button primary" onMouseDown={keepFocus} onClick={() => endRename(true)}>
         Save
         <Keys action="sheet.submit" />
@@ -320,16 +272,14 @@ function General({
     </>
   ) : active && row ? (
       <>
-        <span className="settings-actions-what">{row.about}</span>
+        <span className="settings-actions-what" />
         <button className="button" disabled={!online} onClick={row.run}>
           {row.action}
           <Keys action="settings.edit" />
         </button>
       </>
     ) : (
-      <span className="settings-actions-what">
-        <Keys action="sections.confirm" /> Change these settings
-      </span>
+      <GoInHint />
     );
 
   return (
@@ -539,9 +489,7 @@ function Providers({ device, active, onActivate, onLeave }: SectionProps) {
         )}
       </>
     ) : (
-      <span className="settings-actions-what">
-        <Keys action="sections.confirm" /> Change these providers
-      </span>
+      <GoInHint />
     );
 
   const renderRow = (target: ProviderCandidate) => {
@@ -717,9 +665,7 @@ function Pairing({
         </button>
       </>
     ) : (
-      <span className="settings-actions-what">
-        <Keys action="sections.confirm" /> Change who can connect
-      </span>
+      <GoInHint />
     );
 
   return (
@@ -740,13 +686,7 @@ function Pairing({
             </button>
           )}
         </div>
-        {clients.length === 0 && (
-          <p className="settings-note">
-            {local
-              ? "Only this machine can reach it. Pair shows a code that lets one more machine in."
-              : "Only the machines paired on the device itself can reach it."}
-          </p>
-        )}
+        {clients.length === 0 && <p className="settings-note">No machines paired</p>}
         <div className="keybinds">
           {clients.map((c, index) => (
             <Row

@@ -3,7 +3,8 @@ import type { ReactNode, RefObject } from "react";
 import { type ActionId, remapNative } from "../keybinds";
 import { hint, useHints } from "../shortcuts";
 
-const KEYS: [ActionId, string][] = [
+/** The keys of any list that drops down, which the menus follow too. */
+export const PICKER_KEYS: [ActionId, string][] = [
   ["picker.up", "ArrowUp"],
   ["picker.down", "ArrowDown"],
   ["picker.first", "Home"],
@@ -12,7 +13,7 @@ const KEYS: [ActionId, string][] = [
   ["picker.cancel", "Escape"],
 ];
 
-const HINTS = [
+export const PICKER_HINTS = [
   hint("Move", "picker.up", "picker.down"),
   hint("First, last", "picker.first", "picker.last"),
   hint("Choose", "picker.confirm"),
@@ -45,7 +46,7 @@ export function Picker({
   trigger: ReactNode;
   children: ReactNode;
 }) {
-  useHints("overlay", open ? HINTS : null);
+  useHints("overlay", open ? PICKER_HINTS : null);
   return (
     <Select.Root
       value={value}
@@ -64,7 +65,7 @@ export function Picker({
           <Select.Popup
             className="select-popup"
             finalFocus={finalFocus}
-            onKeyDownCapture={(event) => remapNative(event, KEYS)}
+            onKeyDownCapture={(event) => remapNative(event, PICKER_KEYS)}
           >
             <Select.List>{children}</Select.List>
           </Select.Popup>

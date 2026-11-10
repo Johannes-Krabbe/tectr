@@ -1,6 +1,6 @@
 # tectr: design system decisions
 
-Last updated: 2026-11-09.
+Last updated: 2026-11-10.
 
 `architecture.md` covers how tectr is built. This file records how the desktop and iOS apps keep one design language while each feels native. The work itself lives in `design/`.
 
@@ -88,6 +88,7 @@ Each component in `design/spec/components.md` is built separately per platform, 
 |---|---|
 | Sidebar tree | `NavigationStack` and `List` |
 | ⌘K palette | `.searchable` |
+| Menu on a button or a right click | System context menu |
 | Creation sheet | `.sheet` with detents |
 | Tab strip and split | One tab at a time, with a native switcher |
 
@@ -118,7 +119,7 @@ apps/ios/
 
 ## Not done yet
 
-- **Components:** both apps have the tokens, fonts, and root theme. Desktop has first versions of `StatusIcon`, `DeviceHeader`, `WorkspaceRow`, `TopicRow`, `RequestCard`, `ActivityLine`, `NewTab`, `Sheet`, `Button`, `Kbd`, and the ⌘K palette, without the folded states. iOS shows only a placeholder.
+- **Components:** both apps have the tokens, fonts, and root theme. Desktop has first versions of `StatusIcon`, `DeviceHeader`, `WorkspaceRow`, `TopicRow`, `RequestCard`, `ActivityLine`, `NewTab`, `Sheet`, `Button`, `Kbd`, `Sidebar`, `TabBar`, `Menu`, `Toast`, and the ⌘K palette, without the folded states. iOS shows only a placeholder.
 - **Appearance on iOS:** it follows the system only, with tectr's own themes. Choosing a theme is desktop only.
 - **Automated token check:** nothing runs `mise run tokens:test` or the package tests in CI yet.
 

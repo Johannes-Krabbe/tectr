@@ -69,16 +69,21 @@ import {
   topicTabs,
   type View,
 } from "./navigation";
+import { appItems, type Runnable, topicItems, withRuns } from "./menus";
 import { NEW_TAB_STATE, NewTab, type NewTabState } from "./NewTab";
 import { NewTopic, type NewTopicForm } from "./NewTopic";
 import { Palette, type PaletteItem, screenPaletteItems } from "./Palette";
 import { isLoopback } from "./pathInput";
+import { appSections, settingsGroups } from "./settingsNav";
 import { Sheets, type SheetRequest } from "./Sheets";
 import { globalHints, pinnedHints, useHints } from "./shortcuts";
 import { Sidebar } from "./Sidebar";
 import { TopicMcpSheet } from "./TopicMcp";
 import { Icon } from "./ui/Icon";
+import { MenuButton, type MenuGroups } from "./ui/Menu";
+import type { SettingsNav } from "./ui/SettingsPage";
 import { ShortcutBar } from "./ui/ShortcutBar";
+import { Toasts } from "./ui/Toasts";
 import { Keys, StatusIcon } from "./ui/StatusIcon";
 
 /** One for every session without draft images, so a pane's images stay the same object. */
@@ -154,7 +159,7 @@ const isActive = (session: Session) =>
 export function App() {
   const devices = useDevices();
   // Rendering again when the settings change is what updates every key shown below.
-  useSettings();
+  const settings = useSettings();
   // What exists comes from the daemon, so every client sees the same. What this client is
   // looking at is its own, and the rest is about this keyboard and this moment.
   const [navigation, setNavigation] = useState<Navigation>(loadNavigation);
@@ -553,42 +558,40 @@ export function App() {
   };
 
   // A topic's only tab is its new tab, which stays because there's nothing else to show.
-  const canCloseNewTab = onNewTab && tabs.length > 0;
-  const canClose =
-    canCloseNewTab ||
-    ((session !== undefined || shownTerminal !== undefined) &&
-      entry !== undefined &&
-      isOnline(entry.device));
+  const canCloseTab = (id: string | undefined) =>
+    entry !== undefined &&
+    id !== undefined &&
+    (id === NEW_TAB ? tabs.length > 0 : isOnline(entry.device));
+  const canClose = canCloseTab(shownTabId);
 
   /** Stops the agent and removes its tab, asking first if it's still running. A new tab
-   * closes with what was typed in it. */
-  const closeTab = () => {
-    if (entry && canCloseNewTab) {
-      const topicId = entry.topic.id;
-      forgetNewTab(topicId);
-      setNavigation((current) => closeNewTab(current, topicId));
-      focusOnceShown(true, focusPane);
+   * closes with what was typed in it. It's the shown tab unless another is named, which its
+   * own close button does. */
+  const closeTab = (id = shownTabId) => {
+    if (!entry || !id || !canCloseTab(id)) return;
+    const { machineId, topic } = entry;
+    // Only closing the shown tab shows another one, which the keyboard then goes to.
+    const shown = id === shownTabId;
+    if (id === NEW_TAB) {
+      forgetNewTab(topic.id);
+      setNavigation((current) => closeNewTab(current, topic.id));
+      if (shown) focusOnceShown(true, focusPane);
       return;
     }
-    // Its shell ends with it, as closing a terminal window does.
-    if (entry && shownTerminal && isOnline(entry.device)) {
-      setError(null);
-      focusWhenShown.current = focusPane;
-      request(entry.machineId, { command: "close_terminal", terminal_id: shownTerminal.id }).catch(
-        reportFailure,
-      );
-      return;
-    }
-    if (!entry || !session || !isOnline(entry.device)) return;
-    if (isActive(session)) {
-      setSheet({ kind: "close", machineId: entry.machineId, session });
+    const closing = sessions.find((s) => s.id === id);
+    if (closing && isActive(closing)) {
+      setSheet({ kind: "close", machineId, session: closing });
       return;
     }
     setError(null);
-    focusWhenShown.current = focusPane;
-    request(entry.machineId, { command: "close_session", session_id: session.id }).catch(
-      reportFailure,
-    );
+    if (shown) focusWhenShown.current = focusPane;
+    request(
+      machineId,
+      closing
+        ? { command: "close_session", session_id: id }
+        : // Its shell ends with it, as closing a terminal window does.
+          { command: "close_terminal", terminal_id: id },
+    ).catch(reportFailure);
   };
 
   const setUnread = (machineId: string, changed: Session[], unread: boolean) => {
@@ -613,8 +616,10 @@ export function App() {
     }
   };
 
-  const openTopicMcp = () => {
-    if (entry?.device.state) setMcpTopic({ machineId: entry.machineId, topicId: entry.topic.id });
+  const openTopicMcp = (target = entry) => {
+    if (target?.device.state) {
+      setMcpTopic({ machineId: target.machineId, topicId: target.topic.id });
+    }
   };
   const mcpEntry =
     mcpTopic &&
@@ -734,6 +739,70 @@ export function App() {
 
   const toggleSidebar = () => (inSidebar() ? focusPane() : focusSidebar());
 
+  /** What a topic offers, with what runs it. Nothing while its device can't be reached. */
+  const topicActions = (target: TopicEntry): Runnable[][] => {
+    if (!isOnline(target.device)) return [];
+    const toggle = unreadToggle(target.topic);
+    return withRuns(
+      topicItems({
+        name: target.topic.name,
+        branch: topicWorktree(target.topic)?.branch,
+        toggle: { unread: toggle.unread, count: toggle.sessions.length },
+        onNewTab: onNewTab && target === entry,
+      }),
+      {
+        "rename-topic": () => renameTopic(target),
+        "toggle-unread": () => toggleUnread(target),
+        "move-topic": () => pickFolder(target),
+        "topic-mcp": () => openTopicMcp(target),
+        "import-conversation": () => void findConversations(target).catch(reportFailure),
+        "archive-topic": () => archiveTopic(target),
+      },
+    );
+  };
+
+  /** What isn't about one topic, with what runs it. */
+  const appActions = (): Runnable[][] =>
+    withRuns(
+      appItems({
+        requests: requests.length,
+        unread: unreadTopics.length,
+        online: devices.some(isOnline),
+        local: localDevice?.state?.machine.name,
+      }),
+      {
+        next: nextRequest,
+        "mark-all-read": markAllRead,
+        "archived-topics": () => void findArchived().catch(reportFailure),
+        "add-device": () => setSheet({ kind: "add_device" }),
+        "pair-machine": () => {
+          if (localDevice) void pairWith(localDevice).catch(reportFailure);
+        },
+      },
+    );
+
+  const asMenu = (groups: Runnable[][]): MenuGroups =>
+    groups.map((group) =>
+      group.map(({ id, label, key, run }) => ({ id, label, keys: keysLabel(key), run })),
+    );
+
+  const asPalette = (groups: Runnable[][]): PaletteItem[] =>
+    groups
+      .flat()
+      .map(({ id, inPalette, detail, key, run }) => ({
+        id,
+        label: inPalette,
+        detail,
+        keys: keysLabel(key),
+        run,
+      }));
+
+  /** A topic's menu, for a right click on its row. */
+  const topicMenu = (machineId: string, topicId: string): MenuGroups => {
+    const target = topics.find((t) => t.machineId === machineId && t.topic.id === topicId);
+    return target ? asMenu(topicActions(target)) : [];
+  };
+
   /** What's most useful here comes first, then every topic, then creating anywhere. */
   const paletteItems = (): PaletteItem[] => {
     const items: PaletteItem[] = [];
@@ -750,51 +819,7 @@ export function App() {
         keys: onNewTab ? keysLabel("new_tab.terminal") : undefined,
         run: openTerminal,
       });
-      items.push({
-        id: "import-conversation",
-        label: `Import a conversation into ${entry.topic.name}`,
-        detail: "Claude Code or Codex",
-        keys: keysLabel(onNewTab ? "new_tab.import" : "global.import_conversation"),
-        run: () => void findConversations(entry).catch(reportFailure),
-      });
-      items.push({
-        id: "topic-mcp",
-        label: `MCP servers for ${entry.topic.name}`,
-        detail: "Topic",
-        keys: keysLabel("global.topic_mcp"),
-        run: openTopicMcp,
-      });
-      items.push({
-        id: "rename-topic",
-        label: `Rename ${entry.topic.name}`,
-        detail: "Topic",
-        keys: keysLabel("sidebar.rename"),
-        run: () => renameTopic(entry),
-      });
-      const toggle = unreadToggle(entry.topic);
-      if (toggle.sessions.length) {
-        items.push({
-          id: "toggle-unread",
-          label: `Mark ${entry.topic.name} ${toggle.unread ? "unread" : "read"}`,
-          detail: "Topic",
-          keys: keysLabel("sidebar.toggle_unread"),
-          run: () => toggleUnread(entry),
-        });
-      }
-      items.push({
-        id: "move-topic",
-        label: `Move ${entry.topic.name} to another folder`,
-        detail: topicWorktree(entry.topic)?.branch,
-        keys: keysLabel("global.move_topic"),
-        run: () => pickFolder(entry),
-      });
-      items.push({
-        id: "archive-topic",
-        label: `Archive ${entry.topic.name}`,
-        detail: "Topic",
-        keys: keysLabel("sidebar.archive"),
-        run: () => archiveTopic(entry),
-      });
+      items.push(...asPalette(topicActions(entry)));
     }
     items.push(...screenPaletteItems());
     if (session && isActive(session)) {
@@ -849,49 +874,10 @@ export function App() {
         label: `Close ${shownLabel ? tabLabel(shownLabel) : "the new tab"}`,
         detail: "Tab",
         keys: keysLabel("global.close_tab"),
-        run: closeTab,
+        run: () => closeTab(),
       });
     }
-    if (unreadTopics.length) {
-      items.push({
-        id: "mark-all-read",
-        label: "Mark every topic read",
-        keys: keysLabel("global.mark_all_read"),
-        run: markAllRead,
-      });
-    }
-    if (requests.length) {
-      items.push({
-        id: "next",
-        label: "Next request",
-        keys: keysLabel("global.next_request"),
-        run: nextRequest,
-      });
-    }
-    if (devices.some(isOnline)) {
-      items.push({
-        id: "archived-topics",
-        label: "Restore an archived topic",
-        keys: keysLabel("global.archived_topics"),
-        run: () => void findArchived().catch(reportFailure),
-      });
-    }
-    if (localDevice?.state) {
-      const device = localDevice;
-      items.push({
-        id: "pair-machine",
-        label: `Pair another machine with ${localDevice.state.machine.name}`,
-        keys: keysLabel("global.pair_machine"),
-        run: () => void pairWith(device).catch(reportFailure),
-      });
-    }
-    items.push({
-      id: "add-device",
-      label: "Add a device",
-      detail: "From another machine",
-      keys: keysLabel("global.add_device"),
-      run: () => setSheet({ kind: "add_device" }),
-    });
+    items.push(...asPalette(appActions()));
     for (const device of devices.filter((d) => !isLoopback(d.url))) {
       items.push({
         id: `forget-device/${device.url}`,
@@ -912,18 +898,14 @@ export function App() {
       keys: keysLabel("global.settings"),
       run: () => openAppSettings(),
     });
-    items.push({
-      id: "appearance",
-      label: "Appearance",
-      detail: "Theme, fonts and layout",
-      run: () => openAppSettings("appearance"),
-    });
-    items.push({
-      id: "devices",
-      label: "Devices",
-      detail: "The devices this app reaches",
-      run: () => openAppSettings("devices"),
-    });
+    for (const section of appSections(settings?.appearance.pages ?? [])) {
+      items.push({
+        id: `app-settings/${section.id}`,
+        label: section.label,
+        detail: "Settings",
+        run: () => openAppSettings(section.id),
+      });
+    }
     for (const t of topics) {
       items.push({
         id: `topic/${t.machineId}/${t.topic.id}`,
@@ -987,6 +969,19 @@ export function App() {
   };
 
   const inSettings = view?.kind === "app_settings" || settingsDevice !== undefined;
+  // A device that drops off while its settings are open stays in the list until they close.
+  const settingsNav: SettingsNav = {
+    groups: settingsGroups(
+      appSections(settings?.appearance.pages ?? []),
+      devices.flatMap((device) =>
+        device.state && (isOnline(device) || device === settingsDevice)
+          ? [{ machineId: device.state.machine.id, name: device.state.machine.name }]
+          : [],
+      ),
+    ),
+    onGo: show,
+    onClose: closeSettings,
+  };
   useHints(
     "global",
     globalHints({
@@ -1030,7 +1025,7 @@ export function App() {
         ["global.new_tab", newTab],
         ["global.next_request", nextRequest],
         ["global.interrupt", interrupt],
-        ["global.close_tab", closeTab],
+        ["global.close_tab", () => closeTab()],
         ["global.prev_tab", () => moveTab(-1)],
         ["global.next_tab", () => moveTab(1)],
         ["global.mark_all_read", markAllRead],
@@ -1043,7 +1038,7 @@ export function App() {
         ],
         ["global.pair_machine", () => localDevice && void pairWith(localDevice).catch(reportFailure)],
         ["global.add_device", () => setSheet({ kind: "add_device" })],
-        ["global.topic_mcp", openTopicMcp],
+        ["global.topic_mcp", () => openTopicMcp()],
       ];
       TAB_ACTIONS.forEach((id, index) => {
         commands.push([
@@ -1086,6 +1081,9 @@ export function App() {
           view={view}
           onView={open}
           onPreview={preview}
+          onPalette={() => setPalette(true)}
+          appMenu={asMenu(appActions())}
+          topicMenu={topicMenu}
           onSettings={openSettings}
           onAppSettings={() => openAppSettings()}
           onAddWorkspace={addWorkspaceOn}
@@ -1095,27 +1093,26 @@ export function App() {
       {view?.kind === "app_settings" ? (
         <AppSettings
           section={view.section}
-          onSection={(section) => show({ kind: "app_settings", section })}
-          onClose={closeSettings}
+          nav={settingsNav}
           devices={devices}
           onAddDevice={() => setSheet({ kind: "add_device" })}
           onPair={localDevice && (() => void pairWith(localDevice).catch(reportFailure))}
           onForget={(device) => void forget(device).catch(reportFailure)}
           onOpenDevice={(device) => device.state && openSettings(device.state.machine.id)}
         />
-      ) : settingsDevice ? (
+      ) : settingsDevice && view?.kind === "device_settings" ? (
         <DeviceSettings
+          // Each device's sections keep their own cursor and whatever was being typed.
+          key={view.machineId}
           device={settingsDevice}
-          section={view?.kind === "device_settings" ? view.section : undefined}
-          onSection={(section) => {
-            if (view?.kind === "device_settings") show({ ...view, section });
-          }}
-          renaming={renamingDevice === settingsDevice.state?.machine.id}
+          machineId={view.machineId}
+          section={view.section}
+          nav={settingsNav}
+          renaming={renamingDevice === view.machineId}
           onRename={() => renameDevice(settingsDevice)}
           onRenameEnd={() => setRenamingDevice(null)}
           onPair={() => void pairWith(settingsDevice).catch(reportFailure)}
           onForget={() => void forget(settingsDevice).catch(reportFailure)}
-          onClose={closeSettings}
         />
       ) : (
         <main className="main">
@@ -1148,34 +1145,65 @@ export function App() {
             />
           ) : entry ? (
             <>
-              <div className="tabs" role="tablist">
-                {tabIds.map((id, index) => {
-                  const s = sessions.find((other) => other.id === id);
-                  const tab = tabs.find((other) => other.id === id);
-                  return (
-                    <button
-                      key={id}
-                      role="tab"
-                      aria-selected={id === shownTabId}
-                      className={`tab ${id === shownTabId ? "shown" : ""}`}
-                      title={index < 9 ? keysLabel(TAB_ACTIONS[index]) : undefined}
-                      onClick={() => selectTab(entry.topic.id, id)}
-                    >
-                      {s && <StatusIcon state={sessionState(s, isOnline(entry.device))} />}
-                      {tab?.kind === "terminal" && <Icon name="terminal" />}
-                      <span className="tab-label">{tab ? tabLabel(tab) : "New tab"}</span>
-                    </button>
-                  );
-                })}
-                <button
-                  className="add"
-                  disabled={!isOnline(entry.device)}
-                  title={titled("New tab", "global.new_tab")}
-                  aria-label="New tab"
-                  onClick={newTab}
+              <div className="tab-bar">
+                <div className="tabs" role="tablist">
+                  {tabIds.map((id, index) => {
+                    const s = sessions.find((other) => other.id === id);
+                    const tab = tabs.find((other) => other.id === id);
+                    const label = tab ? tabLabel(tab) : "New tab";
+                    const shown = id === shownTabId;
+                    return (
+                      <div key={id} className={`tab ${shown ? "shown" : ""}`}>
+                        <button
+                          role="tab"
+                          aria-selected={shown}
+                          className="tab-open"
+                          title={index < 9 ? keysLabel(TAB_ACTIONS[index]) : undefined}
+                          onClick={() => selectTab(entry.topic.id, id)}
+                        >
+                          {s && <StatusIcon state={sessionState(s, isOnline(entry.device))} />}
+                          {tab?.kind === "terminal" && <Icon name="terminal" />}
+                          <span className="tab-label">{label}</span>
+                        </button>
+                        {canCloseTab(id) && (
+                          <button
+                            className="tab-close"
+                            tabIndex={-1}
+                            // Its key closes the tab that's showing, so only that one names it.
+                            title={shown ? titled("Close", "global.close_tab") : "Close"}
+                            aria-label={`Close ${label}`}
+                            // It goes away with its tab, which would leave focus nowhere.
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => closeTab(id)}
+                          >
+                            <Icon name="remove" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <button
+                    className="add"
+                    disabled={!isOnline(entry.device)}
+                    title={titled("New tab", "global.new_tab")}
+                    aria-label="New tab"
+                    onClick={newTab}
+                  >
+                    <Icon name="add" />
+                  </button>
+                </div>
+                <MenuButton
+                  label="Topic actions"
+                  className="icon-button"
+                  groups={asMenu(topicActions(entry))}
+                  title={
+                    isOnline(entry.device)
+                      ? `Actions for ${entry.topic.name}`
+                      : `${entry.device.state?.machine.name ?? entry.device.url} is offline`
+                  }
                 >
-                  <Icon name="add" />
-                </button>
+                  <Icon name="more" />
+                </MenuButton>
               </div>
               {error && <p className="error main-error">{error}</p>}
               {session ? (
@@ -1259,7 +1287,8 @@ export function App() {
           onClose={() => setPicker(null)}
         />
       )}
-      {shownValue("layout.show_shortcuts") === true && <ShortcutBar />}
+      {shownValue("general.show_shortcuts") === true && <ShortcutBar />}
+      <Toasts />
     </div>
   );
 }

@@ -22,7 +22,7 @@ A topic shows its most urgent session, in this order: waiting, failed, done, wor
 
 - **Read:** a session is unread from the moment a turn finishes until it has been shown for a second in a focused window with the keyboard in the main pane, or someone marks it read. Moving over its topic in the sidebar shows it without reading it. The flag lives on the session in the daemon, so reading on one client reads everywhere. Starting new work clears it. Failed has no read state.
 - **Motion:** desktop puts every state in one SVG as layers and shows the current one, so a row's icon moves between states. Finishing closes the arc into a full ring that then fills with the check. Reading drains the fill over `motion.fade`. Every turning arc is pinned to the document timeline, so they turn in step.
-- **Reduced motion:** the arc stands still, which still reads differently from idle, and states change without moving. `appearance.layout.animate_status` turns it off too.
+- **Reduced motion:** the arc stands still, which still reads differently from idle, and states change without moving. `appearance.motion.status_icons` turns it off too.
 
 Size: `size.icon`. Desktop composes the SVGs into layers in `StatusIcon`, and iOS imports them as template images in an asset catalog.
 
@@ -55,6 +55,31 @@ The fixed section header that groups workspaces. It never collapses and isn't in
 - **Waiting:** background `status.waiting-tint`, or `status.waiting-tint-strong` when selected or hovered. Meta in `status.waiting`. Never use `text.tertiary` on the strong tint, because it fails contrast in dark mode.
 - **Selected:** background `surface.control`. On desktop, when the sidebar owns the keyboard, `accent.tint` with a 1px `accent.ring` border.
 - **Height:** `size.row`.
+- **Right click (desktop):** a Menu of what can be done to the topic, the same one the tab bar has.
+
+## Sidebar
+
+Desktop only. The tree of devices, workspaces and topics, with one row above it and one below.
+
+- **Palette row:** on top, drawn as the box it opens: a search icon, "Find a topic or command" in `text.tertiary` and the palette's key, on `surface.raised`. It's how the palette is found without knowing its key.
+- **Foot:** Settings with its key, and an icon button with the Menu of what isn't about one topic.
+
+## TabBar
+
+Desktop only. A topic's tabs, then the button for a new one, with the topic's Menu fixed at the end while the tabs scroll.
+
+- **Tab:** StatusIcon or the terminal icon, then the label, which fades out when it doesn't fit. The shown one is `text.primary` with an `accent.text` line under it.
+- **Close:** a small button after the label, shown while the pointer is on the tab. Its room is always there, so the tabs after it don't move. A tab that can't be closed has none.
+
+## Menu
+
+Desktop only. A short list of actions, opened by an icon button or a right click, for reaching by pointer what the palette and the keys already do.
+
+- **Surface:** the same as a dropdown: `surface.overlay`, `line.strong` border, `shadow.sheet`.
+- **Rows:** the action in `text.label` and its key on the right, `size.row` tall. The highlighted row is `surface.control`.
+- **Groups:** a `line.subtle` rule between them. What can't be undone easily, like archiving, is last and on its own.
+- **Wording:** an item names only the action ("Rename"), because what it acts on is where the menu was opened. Items that would do nothing are left out.
+- **iOS:** a system context menu.
 
 ## RequestCard
 
@@ -74,7 +99,7 @@ What an agent does between its messages, as one line in `text.meta`. Messages ar
 - **Finished:** how long it took and how many steps, such as "Worked for 12s, 6 steps", with failures in `status.failed`. Time spent on a permission request doesn't count.
 - **Unfolded:** the steps below it, on a `line.subtle` rule. A key or the palette does this for every activity, and pressing or clicking a line does it for one. Clicking the live line, or `pane.toggle_turn`, does it for the whole turn so far and for activities it starts later, so you can watch an agent work across its messages.
 - **Reduced motion:** no sweep, and messages and scrolling don't animate either.
-- **Settings:** `appearance.transcript.steps` and `appearance.transcript.animate`.
+- **Settings:** `conversation.steps` and `appearance.motion.transcript`.
 
 ## DiffHunk
 
@@ -114,6 +139,16 @@ Creates something with just a name, with defaults for the rest.
 - **Secondary:** background `surface.control`, hover `surface.control-hover`.
 - **Height:** `size.control`.
 - **iOS:** native button styles, such as `.glass` and `.glassProminent`, tinted with `accent.solid` only on the primary action.
+
+## Toast
+
+A result that needs nothing from you, for a few seconds.
+
+- **Parts:** one line in `text.label`, cut short with an ellipsis if it doesn't fit.
+- **Surface:** `surface.overlay`, `line.strong` border, `shadow.popover`, centered at the bottom of the window, above the shortcut line when that's showing.
+- **Behavior:** it fades in over `motion.normal` and goes after `general.toast_duration`. It never takes a click or the keyboard. The same text again keeps one toast, and at most three are stacked.
+- **Not for failures:** those stay on screen, where the thing that failed is.
+- **iOS:** not decided.
 
 ## Kbd
 

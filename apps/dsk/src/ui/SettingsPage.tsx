@@ -1,64 +1,114 @@
-import type { ReactNode } from "react";
-import { type ActionId, useSettings } from "../keybinds";
+import { type ReactNode, useEffect } from "react";
+import { act, type ActionId, useSettings } from "../keybinds";
+import { inPane } from "../keys";
+import { entryIndex, type SettingsGroup, type SettingsView } from "../settingsNav";
+import { hint, useHints } from "../shortcuts";
 import { Keys } from "./StatusIcon";
 
-/** Every settings screen: the sidebar's place says whose settings these are and lists their
- * sections, and the panel shows the section. */
+/** The list of sections, and how to get around it. The app's settings and each device's are
+ * separate screens that share it, so going from one to another is one step in the same list. */
+export interface SettingsNav {
+  groups: SettingsGroup[];
+  onGo: (view: SettingsView) => void;
+  onClose: () => void;
+}
+
+const SECTION_HINTS = [
+  hint("Go in", "sections.confirm", "sections.open"),
+  hint("Section", "sections.up", "sections.down"),
+  hint("First, last", "sections.first", "sections.last"),
+  hint("Close", "sections.close"),
+];
+
+/** Every settings screen: the sidebar's place lists the sections, grouped by whose they are,
+ * and the panel shows the open one. Like the main sidebar, the list has the keyboard first and
+ * shows what it lands on, and you go into a section to change things in it. */
 export function SettingsLayout({
-  heading,
-  detail,
-  sections,
-  section,
-  active = false,
-  closeKeys,
-  onSelect,
-  onClose,
+  nav,
+  current,
+  inside,
+  onInside,
   children,
 }: {
-  heading: string;
-  /** Which one of them, when there can be several. */
-  detail?: string;
-  sections: readonly { id: string; label: string }[];
-  section: string;
-  /** The list of sections has the keyboard. */
-  active?: boolean;
-  /** What closes the settings right now, if a key does. */
-  closeKeys?: ActionId;
-  onSelect?: (section: string) => void;
-  onClose: () => void;
+  nav: SettingsNav;
+  current: SettingsView;
+  /** The section has the keyboard, rather than the list of sections. */
+  inside: boolean;
+  onInside: (inside: boolean) => void;
   children: ReactNode;
 }) {
+  const entries = nav.groups.flatMap((group) => group.entries);
+  const index = entryIndex(entries, current);
+
+  useHints("pane", inside ? null : SECTION_HINTS);
+
+  useEffect(() => {
+    if (inside) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!inPane(event)) return;
+      const go = (to: number) => () => {
+        const next = entries[to];
+        if (next) nav.onGo(next.view);
+      };
+      const commands: [ActionId, () => void][] = [
+        ["sections.up", go(index - 1)],
+        ["sections.down", go(index + 1)],
+        ["sections.first", go(0)],
+        ["sections.last", go(entries.length - 1)],
+        ["sections.open", () => onInside(true)],
+        ["sections.confirm", () => onInside(true)],
+        ["sections.close", nav.onClose],
+      ];
+      commands.some(([id, run]) => act(event, id, run));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // With a few devices the list is longer than the window.
+  useEffect(() => {
+    document.querySelector(".settings-side .row.current")?.scrollIntoView({ block: "nearest" });
+  }, [index]);
+
   return (
     <>
-      <aside className={`settings-side ${active ? "active" : ""}`}>
-        <div className="settings-side-head">
-          <h1 className="settings-side-heading">{heading}</h1>
-          {detail && (
-            <span className="meta" title={detail}>
-              {detail}
-            </span>
-          )}
-        </div>
+      <aside className={`settings-side ${inside ? "" : "active"}`}>
+        <h1 className="settings-side-heading">Settings</h1>
         <nav className="tree" aria-label="Settings sections">
-          {sections.map(({ id, label }) => (
-            <button
-              key={id}
-              className={`row ${id === section ? "current" : ""}`}
-              tabIndex={-1}
-              aria-current={id === section ? "page" : undefined}
-              // Focus stays off these, so Enter does what the settings say rather than
-              // pressing the button.
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => onSelect?.(id)}
-            >
-              <span className="name">{label}</span>
-            </button>
+          {nav.groups.map((group) => (
+            <section key={group.id} aria-label={group.heading}>
+              <h2 className="side-group" title={group.heading}>
+                {group.heading}
+              </h2>
+              {group.entries.map((entry) => {
+                const shown = entries.indexOf(entry) === index;
+                return (
+                  <button
+                    key={entry.view.section}
+                    className={`row ${shown ? "current" : ""}`}
+                    tabIndex={-1}
+                    aria-current={shown ? "page" : undefined}
+                    // Focus stays off these, so Enter does what the settings say rather than
+                    // pressing the button.
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      onInside(false);
+                      nav.onGo(entry.view);
+                    }}
+                  >
+                    <span className="name">{entry.label}</span>
+                  </button>
+                );
+              })}
+            </section>
           ))}
         </nav>
-        <button className="row side-settings" tabIndex={-1} onClick={onClose}>
-          <span className="name">Close settings</span>
-          {closeKeys && <Keys action={closeKeys} />}
-        </button>
+        <div className="side-foot">
+          <button className="row" tabIndex={-1} onClick={nav.onClose}>
+            <span className="name">Close settings</span>
+            {!inside && <Keys action="sections.close" />}
+          </button>
+        </div>
       </aside>
       <main className="main">{children}</main>
     </>
@@ -92,6 +142,16 @@ export function SettingsPage({
       </div>
       {footer && <div className="settings-actions">{footer}</div>}
     </>
+  );
+}
+
+/** What a section's bar holds while the list of sections has the keyboard: the key that goes
+ * into the section. */
+export function GoInHint() {
+  return (
+    <span className="settings-actions-what">
+      <Keys action="sections.confirm" /> Edit
+    </span>
   );
 }
 

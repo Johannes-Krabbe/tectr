@@ -283,19 +283,35 @@ export function transportOf(draft: McpDraft): { transport: McpTransport } | { er
   };
 }
 
-/** What the import said, as lines to show. */
-export function importLines(added: string[], skipped: string[]): string[] {
-  const lines = [added.length > 0 ? `Added ${added.join(", ")}` : "Nothing new to add"];
-  return [...lines, ...skipped.map((reason) => `Skipped ${reason}`)];
+const counted = (count: number, thing: string) => `${count} ${thing}${count === 1 ? "" : "s"}`;
+
+/** What an import did, in a line short enough for a toast. */
+export function importSummary(added: string[], skipped: string[]): string {
+  if (added.length === 0 && skipped.length === 0) return "Nothing new to import";
+  const did = added.length > 0 ? `Added ${counted(added.length, "server")}` : "Nothing added";
+  return skipped.length > 0 ? `${did}, ${skipped.length} skipped` : did;
 }
 
-/** What refreshing the connectors said, as lines to show. */
-export function connectorLines(added: string[], removed: string[], problems: string[]): string[] {
-  const lines: string[] = [];
-  if (added.length > 0) lines.push(`Added ${added.join(", ")}, off until turned on`);
-  if (removed.length > 0) lines.push(`Removed ${removed.join(", ")}`);
-  if (lines.length === 0 && problems.length === 0) lines.push("No new connectors");
-  return [...lines, ...problems.map((problem) => `Couldn't list: ${problem}`)];
+/** What refreshing the connectors did, in a line short enough for a toast. Null when nothing
+ * changed because something went wrong, which is said where it stays instead. */
+export function connectorSummary(
+  added: string[],
+  removed: string[],
+  problems: string[],
+): string | null {
+  if (added.length > 0 && removed.length > 0) {
+    return `Added ${counted(added.length, "connector")}, removed ${removed.length}`;
+  }
+  if (added.length > 0) return `Added ${counted(added.length, "connector")}`;
+  if (removed.length > 0) return `Removed ${counted(removed.length, "connector")}`;
+  return problems.length > 0 ? null : "No new connectors";
+}
+
+/** Why something didn't come over, one line each, or null when everything did. These stay on
+ * screen, because a toast would be gone before anyone could act on them. */
+export function leftOut(reasons: string[], what: "Skipped" | "Couldn't list"): string | null {
+  const said = what === "Skipped" ? "Skipped " : "Couldn't list: ";
+  return reasons.length > 0 ? reasons.map((reason) => `${said}${reason}`).join("\n") : null;
 }
 
 // Reading a server from whatever a README hands you: an address, a command, a `claude mcp add`

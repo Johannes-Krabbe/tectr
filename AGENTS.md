@@ -16,6 +16,7 @@ Today: daemon, CLI and a first desktop app, with pairing and remote connections 
 ## Power user rules
 
 - Every action has a rebindable key and a palette entry. Nothing is mouse-only.
+- Nothing is palette-only either: every action also has a button, a menu item or a settings row. Prefer a menu or a control that shows on hover over permanent chrome.
 - New behavior and appearance choices are settings: `~/.config/tectr/dsk.toml`, with defaults in `dsk.defaults.toml`. The Settings UI and the file stay equal, and changes apply on save.
 - Favor speed and density over hand-holding: no onboarding or explanatory filler.
 

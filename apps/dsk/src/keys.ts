@@ -78,7 +78,7 @@ export function focusSidebar() {
 
 /** The sidebar row that adding goes into when the pointer is on it. */
 export function pointedRow(): HTMLElement | null {
-  return document.querySelector<HTMLElement>(".side .row:hover:not(.side-settings)");
+  return document.querySelector<HTMLElement>(".side .tree .row:hover");
 }
 
 /** Presses the + that a row adds through: its own, or its workspace's for a topic. */

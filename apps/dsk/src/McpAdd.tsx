@@ -65,10 +65,7 @@ export function McpAddSheet({
   const hint =
     "error" in pasted
       ? pasted.error
-      : (nameIssue ??
-        (found.length === 0
-          ? ASK
-          : `Adds ${found.length === 1 ? "it" : `all ${found.length}`}, and opens the browser for any that asks for a login`));
+      : (nameIssue ?? (found.length === 0 ? ASK : undefined));
 
   const add = async (): Promise<CommandOutput> => {
     let last: CommandOutput = { output: "done" };

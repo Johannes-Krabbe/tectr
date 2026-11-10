@@ -6,7 +6,7 @@ import { inPane } from "./keys";
 import { isOnline } from "./model";
 import { isLoopback } from "./pathInput";
 import { hint, SETTINGS_MOVES, useHints } from "./shortcuts";
-import { listMoves, SettingsPage } from "./ui/SettingsPage";
+import { GoInHint, listMoves, SettingsPage } from "./ui/SettingsPage";
 import { Keys } from "./ui/StatusIcon";
 
 function status(device: Device): string {
@@ -102,9 +102,7 @@ export function DevicesSettings({
         </button>
       </>
     ) : (
-      <span className="settings-actions-what">
-        <Keys action="sections.confirm" /> Change which devices this app reaches
-      </span>
+      <GoInHint />
     );
 
   return (

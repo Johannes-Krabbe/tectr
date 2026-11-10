@@ -138,7 +138,9 @@ function ImageThumb({
 }
 
 /** Whether a setting that shows thumbnails is on. Both are on unless the file says not. */
-function useThumbnails(id: "images.message_box" | "images.transcript"): boolean {
+function useThumbnails(
+  id: "conversation.images.message_box" | "conversation.images.transcript",
+): boolean {
   useSettings();
   return shownValue(id) !== false;
 }
@@ -289,7 +291,7 @@ export function ImageComposer({
   const marks = useRef<HTMLDivElement>(null);
   const [cursor, setCursor] = useState<number | null>(null);
   const [pointed, setPointed] = useState<Peek | null>(null);
-  const showTray = useThumbnails("images.message_box");
+  const showTray = useThumbnails("conversation.images.message_box");
 
   useEffect(() => {
     const el = input.current;
@@ -424,7 +426,7 @@ export function PromptBubble({
   onOpen: OpenImages;
 }) {
   const [peek, setPeek] = useState<Peek | null>(null);
-  const showThumbs = useThumbnails("images.transcript");
+  const showThumbs = useThumbnails("conversation.images.transcript");
   const known = useMemo(() => byNumber(images), [images]);
   const shown = imagesIn(text, known);
   // An image the text doesn't name still went, so it still shows.

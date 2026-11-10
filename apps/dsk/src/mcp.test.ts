@@ -7,15 +7,16 @@ import {
   canRemove,
   canToggle,
   connectorAgent,
-  connectorLines,
+  connectorSummary,
   connectors,
   deviceServers,
   draftOf,
   draftReady,
   flippedTopicMcp,
   formatPairs,
-  importLines,
+  importSummary,
   joinArgs,
+  leftOut,
   mcpAuthLabel,
   mcpSummary,
   nameProblem,
@@ -115,14 +116,21 @@ test("connectors are listed apart, only turned on or off, and reach a topic like
   });
 });
 
-test("refreshing connectors says what changed and what couldn't be listed", () => {
-  assert.deepEqual(connectorLines(["claude.ai Notion"], ["claude.ai Linear"], ["no list"]), [
-    "Added claude.ai Notion, off until turned on",
-    "Removed claude.ai Linear",
-    "Couldn't list: no list",
-  ]);
-  assert.deepEqual(connectorLines([], [], []), ["No new connectors"]);
-  assert.deepEqual(connectorLines([], [], ["x"]), ["Couldn't list: x"]);
+test("refreshing connectors says how many changed, not which", () => {
+  const some = ["claude.ai Notion", "claude.ai Linear", "claude.ai Slack"];
+  assert.equal(connectorSummary(some, [], []), "Added 3 connectors");
+  assert.equal(connectorSummary(["claude.ai Notion"], [], []), "Added 1 connector");
+  assert.equal(connectorSummary(some, ["claude.ai Gmail"], []), "Added 3 connectors, removed 1");
+  assert.equal(connectorSummary([], some.slice(1), []), "Removed 2 connectors");
+  assert.equal(connectorSummary([], [], []), "No new connectors");
+  // What was added is still worth saying next to what couldn't be listed.
+  assert.equal(connectorSummary(some, [], ["no list"]), "Added 3 connectors");
+});
+
+test("what couldn't be listed stays on screen instead of in a toast", () => {
+  assert.equal(connectorSummary([], [], ["x"]), null);
+  assert.equal(leftOut(["x", "y"], "Couldn't list"), "Couldn't list: x\nCouldn't list: y");
+  assert.equal(leftOut([], "Couldn't list"), null);
 });
 
 test("a topic follows a device server's default until it turns it on or off", () => {
@@ -238,12 +246,13 @@ test("a new server starts on, and leaves out what's empty", () => {
   });
 });
 
-test("the import says what was added and why the rest wasn't", () => {
-  assert.deepEqual(importLines(["github"], ["old: sse servers aren't supported"]), [
-    "Added github",
-    "Skipped old: sse servers aren't supported",
-  ]);
-  assert.deepEqual(importLines([], []), ["Nothing new to add"]);
+test("the import says how many were added, and why the rest wasn't stays on screen", () => {
+  const skipped = ["old: sse servers aren't supported"];
+  assert.equal(importSummary(["github", "linear"], []), "Added 2 servers");
+  assert.equal(importSummary(["github"], skipped), "Added 1 server, 1 skipped");
+  assert.equal(importSummary([], skipped), "Nothing added, 1 skipped");
+  assert.equal(importSummary([], []), "Nothing new to import");
+  assert.equal(leftOut(skipped, "Skipped"), "Skipped old: sse servers aren't supported");
 });
 
 test("turning a server on or off sends it back whole, keeping its topic", () => {

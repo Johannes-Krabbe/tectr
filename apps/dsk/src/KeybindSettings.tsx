@@ -18,7 +18,7 @@ import {
 import { formatSequence } from "./keymatch";
 import { inPane } from "./keys";
 import { hint, SETTINGS_MOVES, useHints } from "./shortcuts";
-import { listMoves, SettingsPage } from "./ui/SettingsPage";
+import { GoInHint, listMoves, SettingsPage } from "./ui/SettingsPage";
 import { Kbd, Keys } from "./ui/StatusIcon";
 
 /** What switching holding on starts with. The file can set any other length. */
@@ -213,7 +213,7 @@ export function KeybindSettings({
     </>
   ) : active && row ? (
     <>
-      <span className="settings-actions-what">{row.label}</span>
+      <span className="settings-actions-what" />
       <button className="button" onClick={() => setRecording({ mode: "replace", chord: null, at: 0 })}>
         Change
         <Keys action="settings.edit" />
@@ -240,9 +240,7 @@ export function KeybindSettings({
       </button>
     </>
   ) : (
-    <span className="settings-actions-what">
-      <Keys action="sections.confirm" /> Change these shortcuts
-    </span>
+    <GoInHint />
   );
 
   return (

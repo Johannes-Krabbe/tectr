@@ -27,4 +27,7 @@ Working, Waiting, Failed, Done, Idle, Offline. Use the same word in every place 
 - **Say what will happen or why:** "Deletes files outside version control", not "Warning".
 - **Explain refusals in one line:** "VPS is offline, so nothing can be created there".
 - **No filler:** no "please", no "successfully", no exclamation marks.
+- **Don't explain the screen:** a control is its label and its value. No sentence about what a setting does or how a list works, on the screen or in a bar under it. Write one only for what can't be seen otherwise: why something is unavailable, what will be lost, or the one thing a step needs you to do.
+- **Empty lists say so and stop:** "No servers yet", not what the buttons next to it do.
+- **Results are counts, in a toast:** "Added 12 connectors", not their names. What failed is said in full and stays on screen.
 - **Times:** running time as `4:12`, and past events as `6m`, `2h`, or `2h ago` when the context needs it.

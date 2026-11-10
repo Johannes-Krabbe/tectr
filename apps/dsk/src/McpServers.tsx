@@ -8,7 +8,7 @@ import {
   type McpServer,
   request,
 } from "./engine";
-import { act, type ActionId, keysLabel } from "./keybinds";
+import { act, type ActionId, keysLabel, notify } from "./keybinds";
 import { inPane } from "./keys";
 import {
   canEdit,
@@ -17,12 +17,13 @@ import {
   canRemove,
   canToggle,
   connectorAgent,
-  connectorLines,
+  connectorSummary,
   connectors,
   deviceServers,
   draftOf,
   draftReady,
-  importLines,
+  importSummary,
+  leftOut,
   mcpAuthLabel,
   type McpDraft,
   mcpSummary,
@@ -36,7 +37,7 @@ import { isOnline } from "./model";
 import { type PaletteItem, useScreenPaletteItems } from "./Palette";
 import { Sheet } from "./Sheets";
 import { hint, type Hint, SETTINGS_MOVES, useHints } from "./shortcuts";
-import { listMoves, SettingsPage } from "./ui/SettingsPage";
+import { GoInHint, listMoves, SettingsPage } from "./ui/SettingsPage";
 import { Keys } from "./ui/StatusIcon";
 
 /** Requests about servers, each one's progress and last error kept by server. */
@@ -213,7 +214,7 @@ export function McpServerSheet({
     <Sheet
       where={where}
       action="Save"
-      hint={nameProblem(draft.name.trim()) ?? "Values can use ${NAME} from the daemon's environment"}
+      hint={nameProblem(draft.name.trim()) ?? undefined}
       canSubmit={draftReady(draft)}
       returnsFocus
       run={save}
@@ -337,8 +338,7 @@ export function McpSettings({
   const [form, setForm] = useState<Form>(null);
   const [importing, setImporting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  // What the last import or refresh said.
-  const [report, setReport] = useState<string[] | null>(null);
+  // What the last import or refresh couldn't do. What it did is a toast.
   const [importError, setImportError] = useState<string | null>(null);
 
   const selected = Math.max(Math.min(cursor, rows.length - 1), 0);
@@ -358,7 +358,10 @@ export function McpSettings({
     setImportError(null);
     try {
       const output = await request(machineId, { command: "import_mcp_servers" });
-      if (output.output === "mcp_import") setReport(importLines(output.added, output.skipped));
+      if (output.output === "mcp_import") {
+        notify(importSummary(output.added, output.skipped));
+        setImportError(leftOut(output.skipped, "Skipped"));
+      }
     } catch (reason) {
       setImportError(errorText(reason));
     } finally {
@@ -373,7 +376,9 @@ export function McpSettings({
     try {
       const output = await request(machineId, { command: "refresh_mcp_connectors" });
       if (output.output === "mcp_connectors") {
-        setReport(connectorLines(output.added, output.removed, output.problems));
+        const summary = connectorSummary(output.added, output.removed, output.problems);
+        if (summary) notify(summary);
+        setImportError(leftOut(output.problems, "Couldn't list"));
       }
     } catch (reason) {
       setImportError(errorText(reason));
@@ -528,20 +533,13 @@ export function McpSettings({
         ))}
     </>
   ) : (
-    <span className="settings-actions-what">
-      <Keys action="sections.confirm" /> Change these servers
-    </span>
+    <GoInHint />
   );
 
   return (
     <>
       <SettingsPage error={importError} footer={footer}>
         {!online && <p className="settings-note">This device is offline</p>}
-        {report?.map((line, index) => (
-          <p key={index} className="settings-note">
-            {line}
-          </p>
-        ))}
         <section className="settings-group">
           {/* What applies to the whole list sits with it. The bar at the bottom is only for
               the selected server. */}
@@ -566,10 +564,7 @@ export function McpSettings({
             </button>
           </div>
           {online && servers.length === 0 && (
-            <p className="settings-note">
-              No servers yet, so agents get none. Import brings over the ones Claude Code, Codex
-              and OpenCode have. Add takes a URL, a command or a config from the docs.
-            </p>
+            <p className="settings-note">No servers yet</p>
           )}
           <div className="keybinds">{servers.map(row)}</div>
         </section>
@@ -586,16 +581,10 @@ export function McpSettings({
             </button>
           </div>
           {online && connected.length === 0 && (
-            <p className="settings-note">
-              Refresh brings in the claude.ai connectors of Claude and the ChatGPT apps of Codex.
-              Each one starts off, and only its own agent gets it.
-            </p>
+            <p className="settings-note">No connectors yet</p>
           )}
           <div className="keybinds">{connected.map(row)}</div>
         </section>
-        <p className="settings-note settings-group">
-          Topics get the servers that are on, and each topic can change that.
-        </p>
       </SettingsPage>
       {form?.server && machineId && (
         <McpServerSheet

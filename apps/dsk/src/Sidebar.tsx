@@ -4,6 +4,7 @@ import type { View } from "./navigation";
 import { act } from "./keybinds";
 import { ago, isOnline, STATE_LABEL, topicState } from "./model";
 import { Icon } from "./ui/Icon";
+import { MenuButton, type MenuGroups, RightClickMenu } from "./ui/Menu";
 import { Keys, StatusIcon } from "./ui/StatusIcon";
 
 interface Props {
@@ -11,6 +12,11 @@ interface Props {
   view: View | null;
   onView: (view: View | null) => void;
   onPreview: (view: View | null) => void;
+  onPalette: () => void;
+  /** What isn't about one topic, behind the button next to Settings. */
+  appMenu: MenuGroups;
+  /** What a right click on a topic offers. */
+  topicMenu: (machineId: string, topicId: string) => MenuGroups;
   onSettings: (machineId: string) => void;
   onAppSettings: () => void;
   onAddWorkspace: (device: Device) => void;
@@ -39,6 +45,9 @@ function viewOf(row: HTMLElement): View | null {
 /** Walks every row marked `data-nav`, opening what it lands on while the sidebar keeps the
  * keyboard. Confirming on a device opens its settings. Adding is handled in App. */
 function onSidebarKey(event: KeyboardEvent<HTMLElement>, onPreview: (view: View | null) => void) {
+  // A menu opened from here is drawn elsewhere on the page, but its keys still come up
+  // through here, and they're the menu's.
+  if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) return;
   const row = event.target as HTMLElement;
   const rows = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-nav]")];
   const index = rows.indexOf(row);
@@ -87,14 +96,33 @@ export function Sidebar({
   view,
   onView,
   onPreview,
+  onPalette,
+  appMenu,
+  topicMenu,
   onSettings,
   onAppSettings,
   onAddWorkspace,
   onNewTopic,
 }: Props) {
+  const menuAt = (target: Element): MenuGroups => {
+    const { machine, topic } = target.closest<HTMLElement>(".row.topic")?.dataset ?? {};
+    return machine && topic ? topicMenu(machine, topic) : [];
+  };
   return (
     <aside className="side" onKeyDown={(event) => onSidebarKey(event, onPreview)}>
-      <nav className="tree">
+      {/* Looks like the box it opens, so the palette is somewhere to go and not only a key. */}
+      <button
+        className="row side-search"
+        tabIndex={-1}
+        // Focus stays where it was, which is where closing the palette puts it back.
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={onPalette}
+      >
+        <Icon name="search" />
+        <span className="name">Find a topic or command</span>
+        <Keys action="global.palette" />
+      </button>
+      <RightClickMenu render={<nav className="tree" />} groupsAt={menuAt}>
         {devices.map((device) => {
           const online = isOnline(device);
           const machineId = device.state?.machine.id;
@@ -207,11 +235,16 @@ export function Sidebar({
             </section>
           );
         })}
-      </nav>
-      <button className="row side-settings" tabIndex={-1} onClick={onAppSettings}>
-        <span className="name">Settings</span>
-        <Keys action="global.settings" />
-      </button>
+      </RightClickMenu>
+      <div className="side-foot">
+        <button className="row" tabIndex={-1} onClick={onAppSettings}>
+          <span className="name">Settings</span>
+          <Keys action="global.settings" />
+        </button>
+        <MenuButton label="More actions" className="icon-button" groups={appMenu}>
+          <Icon name="more" />
+        </MenuButton>
+      </div>
     </aside>
   );
 }
