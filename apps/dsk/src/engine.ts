@@ -28,6 +28,30 @@ export interface Session {
   title: string | null;
   /** A turn finished and nobody has looked at it yet, on any client. */
   unread?: boolean;
+  /** Puts its tab in order among the topic's agents and terminals. */
+  opened_at_ms?: number;
+}
+
+export type TerminalStatus = "running" | "stopped" | "exited" | "unknown";
+
+/** A shell in its topic's folder. */
+export interface Terminal {
+  id: string;
+  /** What the program in it last called it. */
+  title?: string | null;
+  /** Stopped: no shell since the daemon started, and showing it starts one. Exited: its shell
+   * failed, and typing starts another. */
+  status: TerminalStatus;
+  opened_at_ms: number;
+}
+
+/** A client's colors as `#rrggbb`, which programs ask a terminal for. */
+export interface TerminalColors {
+  foreground: string;
+  background: string;
+  cursor: string;
+  /** The 16 ANSI colors, black to bright white. */
+  palette: string[];
 }
 
 /** A slash command an agent offers. Sending `/name`, and anything after it, runs it. */
@@ -54,6 +78,8 @@ export interface Topic {
   /** Every folder it has worked in and still has. One at the repo's own path is the repo. */
   worktrees: Worktree[];
   sessions: Session[];
+  /** Left out while it has none. */
+  terminals?: Terminal[];
   /** The device's MCP servers this topic turns on or off, against their own `enabled`. By
    * server ID. */
   mcp?: Record<string, boolean>;
@@ -278,6 +304,8 @@ export type Command =
   | { command: "set_unread"; session_id: string; unread: boolean }
   | { command: "set_draft"; session_id: string; text: string }
   | { command: "close_session"; session_id: string; force?: boolean }
+  | { command: "open_terminal"; topic_id: string; cols: number; rows: number }
+  | { command: "close_terminal"; terminal_id: string }
   | {
       command: "save_mcp_server";
       /** Changes the server it names, or else adds one. */
@@ -300,6 +328,7 @@ export type CommandOutput =
   | { output: "workspace"; workspace: Workspace }
   | { output: "topic"; workspace_id: string; topic: Topic }
   | { output: "session"; topic_id: string; session: Session }
+  | { output: "terminal"; topic_id: string; terminal: Terminal }
   | { output: "provider_candidates"; candidates: ProviderCandidate[] }
   | { output: "provider"; provider: Provider }
   | { output: "folders"; folders: Folder[] }

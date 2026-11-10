@@ -213,3 +213,10 @@ export function formatKeys(bindings: Binding[], mac: boolean): string {
   }
   return out.join("/");
 }
+
+/** Whether a key starts with Cmd. Terminals get every other key, so only these reach the app
+ * from one. */
+export function usesCommand(key: string): boolean {
+  const modifiers = key.split(" ")[0].split("+");
+  return modifiers.includes("mod") || modifiers.includes("cmd");
+}

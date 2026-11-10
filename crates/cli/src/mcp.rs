@@ -709,6 +709,7 @@ mod tests {
             worktree_id: "wt".into(),
             worktrees: vec![],
             sessions: vec![],
+            terminals: vec![],
             mcp: mcp
                 .iter()
                 .map(|(id, on)| (McpServerId::from(*id), *on))

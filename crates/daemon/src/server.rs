@@ -4,6 +4,9 @@
 //! and the live broadcast. Tracking the last sequence number sent per session
 //! makes that safe, because anything already sent is skipped. A client that
 //! falls behind the broadcast is refilled from the database.
+//!
+//! Terminals send their frames to the connections showing them, which pass them on as
+//! binary messages. Keeping up is up to each terminal, through what clients acknowledge.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,9 +14,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
+use protocol::frame::{self, Kind};
 use protocol::{
     ClientMessage, CommandError, CommandOutput, MIN_PROTOCOL_VERSION, PROTOCOL_VERSION,
-    ServerMessage, SessionId, negotiate_version,
+    ServerMessage, SessionId, TerminalId, negotiate_version,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -24,6 +28,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::http::StatusCode;
 
 use crate::core::{Core, Signal};
+use crate::terminal::Subscriber;
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const REPLAY_PAGE_SIZE: usize = 500;
@@ -76,6 +81,8 @@ async fn serve(core: Arc<Core>, stream: TcpStream) -> Result<()> {
     {
         return crate::http::serve(core, stream).await;
     }
+    // Each keystroke's echo is a small write, which shouldn't wait to be combined with others.
+    let _ = stream.set_nodelay(true);
     let mut socket = tokio_tungstenite::accept_hdr_async(stream, reject_browsers)
         .await
         .context("websocket handshake failed")?;
@@ -83,11 +90,11 @@ async fn serve(core: Arc<Core>, stream: TcpStream) -> Result<()> {
     let hello = tokio::time::timeout(HELLO_TIMEOUT, next_message(&mut socket))
         .await
         .context("no hello in time")??;
-    let Some(ClientMessage::Hello {
+    let Some(Incoming::Message(ClientMessage::Hello {
         min_version,
         max_version,
         client,
-    }) = hello
+    })) = hello
     else {
         bail!("the first message wasn't a hello");
     };
@@ -117,11 +124,14 @@ async fn serve(core: Arc<Core>, stream: TcpStream) -> Result<()> {
     let (state, signals) = core.snapshot_and_subscribe();
     send(&mut socket, &ServerMessage::Snapshot { state }).await?;
 
+    let (terminal_frames, mut frames) = mpsc::unbounded_channel();
     let mut connection = Connection {
         core,
         socket,
         signals,
         subscriptions: HashMap::new(),
+        terminals: HashMap::new(),
+        terminal_frames,
     };
     let (responses, mut finished) =
         mpsc::unbounded_channel::<(u64, Result<CommandOutput, CommandError>)>();
@@ -130,7 +140,8 @@ async fn serve(core: Arc<Core>, stream: TcpStream) -> Result<()> {
         tokio::select! {
             message = next_message(&mut connection.socket) => match message? {
                 None => return Ok(()),
-                Some(ClientMessage::Request { id, command }) => {
+                Some(Incoming::Frame(data)) => connection.frame(&data),
+                Some(Incoming::Message(ClientMessage::Request { id, command })) => {
                     // Commands such as creating a worktree take time, and the
                     // event stream shouldn't stall while they run.
                     let core = connection.core.clone();
@@ -139,14 +150,29 @@ async fn serve(core: Arc<Core>, stream: TcpStream) -> Result<()> {
                         let _ = responses.send((id, core.handle(command).await));
                     });
                 }
-                Some(ClientMessage::Subscribe { session_id, after_seq }) => {
+                Some(Incoming::Message(ClientMessage::Subscribe { session_id, after_seq })) => {
                     connection.subscribe(session_id, after_seq).await?;
                 }
-                Some(ClientMessage::Unsubscribe { session_id }) => {
+                Some(Incoming::Message(ClientMessage::Unsubscribe { session_id })) => {
                     connection.subscriptions.remove(&session_id);
                 }
-                Some(ClientMessage::Hello { .. } | ClientMessage::Unknown) => {}
+                Some(Incoming::Message(ClientMessage::AttachTerminal {
+                    terminal_id,
+                    cols,
+                    rows,
+                    colors,
+                })) => connection.attach_terminal(terminal_id, cols, rows, colors),
+                Some(Incoming::Message(ClientMessage::DetachTerminal { terminal_id })) => {
+                    connection.detach_terminal(&terminal_id);
+                }
+                Some(Incoming::Message(ClientMessage::ResizeTerminal { terminal_id, cols, rows })) => {
+                    connection.core.resize_terminal(&terminal_id, cols, rows);
+                }
+                Some(Incoming::Message(ClientMessage::Hello { .. } | ClientMessage::Unknown)) => {}
             },
+            Some(frame) = frames.recv() => {
+                connection.socket.send(Message::binary(frame)).await?;
+            }
             signal = connection.signals.recv() => match signal {
                 Ok(signal) => connection.forward(signal).await?,
                 Err(broadcast::error::RecvError::Lagged(_)) => connection.resynchronize().await?,
@@ -165,9 +191,71 @@ struct Connection {
     signals: broadcast::Receiver<Signal>,
     /// For each followed session, the last sequence number sent.
     subscriptions: HashMap<SessionId, u64>,
+    /// The terminals this client shows, with what each knows it as.
+    terminals: HashMap<TerminalId, u64>,
+    terminal_frames: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        for (id, subscriber) in self.terminals.drain() {
+            self.core.detach_terminal(&id, subscriber);
+        }
+    }
 }
 
 impl Connection {
+    fn attach_terminal(
+        &mut self,
+        id: TerminalId,
+        cols: u16,
+        rows: u16,
+        colors: Option<protocol::TerminalColors>,
+    ) {
+        self.detach_terminal(&id);
+        let subscriber = Subscriber {
+            id: self.core.next_subscriber(),
+            frames: self.terminal_frames.clone(),
+        };
+        let subscriber_id = subscriber.id;
+        match self
+            .core
+            .attach_terminal(&id, subscriber, (cols, rows), colors)
+        {
+            Ok(()) => {
+                self.terminals.insert(id, subscriber_id);
+            }
+            Err(error) => tracing::debug!(%id, "couldn't show a terminal: {error:#}"),
+        }
+    }
+
+    fn detach_terminal(&mut self, id: &TerminalId) {
+        if let Some(subscriber) = self.terminals.remove(id) {
+            self.core.detach_terminal(id, subscriber);
+        }
+    }
+
+    /// Typing and acknowledgements. Frames for a terminal this client doesn't show are
+    /// dropped, so nobody types into a terminal they can't see.
+    fn frame(&mut self, data: &[u8]) {
+        let Some(frame) = frame::decode(data) else {
+            return;
+        };
+        let id = TerminalId::from(frame.terminal_id);
+        let Some(&subscriber) = self.terminals.get(&id) else {
+            return;
+        };
+        match frame.kind {
+            Kind::Input => self.core.terminal_input(&id, frame.payload.to_vec()),
+            Kind::Ack => {
+                if let Some(bytes) = frame::read_ack(frame.payload) {
+                    self.core.terminal_ack(&id, subscriber, bytes);
+                }
+            }
+            Kind::Output | Kind::Reset => {}
+        }
+    }
+
     async fn subscribe(&mut self, session_id: SessionId, after_seq: u64) -> Result<()> {
         self.subscriptions.insert(session_id.clone(), after_seq);
         self.catch_up(&session_id).await
@@ -252,15 +340,22 @@ impl Connection {
     }
 }
 
+enum Incoming {
+    Message(ClientMessage),
+    /// A binary terminal frame.
+    Frame(Vec<u8>),
+}
+
 /// Returns the next protocol message, or `None` once the client has gone.
-async fn next_message(socket: &mut Socket) -> Result<Option<ClientMessage>> {
+async fn next_message(socket: &mut Socket) -> Result<Option<Incoming>> {
     while let Some(frame) = socket.next().await {
         match frame? {
             Message::Text(text) => {
-                return Ok(Some(
+                return Ok(Some(Incoming::Message(
                     serde_json::from_str(&text).context("invalid client message")?,
-                ));
+                )));
             }
+            Message::Binary(data) => return Ok(Some(Incoming::Frame(data.to_vec()))),
             Message::Close(_) => return Ok(None),
             _ => {}
         }

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use daemon::{AgentLauncher, Config, Daemon};
+use daemon::{AgentLauncher, Config, Daemon, Shell};
 use engine::{Connection, Engine, EngineError};
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
@@ -67,6 +67,11 @@ impl Fixture {
             )]),
             // Tests shouldn't hold the machine awake. The daemon's own tests cover it.
             keep_awake: None,
+            // The person's own shell would read their setup, which tests can't predict.
+            shell: Shell {
+                program: "/bin/sh".into(),
+                args: vec![],
+            },
             ..Config::new(self.root.join("Application Support").join(name), port)
         }
     }
@@ -2558,5 +2563,190 @@ async fn a_finished_turn_is_unread_until_any_client_reads_it() {
     assert!(!unread(&desk), "working on something new clears it");
     wait_for_status(&desk, &session, SessionStatus::Done).await;
     assert!(unread(&desk));
+    daemon.shutdown().await;
+}
+
+/// What a client has drawn of a terminal: everything since its last reset, and how much to
+/// acknowledge.
+#[derive(Default)]
+struct Screen {
+    text: String,
+    resets: usize,
+    unacked: u32,
+}
+
+fn attach(
+    engine: &Engine,
+    machine: &MachineId,
+    terminal: &protocol::TerminalId,
+) -> std::sync::Arc<std::sync::Mutex<Screen>> {
+    let screen = std::sync::Arc::new(std::sync::Mutex::new(Screen::default()));
+    let drawn = screen.clone();
+    engine.attach_terminal(
+        machine,
+        terminal,
+        (80, 24),
+        None,
+        std::sync::Arc::new(move |kind, payload| {
+            let mut screen = drawn.lock().unwrap();
+            screen.unacked += payload.len() as u32;
+            match kind {
+                protocol::frame::Kind::Reset => {
+                    let (_, _, text) = protocol::frame::read_reset(&payload).unwrap();
+                    screen.text = String::from_utf8_lossy(text).into_owned();
+                    screen.resets += 1;
+                }
+                _ => screen.text += &String::from_utf8_lossy(&payload),
+            }
+        }),
+    );
+    screen
+}
+
+async fn wait_for_text(
+    engine: &Engine,
+    machine: &MachineId,
+    terminal: &protocol::TerminalId,
+    screen: &std::sync::Mutex<Screen>,
+    text: &str,
+) {
+    wait_for(text, || {
+        let mut screen = screen.lock().unwrap();
+        let unacked = std::mem::take(&mut screen.unacked);
+        engine.terminal_ack(machine, terminal, unacked);
+        screen.text.contains(text).then_some(())
+    })
+    .await;
+}
+
+fn terminal_state(engine: &Engine, id: &protocol::TerminalId) -> Option<protocol::Terminal> {
+    engine.devices()[0].state.as_ref()?.terminal(id).cloned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_terminal_runs_a_shell_and_comes_back_where_it_was_after_a_restart() {
+    let fixture = Fixture::new();
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let opened = engine
+        .request(
+            &machine,
+            Command::OpenTerminal {
+                topic_id: topic.id.clone(),
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .await
+        .unwrap();
+    let CommandOutput::Terminal { terminal, .. } = opened else {
+        panic!("unexpected output {opened:?}");
+    };
+    assert_eq!(
+        terminal_state(&engine, &terminal.id).map(|t| t.status),
+        Some(protocol::TerminalStatus::Running)
+    );
+
+    let screen = attach(&engine, &machine, &terminal.id);
+    let folder = topic.worktree().unwrap().path.clone();
+    let typed = "mkdir inner && cd inner && echo here-$((40+2)) && pwd\n";
+    engine
+        .terminal_input(&machine, &terminal.id, typed.as_bytes())
+        .unwrap();
+    wait_for_text(&engine, &machine, &terminal.id, &screen, "here-42").await;
+    wait_for_text(
+        &engine,
+        &machine,
+        &terminal.id,
+        &screen,
+        &format!("{folder}/inner"),
+    )
+    .await;
+    daemon.shutdown().await;
+
+    // The tab stays, and showing it starts a shell where the last one was, below what it left.
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    assert_eq!(
+        terminal_state(&engine, &terminal.id).map(|t| t.status),
+        Some(protocol::TerminalStatus::Stopped)
+    );
+    let screen = attach(&engine, &machine, &terminal.id);
+    wait_for_text(&engine, &machine, &terminal.id, &screen, "here-42").await;
+    engine
+        .terminal_input(
+            &machine,
+            &terminal.id,
+            b"echo now-in-$(basename \"$PWD\")-$((1+1))\n",
+        )
+        .unwrap();
+    wait_for_text(&engine, &machine, &terminal.id, &screen, "now-in-inner-2").await;
+    wait_for("the terminal to be running again", || {
+        (terminal_state(&engine, &terminal.id)?.status == protocol::TerminalStatus::Running)
+            .then_some(())
+    })
+    .await;
+
+    // Exiting the shell closes its tab.
+    engine
+        .terminal_input(&machine, &terminal.id, b"exit\n")
+        .unwrap();
+    wait_for("the terminal's tab to close", || {
+        terminal_state(&engine, &terminal.id)
+            .is_none()
+            .then_some(())
+    })
+    .await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_terminal_removes_its_tab_and_what_it_showed() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let CommandOutput::Terminal { terminal, .. } = engine
+        .request(
+            &machine,
+            Command::OpenTerminal {
+                topic_id: topic.id.clone(),
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("expected a terminal");
+    };
+    let history = fixture
+        .root
+        .join("Application Support")
+        .join("d")
+        .join("terminals")
+        .join(format!("{}.vt", terminal.id));
+    engine
+        .request(
+            &machine,
+            Command::CloseTerminal {
+                terminal_id: terminal.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(terminal_state(&engine, &terminal.id).is_none());
+    // The terminal's thread finishes deleting it on its way out.
+    wait_for("its history to be gone", || {
+        (!history.exists()).then_some(())
+    })
+    .await;
     daemon.shutdown().await;
 }

@@ -1,0 +1,5 @@
+[env]
+# Ghostty's terminal engine is built by Zig, which otherwise follows the Cargo profile. A debug
+# build of it is many times slower, which makes terminals in dev builds and tests lag behind
+# what they print. Its code isn't ours to debug, so it's always built for speed.
+LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"

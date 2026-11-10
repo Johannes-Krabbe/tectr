@@ -14,6 +14,8 @@
 //! 4. The client sends [`ClientMessage::Subscribe`] for each session it wants
 //!    to follow, and receives every [`SessionEvent`] after the given sequence
 //!    number, followed by live events.
+//! 5. The client sends [`ClientMessage::AttachTerminal`] for each terminal it shows. What
+//!    the terminal prints and what's typed into it travel as binary [`frame`]s.
 //!
 //! Every enum that can grow has an `Unknown` variant, so an older client can
 //! skip a message or value it doesn't understand.
@@ -22,6 +24,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub mod frame;
 
 /// The newest protocol version this build speaks. It's separate from crate
 /// versions because components ship independently.
@@ -107,6 +111,8 @@ id_type!(
     SessionId,
     ApprovalId,
     McpServerId,
+    /// Unique within a machine, like [`SessionId`].
+    TerminalId,
 );
 
 /// Identifies a session across all daemons.
@@ -140,6 +146,27 @@ pub enum ClientMessage {
     },
     Unsubscribe {
         session_id: SessionId,
+    },
+    /// Start showing a terminal at this size, which it takes on. A [`frame::Kind::Reset`]
+    /// with everything it shows comes first, then what it prints. A terminal that isn't
+    /// running starts its shell, where it last was.
+    AttachTerminal {
+        terminal_id: TerminalId,
+        cols: u16,
+        rows: u16,
+        /// The colors this client shows it in, which programs that ask for them get told.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        colors: Option<TerminalColors>,
+    },
+    DetachTerminal {
+        terminal_id: TerminalId,
+    },
+    /// The client showing a terminal is now this size. The last one to say wins, and every
+    /// client showing it gets a [`frame::Kind::Reset`] at that size.
+    ResizeTerminal {
+        terminal_id: TerminalId,
+        cols: u16,
+        rows: u16,
     },
     #[serde(other)]
     Unknown,
@@ -304,6 +331,16 @@ pub enum Command {
         session_id: SessionId,
         text: String,
     },
+    /// Start a shell in the topic's folder, in a new tab.
+    OpenTerminal {
+        topic_id: TopicId,
+        cols: u16,
+        rows: u16,
+    },
+    /// Stop its shell and remove its tab, with what it showed.
+    CloseTerminal {
+        terminal_id: TerminalId,
+    },
     /// Stop the agent and remove its tab. Fails with [`ErrorCode::Busy`] while the agent
     /// is starting, working or waiting, unless `force` says the person has confirmed.
     CloseSession {
@@ -369,6 +406,10 @@ pub enum CommandOutput {
     Session {
         topic_id: TopicId,
         session: Session,
+    },
+    Terminal {
+        topic_id: TopicId,
+        terminal: Terminal,
     },
     ProviderCandidates {
         candidates: Vec<ProviderCandidate>,
@@ -600,6 +641,27 @@ impl DaemonState {
             StateChange::DeviceSettingsChanged { settings } => {
                 self.settings = settings.clone();
             }
+            StateChange::TerminalAdded { topic_id, terminal } => {
+                if let Some(topic) = self.topic_mut(topic_id) {
+                    upsert(&mut topic.terminals, terminal.clone(), |t| &t.id);
+                }
+            }
+            StateChange::TerminalChanged { terminal } => {
+                if let Some(existing) = self
+                    .workspaces
+                    .iter_mut()
+                    .flat_map(|w| &mut w.topics)
+                    .flat_map(|t| &mut t.terminals)
+                    .find(|t| t.id == terminal.id)
+                {
+                    *existing = terminal.clone();
+                }
+            }
+            StateChange::TerminalRemoved { terminal_id } => {
+                for topic in self.workspaces.iter_mut().flat_map(|w| &mut w.topics) {
+                    topic.terminals.retain(|t| &t.id != terminal_id);
+                }
+            }
             StateChange::SessionRemoved { session_id } => {
                 self.commands.remove(session_id);
                 for topic in self.workspaces.iter_mut().flat_map(|w| &mut w.topics) {
@@ -659,6 +721,12 @@ impl DaemonState {
 
     pub fn session(&self, id: &SessionId) -> Option<&Session> {
         self.sessions().find(|s| &s.id == id)
+    }
+
+    pub fn terminal(&self, id: &TerminalId) -> Option<&Terminal> {
+        self.topics()
+            .flat_map(|t| &t.terminals)
+            .find(|t| &t.id == id)
     }
 
     pub fn mcp_server(&self, id: &McpServerId) -> Option<&McpServer> {
@@ -724,6 +792,9 @@ pub struct Topic {
     /// Every folder it has worked in and still has. One at the repo's own path is the repo.
     pub worktrees: Vec<Worktree>,
     pub sessions: Vec<Session>,
+    /// Its shells. Tabs go in the order they were opened, agents and terminals together.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terminals: Vec<Terminal>,
     /// The device's MCP servers this topic turns on or off, against their own `enabled`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp: BTreeMap<McpServerId, bool>,
@@ -759,6 +830,44 @@ pub struct Session {
     /// client, so reading it anywhere reads it everywhere. Starting work clears it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unread: bool,
+    /// Milliseconds since the Unix epoch, which puts its tab in order.
+    #[serde(default)]
+    pub opened_at_ms: i64,
+}
+
+/// A shell in its topic's folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Terminal {
+    pub id: TerminalId,
+    /// What the program in it last called it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub status: TerminalStatus,
+    /// Milliseconds since the Unix epoch, which puts its tab in order.
+    pub opened_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalStatus {
+    Running,
+    /// No shell since the daemon started. Showing it starts one where the last one was,
+    /// below what that one left.
+    Stopped,
+    /// Its shell failed. Typing starts another. One that exits cleanly closes its tab.
+    Exited,
+    #[serde(other)]
+    Unknown,
+}
+
+/// A client's colors, as `#rrggbb`. Programs ask a terminal for these to tell dark from light.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalColors {
+    pub foreground: String,
+    pub background: String,
+    pub cursor: String,
+    /// The 16 ANSI colors, black to bright white.
+    pub palette: Vec<String>,
 }
 
 /// A slash command an agent offers. Sending `/name`, and anything after it, as a prompt runs it.
@@ -1032,6 +1141,17 @@ pub enum StateChange {
     DeviceSettingsChanged {
         settings: DeviceSettings,
     },
+    TerminalAdded {
+        topic_id: TopicId,
+        terminal: Terminal,
+    },
+    TerminalChanged {
+        terminal: Terminal,
+    },
+    /// Its tab was closed, or its shell exited cleanly.
+    TerminalRemoved {
+        terminal_id: TerminalId,
+    },
     /// Its tab was closed and its agent stopped.
     SessionRemoved {
         session_id: SessionId,
@@ -1286,6 +1406,7 @@ mod tests {
             worktree_id: "wt".into(),
             worktrees: vec![],
             sessions: vec![],
+            terminals: vec![],
             mcp: mcp
                 .iter()
                 .map(|(id, on)| (McpServerId::from(*id), *on))
@@ -1400,6 +1521,7 @@ mod tests {
             status: SessionStatus::Ready,
             title: None,
             unread: false,
+            opened_at_ms: 0,
         };
         let mut state = DaemonState {
             machine: Machine {
@@ -1416,6 +1538,7 @@ mod tests {
                     worktree_id: "wt".into(),
                     worktrees: vec![],
                     sessions: vec![session("a"), session("b"), session("c")],
+                    terminals: vec![],
                     mcp: BTreeMap::new(),
                 }],
             }],

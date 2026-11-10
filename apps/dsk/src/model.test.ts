@@ -12,6 +12,8 @@ import {
   topicWorktree,
   unreadToggle,
   withKeepAwakeToggled,
+  tabsOf,
+  tabLabel,
 } from "./model.ts";
 
 const smart: ProviderModel = {
@@ -147,4 +149,33 @@ test("keeping awake is on until turned off, and toggling it keeps the other sett
   assert.deepEqual(withKeepAwakeToggled(state()), { keep_awake: false });
   assert.equal(keepsAwake(state({ keep_awake: false })), false);
   assert.deepEqual(withKeepAwakeToggled(state({ keep_awake: false })), { keep_awake: true });
+});
+
+test("agents and terminals share one row of tabs, in the order they were opened", () => {
+  const session = (id: string, opened_at_ms?: number): Session => ({
+    id,
+    agent: "claude",
+    mode: "auto",
+    model: null,
+    status: "done",
+    title: null,
+    opened_at_ms,
+  });
+  const topic: Topic = {
+    id: "t",
+    name: "t",
+    worktree_id: "w",
+    worktrees: [],
+    sessions: [session("old"), session("agent", 300)],
+    terminals: [
+      { id: "shell", status: "running", opened_at_ms: 200 },
+      { id: "vim", title: "vim", status: "stopped", opened_at_ms: 400 },
+    ],
+  };
+  const tabs = tabsOf(topic);
+  assert.deepEqual(
+    tabs.map((tab) => tab.id),
+    ["old", "shell", "agent", "vim"],
+  );
+  assert.deepEqual(tabs.map(tabLabel), ["claude", "Terminal", "claude", "vim"]);
 });

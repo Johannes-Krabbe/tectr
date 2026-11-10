@@ -15,6 +15,7 @@ mod server;
 #[cfg(unix)]
 pub mod shell_env;
 mod store;
+mod terminal;
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -26,6 +27,7 @@ use anyhow::{Context, Result};
 pub use awake::KeepAwakeCommand;
 pub use mcp::ConfigHome;
 use protocol::MachineId;
+pub use terminal::Shell;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -47,6 +49,8 @@ pub struct Config {
     pub keep_awake: Option<KeepAwakeCommand>,
     /// Where agents keep the MCP configuration that tectr switches off and imports from.
     pub mcp_home: ConfigHome,
+    /// What starts in a new terminal.
+    pub shell: Shell,
 }
 
 impl Config {
@@ -58,6 +62,7 @@ impl Config {
             event_buffer: DEFAULT_EVENT_BUFFER,
             keep_awake: KeepAwakeCommand::system(),
             mcp_home: ConfigHome::from_env(),
+            shell: Shell::login(),
         }
     }
 }
@@ -101,6 +106,7 @@ impl Daemon {
                 keep_awake: config.keep_awake,
                 port: addr.port(),
                 config_home: config.mcp_home,
+                shell: config.shell,
             },
         )?;
         let machine_id = core.machine().id;

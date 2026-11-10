@@ -158,6 +158,70 @@ window.TECTR = {
         "type": "color",
         "value": "#a8a6b3"
       },
+      "color.terminal.black": {
+        "type": "color",
+        "value": "#201d28"
+      },
+      "color.terminal.red": {
+        "type": "color",
+        "value": "#f0766e"
+      },
+      "color.terminal.green": {
+        "type": "color",
+        "value": "#5cc99a"
+      },
+      "color.terminal.yellow": {
+        "type": "color",
+        "value": "#f0b64d"
+      },
+      "color.terminal.blue": {
+        "type": "color",
+        "value": "#8fb8f0"
+      },
+      "color.terminal.magenta": {
+        "type": "color",
+        "value": "#d9a8e8"
+      },
+      "color.terminal.cyan": {
+        "type": "color",
+        "value": "#7fcfd6"
+      },
+      "color.terminal.white": {
+        "type": "color",
+        "value": "#a8a6b3"
+      },
+      "color.terminal.bright-black": {
+        "type": "color",
+        "value": "#8a8896"
+      },
+      "color.terminal.bright-red": {
+        "type": "color",
+        "value": "#ef9995"
+      },
+      "color.terminal.bright-green": {
+        "type": "color",
+        "value": "#88d4b4"
+      },
+      "color.terminal.bright-yellow": {
+        "type": "color",
+        "value": "#efc67e"
+      },
+      "color.terminal.bright-blue": {
+        "type": "color",
+        "value": "#abc8f0"
+      },
+      "color.terminal.bright-magenta": {
+        "type": "color",
+        "value": "#dfbceb"
+      },
+      "color.terminal.bright-cyan": {
+        "type": "color",
+        "value": "#a0d8de"
+      },
+      "color.terminal.bright-white": {
+        "type": "color",
+        "value": "#edecf1"
+      },
       "color.scrim": {
         "type": "color",
         "value": "#0504088c"
@@ -339,6 +403,70 @@ window.TECTR = {
       "color.syntax.punctuation": {
         "type": "color",
         "value": "#55525f"
+      },
+      "color.terminal.black": {
+        "type": "color",
+        "value": "#16141c"
+      },
+      "color.terminal.red": {
+        "type": "color",
+        "value": "#c2332a"
+      },
+      "color.terminal.green": {
+        "type": "color",
+        "value": "#0f6e4f"
+      },
+      "color.terminal.yellow": {
+        "type": "color",
+        "value": "#8f5a00"
+      },
+      "color.terminal.blue": {
+        "type": "color",
+        "value": "#1f5fbf"
+      },
+      "color.terminal.magenta": {
+        "type": "color",
+        "value": "#94328f"
+      },
+      "color.terminal.cyan": {
+        "type": "color",
+        "value": "#0b6f78"
+      },
+      "color.terminal.white": {
+        "type": "color",
+        "value": "#e9e7ee"
+      },
+      "color.terminal.bright-black": {
+        "type": "color",
+        "value": "#66636f"
+      },
+      "color.terminal.bright-red": {
+        "type": "color",
+        "value": "#8e2a26"
+      },
+      "color.terminal.bright-green": {
+        "type": "color",
+        "value": "#115340"
+      },
+      "color.terminal.bright-yellow": {
+        "type": "color",
+        "value": "#6b4508"
+      },
+      "color.terminal.bright-blue": {
+        "type": "color",
+        "value": "#1c498e"
+      },
+      "color.terminal.bright-magenta": {
+        "type": "color",
+        "value": "#6e296d"
+      },
+      "color.terminal.bright-cyan": {
+        "type": "color",
+        "value": "#0e545c"
+      },
+      "color.terminal.bright-white": {
+        "type": "color",
+        "value": "#ffffff"
       },
       "color.scrim": {
         "type": "color",

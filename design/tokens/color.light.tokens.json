@@ -54,6 +54,24 @@
       "comment": { "$value": "{color.text.tertiary}" },
       "punctuation": { "$value": "{color.text.secondary}" }
     },
+    "terminal": {
+      "black": { "$value": "{color.text.primary}" },
+      "red": { "$value": "{color.status.failed}" },
+      "green": { "$value": "{color.status.online}" },
+      "yellow": { "$value": "{color.status.waiting}" },
+      "blue": { "$value": "{color.syntax.function}" },
+      "magenta": { "$value": "{color.syntax.constant}" },
+      "cyan": { "$value": "{color.syntax.type}" },
+      "white": { "$value": "{color.surface.control}" },
+      "bright-black": { "$value": "{color.text.tertiary}" },
+      "bright-red": { "$value": "#8e2a26" },
+      "bright-green": { "$value": "#115340" },
+      "bright-yellow": { "$value": "#6b4508" },
+      "bright-blue": { "$value": "#1c498e" },
+      "bright-magenta": { "$value": "#6e296d" },
+      "bright-cyan": { "$value": "#0e545c" },
+      "bright-white": { "$value": "{color.surface.panel}" }
+    },
     "scrim": { "$value": "#16141c40" }
   },
   "shadow": {

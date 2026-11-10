@@ -38,3 +38,9 @@
 {"type":"request","id":1,"command":{"command":"complete_mcp_login","state":"s","code":"c"}}
 {"type":"request","id":1,"command":{"command":"logout_mcp_server","id":"x1"}}
 {"type":"request","id":1,"command":{"command":"import_mcp_servers"}}
+{"type":"request","id":1,"command":{"command":"open_terminal","topic_id":"t1","cols":80,"rows":24}}
+{"type":"request","id":1,"command":{"command":"close_terminal","terminal_id":"x1"}}
+{"type":"attach_terminal","terminal_id":"x1","cols":80,"rows":24,"colors":{"foreground":"#edecf1","background":"#09080c","cursor":"#edecf1","palette":["#000000","#ff0000"]}}
+{"type":"attach_terminal","terminal_id":"x1","cols":100,"rows":30}
+{"type":"resize_terminal","terminal_id":"x1","cols":100,"rows":30}
+{"type":"detach_terminal","terminal_id":"x1"}

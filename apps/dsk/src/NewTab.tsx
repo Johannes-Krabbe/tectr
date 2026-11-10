@@ -30,7 +30,7 @@ interface Kind {
 // In the order of their keys, so the list reads as a numbered menu.
 const KINDS: Kind[] = [
   { kind: "agent", label: "Agent", icon: "agent", action: "new_tab.agent", built: true },
-  { kind: "terminal", label: "Terminal", icon: "terminal", action: "new_tab.terminal", built: false },
+  { kind: "terminal", label: "Terminal", icon: "terminal", action: "new_tab.terminal", built: true },
   { kind: "git", label: "Git", icon: "git", action: "new_tab.git", built: false },
   { kind: "diff", label: "Diff", icon: "diff", action: "new_tab.diff", built: false },
 ];
@@ -45,6 +45,7 @@ export function NewTab({
   state,
   onState,
   onSettings,
+  onTerminal,
   onStarted,
   onStalled,
 }: {
@@ -52,6 +53,8 @@ export function NewTab({
   state: NewTabState;
   onState: (state: NewTabState) => void;
   onSettings: (machineId: string) => void;
+  /** A terminal needs no setup, so choosing one opens it. */
+  onTerminal: () => void;
   onStarted: (sessionId: string) => void;
   /** The agent started but its prompt didn't reach it, so starting again would make another. */
   onStalled: (sessionId: string, reason: string) => void;
@@ -60,6 +63,10 @@ export function NewTab({
 
   const choose = (kind: TabKind) => {
     if (!KINDS.some((k) => k.kind === kind && k.built)) return;
+    if (kind === "terminal") {
+      onTerminal();
+      return;
+    }
     onState({ ...state, kind });
     focusPane();
   };

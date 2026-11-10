@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use protocol::{
     AgentCommand, Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, Machine,
     MachineId, McpServer, McpServerId, PermissionMode, Provider, Session, SessionEvent,
-    SessionEventKind, SessionId, SessionRef, SessionStatus, Topic, TopicId, Workspace, WorkspaceId,
-    Worktree, WorktreeId,
+    SessionEventKind, SessionId, SessionRef, SessionStatus, Terminal, TerminalId, TerminalStatus,
+    Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId,
 };
 
 use crate::oauth::Login;
@@ -105,6 +105,21 @@ const MIGRATIONS: &[&str] = &[
 ",
     "
     ALTER TABLE sessions ADD COLUMN commands TEXT;
+",
+    // Tabs are in the order they were opened, agents and terminals together. A session from
+    // before this was opened when its first event happened.
+    "
+    ALTER TABLE sessions ADD COLUMN opened_at_ms INTEGER NOT NULL DEFAULT 0;
+    UPDATE sessions SET opened_at_ms =
+        COALESCE((SELECT MIN(at_ms) FROM events WHERE events.session_id = sessions.id), 0);
+    CREATE TABLE terminals (
+        id TEXT PRIMARY KEY,
+        topic_id TEXT NOT NULL REFERENCES topics(id),
+        title TEXT,
+        cwd TEXT,
+        opened_at_ms INTEGER NOT NULL,
+        closed_at_ms INTEGER
+    );
 ",
 ];
 
@@ -271,7 +286,7 @@ impl Store {
             },
         )?;
         topic.sessions = self.collect(
-            "SELECT id, agent, mode, model, status, title, effort, unread
+            "SELECT id, agent, mode, model, status, title, effort, unread, opened_at_ms
              FROM sessions WHERE topic_id = ?1 AND closed_at_ms IS NULL ORDER BY rowid",
             [&topic.id.0],
             |row| {
@@ -286,6 +301,21 @@ impl Store {
                     status: from_column::<SessionStatus>(&status),
                     title: row.get(5)?,
                     unread: row.get(7)?,
+                    opened_at_ms: row.get(8)?,
+                })
+            },
+        )?;
+        // No shell outlives the daemon, so each starts again when it's next shown.
+        topic.terminals = self.collect(
+            "SELECT id, title, opened_at_ms
+             FROM terminals WHERE topic_id = ?1 AND closed_at_ms IS NULL ORDER BY rowid",
+            [&topic.id.0],
+            |row| {
+                Ok(Terminal {
+                    id: TerminalId(row.get(0)?),
+                    title: row.get(1)?,
+                    status: TerminalStatus::Stopped,
+                    opened_at_ms: row.get(2)?,
                 })
             },
         )?;
@@ -415,6 +445,61 @@ impl Store {
         Ok(())
     }
 
+    pub fn insert_terminal(
+        &self,
+        topic_id: &TopicId,
+        terminal: &Terminal,
+        cwd: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO terminals (id, topic_id, title, cwd, opened_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                terminal.id.0,
+                topic_id.0,
+                terminal.title,
+                cwd,
+                terminal.opened_at_ms
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_terminal_title(&self, id: &TerminalId, title: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE terminals SET title = ?2 WHERE id = ?1",
+            params![id.0, title],
+        )?;
+        Ok(())
+    }
+
+    /// Where its shell last was, which the next one starts in.
+    pub fn terminal_cwd(&self, id: &TerminalId) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT cwd FROM terminals WHERE id = ?1", [&id.0], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_terminal_cwd(&self, id: &TerminalId, cwd: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE terminals SET cwd = ?2 WHERE id = ?1",
+            params![id.0, cwd],
+        )?;
+        Ok(())
+    }
+
+    pub fn close_terminal(&self, id: &TerminalId, at_ms: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE terminals SET closed_at_ms = ?2 WHERE id = ?1",
+            params![id.0, at_ms],
+        )?;
+        Ok(())
+    }
+
     fn collect<P: rusqlite::Params, T>(
         &self,
         sql: &str,
@@ -530,8 +615,8 @@ impl Store {
 
     pub fn insert_session(&self, topic_id: &TopicId, session: &Session) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, topic_id, worktree_id, agent, mode, model, status, title, effort, unread)
-             VALUES (?1, ?2, (SELECT worktree_id FROM topics WHERE id = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO sessions (id, topic_id, worktree_id, agent, mode, model, status, title, effort, unread, opened_at_ms)
+             VALUES (?1, ?2, (SELECT worktree_id FROM topics WHERE id = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 session.id.0,
                 topic_id.0,
@@ -542,6 +627,7 @@ impl Store {
                 session.title,
                 session.effort,
                 session.unread,
+                session.opened_at_ms,
             ],
         )?;
         Ok(())
@@ -768,6 +854,7 @@ fn topic_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Topic> {
         worktree_id: WorktreeId(row.get(2)?),
         worktrees: vec![],
         sessions: vec![],
+        terminals: vec![],
         // Like drafts, a value a newer version wrote that doesn't parse is lost.
         mcp: mcp
             .and_then(|text| serde_json::from_str(&text).ok())
@@ -831,6 +918,7 @@ mod tests {
             status: SessionStatus::Done,
             title: None,
             unread: true,
+            opened_at_ms: 1000,
         };
         let topic = Topic {
             id: "t".into(),
@@ -842,6 +930,7 @@ mod tests {
                 branch: "tectr/topic".into(),
             }],
             sessions: vec![],
+            terminals: vec![],
             mcp: BTreeMap::new(),
         };
         let workspace = Workspace {
@@ -878,6 +967,7 @@ mod tests {
                 branch: "b".into(),
             }],
             sessions: vec![],
+            terminals: vec![],
             mcp: BTreeMap::new(),
         };
         store.insert_workspace(&workspace).unwrap();
@@ -892,6 +982,7 @@ mod tests {
                 status: SessionStatus::Done,
                 title: None,
                 unread: false,
+                opened_at_ms: 0,
             };
             store.insert_session(&topic.id, &session).unwrap();
         }
@@ -938,6 +1029,7 @@ mod tests {
             worktree_id: worktree.id.clone(),
             worktrees: vec![worktree],
             sessions: vec![],
+            terminals: vec![],
             mcp: BTreeMap::new(),
         };
         store.insert_topic(&"w".into(), &topic, auto_named).unwrap();
@@ -999,6 +1091,7 @@ mod tests {
             status: SessionStatus::Done,
             title: None,
             unread: false,
+            opened_at_ms: 0,
         };
         store.insert_session(&topic.id, &session).unwrap();
 
@@ -1123,6 +1216,7 @@ mod tests {
                 branch: "b".into(),
             }],
             sessions: vec![],
+            terminals: vec![],
             mcp: BTreeMap::new(),
         };
         store.insert_topic(&workspace.id, &topic, false).unwrap();
@@ -1139,6 +1233,7 @@ mod tests {
                     status: SessionStatus::Ready,
                     title: None,
                     unread: false,
+                    opened_at_ms: 0,
                 },
             )
             .unwrap();
