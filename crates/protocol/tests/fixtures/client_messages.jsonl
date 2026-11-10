@@ -38,3 +38,8 @@
 {"type":"request","id":1,"command":{"command":"complete_mcp_login","state":"s","code":"c"}}
 {"type":"request","id":1,"command":{"command":"logout_mcp_server","id":"x1"}}
 {"type":"request","id":1,"command":{"command":"import_mcp_servers"}}
+{"type":"request","id":1,"command":{"command":"send_prompt","session_id":"s1","text":"see [Image #1]","images":[{"id":"ab12","number":1,"mime":"image/png","width":1440,"height":900}]}}
+{"type":"request","id":1,"command":{"command":"set_draft","session_id":"s1","text":"see [Image #1]","images":[{"id":"ab12","number":1,"mime":"image/png","width":1440,"height":900}]}}
+{"type":"request","id":1,"command":{"command":"add_image","mime":"image/png","data":"iVBORw0KGgo="}}
+{"type":"request","id":1,"command":{"command":"read_image","id":"ab12"}}
+{"type":"request","id":1,"command":{"command":"read_image","id":"ab12","thumbnail":true}}

@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table};
 
-const SUBTABLES: &[&str] = &["text", "code", "layout", "transcript", "vim"];
+const SUBTABLES: &[&str] = &["text", "code", "layout", "transcript", "images", "vim"];
 const THEMES_KEY: &str = "themes";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -125,6 +125,10 @@ pub const GROUPS: &[FieldGroup] = &[
     FieldGroup {
         id: "transcript",
         title: "Transcript",
+    },
+    FieldGroup {
+        id: "images",
+        title: "Images",
     },
     FieldGroup {
         id: "vim",
@@ -417,6 +421,22 @@ const FIELDS: &[Field] = &[
         group: "transcript",
         label: "Animations",
         about: "The sweep over what an agent is working on, messages typing out as they stream, and scrolling easing into place",
+        default: DefaultValue::Flag(true),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "images.message_box",
+        group: "images",
+        label: "Thumbnails in the message box",
+        about: "The images you've pasted, above what you're typing. [Image #1] in the text shows each one either way",
+        default: DefaultValue::Flag(true),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "images.transcript",
+        group: "images",
+        label: "Thumbnails above your messages",
+        about: "The images a sent message has. [Image #1] in its text shows each one either way",
         default: DefaultValue::Flag(true),
         kind: Kind::Toggle,
     },
@@ -1551,6 +1571,17 @@ mod tests {
             Value::Text("shown".into())
         );
         assert_eq!(value(&values, "transcript.animate"), Value::Flag(false));
+    }
+
+    #[test]
+    fn image_thumbnails_show_in_both_places_until_each_is_turned_off() {
+        let defaults = Values::default();
+        assert_eq!(value(&defaults, "images.message_box"), Value::Flag(true));
+        assert_eq!(value(&defaults, "images.transcript"), Value::Flag(true));
+        let (values, problems) = parsed("[appearance.images]\ntranscript = false\n");
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(value(&values, "images.message_box"), Value::Flag(true));
+        assert_eq!(value(&values, "images.transcript"), Value::Flag(false));
     }
 
     #[test]

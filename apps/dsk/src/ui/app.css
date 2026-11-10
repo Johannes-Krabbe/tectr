@@ -447,11 +447,19 @@ button.row:hover { background: var(--color-surface-raised); }
 
 .empty { color: var(--color-text-tertiary); }
 
-/* A step above the raised code blocks in replies, so your messages don't read as one.
-   Aligning itself in the column makes the box only as wide as its text. */
-.you {
+/* Aligning itself in the column makes the message only as wide as its text, with its
+   images above it. */
+.you-group {
   align-self: flex-end;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-xs);
   max-width: calc(100% * 5 / 6);
+}
+
+/* A step above the raised code blocks in replies, so your messages don't read as one. */
+.you {
   padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-md);
   background: var(--color-surface-control);
@@ -769,6 +777,202 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 }
 
 .composer textarea[data-vim="normal"] { caret-color: var(--color-text-primary); }
+
+.composer-images {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.composer:has(.dropping) {
+  border-style: dashed;
+  border-color: var(--color-accent-text);
+  background: var(--color-accent-tint);
+}
+
+/* The text box sits on a copy of its text in the same cell, so the two wrap alike. The copy
+   is invisible apart from the marks behind each image's token. */
+.composer-field { display: grid; }
+
+.composer-field > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.composer-field textarea { position: relative; }
+
+.composer-marks {
+  max-height: 200px;
+  overflow: hidden;
+  color: transparent;
+  font: var(--text-body);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* The shadow and outline reach past the text without moving it, which would put the marks
+   out of line with the text above them. */
+.composer-marks mark,
+.you-token {
+  border-radius: var(--radius-xs);
+  background: var(--color-accent-tint);
+  box-shadow: 0 0 0 2px var(--color-accent-tint);
+}
+
+.composer-marks mark { color: transparent; }
+.you-token { cursor: pointer; }
+
+.composer-marks mark.on,
+.you-token.on {
+  outline: 1px solid var(--color-accent-text);
+  outline-offset: 2px;
+}
+
+.image-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.image-tray.sent { justify-content: flex-end; }
+
+.image-thumb {
+  position: relative;
+  width: calc(52 * var(--unit));
+  height: calc(40 * var(--unit));
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-control);
+  box-shadow: 0 0 0 1px var(--color-line-subtle);
+}
+
+.image-tray.sent .image-thumb {
+  width: calc(112 * var(--unit));
+  height: calc(76 * var(--unit));
+  border-radius: var(--radius-md);
+}
+
+.image-thumb.on { box-shadow: 0 0 0 1.5px var(--color-accent-text); }
+
+.image-thumb-open {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.image-thumb img,
+.image-frame img,
+.viewer-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.image-frame img,
+.viewer-frame img { object-fit: contain; }
+
+.image-number {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  padding: 0 3px;
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-overlay);
+  color: var(--color-text-secondary);
+  font: var(--text-meta);
+  pointer-events: none;
+}
+
+.image-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: calc(16 * var(--unit));
+  height: calc(16 * var(--unit));
+  border-radius: 50%;
+  background: var(--color-surface-overlay);
+  color: var(--color-text-primary);
+}
+
+.image-thumb:hover .image-remove { display: inline-flex; }
+
+.image-remove .icon {
+  width: calc(10 * var(--unit));
+  height: calc(10 * var(--unit));
+}
+
+/* Above what comes after it in the pane, such as the message box under a sent message. */
+.image-peek {
+  position: fixed;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  padding: var(--space-xs);
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-popover);
+  pointer-events: none;
+}
+
+.image-frame {
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-control);
+}
+
+.image-caption {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-2xs) 0;
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+  white-space: nowrap;
+}
+
+.image-caption b {
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.image-keys {
+  margin-left: auto;
+  padding-left: var(--space-md);
+}
+
+.viewer {
+  position: fixed;
+  z-index: 1;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  background: var(--color-scrim);
+  outline: 0;
+}
+
+.viewer-frame {
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-panel);
+  box-shadow: var(--shadow-sheet);
+}
+
+.viewer-caption {
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-overlay);
+}
 
 .composer textarea::placeholder,
 .sheet input::placeholder {

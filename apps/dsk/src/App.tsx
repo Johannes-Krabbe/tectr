@@ -7,6 +7,7 @@ import {
   type Approval,
   type Device,
   errorText,
+  type PromptImage,
   request,
   type Session,
   type Topic,
@@ -75,6 +76,9 @@ import { TopicMcpSheet } from "./TopicMcp";
 import { Icon } from "./ui/Icon";
 import { ShortcutBar } from "./ui/ShortcutBar";
 import { Keys, StatusIcon } from "./ui/StatusIcon";
+
+/** One for every session without draft images, so a pane's images stay the same object. */
+const NO_IMAGES: PromptImage[] = [];
 
 const TAB_ACTIONS: ActionId[] = [
   "global.tab_1",
@@ -1014,6 +1018,7 @@ export function App() {
                   online={isOnline(entry.device)}
                   approvals={approvals}
                   draft={entry.device.state?.drafts?.[session.id] ?? ""}
+                  draftImages={entry.device.state?.draft_images?.[session.id] ?? NO_IMAGES}
                   commands={entry.device.state?.commands?.[session.id]}
                   worktree={topicWorktree(entry.topic)}
                   onInterrupt={isActive(session) ? interrupt : undefined}

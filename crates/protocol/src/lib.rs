@@ -107,6 +107,9 @@ id_type!(
     SessionId,
     ApprovalId,
     McpServerId,
+    /// Names an image by what's in it, so the same image always has the same ID, on any
+    /// device. See [`Command::AddImage`].
+    ImageId,
 );
 
 /// Identifies a session across all daemons.
@@ -247,6 +250,25 @@ pub enum Command {
     SendPrompt {
         session_id: SessionId,
         text: String,
+        /// Each one must have been given to this daemon with [`Command::AddImage`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<PromptImage>,
+    },
+    /// Keep an image for a draft or a prompt, and answer with its ID as
+    /// [`CommandOutput::ImageAdded`]. Adding the same image again is harmless.
+    AddImage {
+        /// One of [`IMAGE_TYPES`].
+        mime: String,
+        /// Base64, at most [`MAX_IMAGE_BYTES`] once decoded.
+        data: String,
+    },
+    /// Answered with [`CommandOutput::Image`].
+    ReadImage {
+        id: ImageId,
+        /// A copy at most [`THUMBNAIL_EDGE`] on its long side, for thumbnails and previews.
+        /// An image that's already that small comes as it is.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        thumbnail: bool,
     },
     /// Interrupt the current turn.
     CancelTurn {
@@ -303,6 +325,8 @@ pub enum Command {
     SetDraft {
         session_id: SessionId,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<PromptImage>,
     },
     /// Stop the agent and remove its tab. Fails with [`ErrorCode::Busy`] while the agent
     /// is starting, working or waiting, unless `force` says the person has confirmed.
@@ -399,6 +423,15 @@ pub enum CommandOutput {
         added: Vec<String>,
         /// Why each server that wasn't added was left out.
         skipped: Vec<String>,
+    },
+    ImageAdded {
+        id: ImageId,
+    },
+    Image {
+        /// Base64.
+        data: String,
+        /// A thumbnail can be a different type from its image.
+        mime: String,
     },
     Done,
     #[serde(other)]
@@ -519,6 +552,10 @@ pub struct DaemonState {
     /// What's typed for each session but not sent yet.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drafts: BTreeMap<SessionId, String>,
+    /// The images in each session's draft, kept apart from `drafts` so its format stays
+    /// what older clients read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub draft_images: BTreeMap<SessionId, Vec<PromptImage>>,
     /// The slash commands each session's agent last said it has. Kept apart from `Session`,
     /// because a long list would otherwise travel with every status change.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -606,11 +643,20 @@ impl DaemonState {
                     topic.sessions.retain(|s| &s.id != session_id);
                 }
             }
-            StateChange::DraftChanged { session_id, text } => {
+            StateChange::DraftChanged {
+                session_id,
+                text,
+                images,
+            } => {
                 if text.is_empty() {
                     self.drafts.remove(session_id);
                 } else {
                     self.drafts.insert(session_id.clone(), text.clone());
+                }
+                if images.is_empty() {
+                    self.draft_images.remove(session_id);
+                } else {
+                    self.draft_images.insert(session_id.clone(), images.clone());
                 }
             }
             StateChange::CommandsChanged {
@@ -1036,10 +1082,12 @@ pub enum StateChange {
     SessionRemoved {
         session_id: SessionId,
     },
-    /// Empty means there's no draft any more.
+    /// No text and no images means there's no draft any more.
     DraftChanged {
         session_id: SessionId,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<PromptImage>,
     },
     /// The session's agent has a new list of slash commands. Empty means it has none. Closing
     /// or archiving drops a session's list without this.
@@ -1090,6 +1138,37 @@ pub enum PermissionOptionKind {
     Unknown,
 }
 
+/// The image types agents take.
+pub const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// The long side of the copy [`Command::ReadImage`] gives for a thumbnail. Previews show at
+/// most 320 points, and screens have two pixels to a point.
+pub const THUMBNAIL_EDGE: u32 = 640;
+
+/// The most an image can be, decoded. Model APIs refuse much bigger ones, and it keeps a
+/// prompt well inside a websocket frame.
+pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+
+/// An image in a prompt or a draft. Its bytes stay with the daemon, so events and drafts stay
+/// small.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptImage {
+    pub id: ImageId,
+    /// What the text calls it: `[Image #3]` is number 3. Numbers count up through a session,
+    /// so a number means the same image for the whole conversation.
+    pub number: u32,
+    pub mime: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PromptImage {
+    /// How the text refers to it.
+    pub fn token(&self) -> String {
+        format!("[Image #{}]", self.number)
+    }
+}
+
 /// One entry in a session's history. `seq` starts at 1 and has no gaps, so a
 /// client can reconnect and ask for everything after the last one it saw.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1117,6 +1196,8 @@ pub enum SessionEventKind {
     },
     UserPrompt {
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<PromptImage>,
     },
     AgentMessage {
         text: String,
@@ -1300,6 +1381,7 @@ mod tests {
             approvals: vec![],
             providers: vec![],
             drafts: BTreeMap::new(),
+            draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
             mcp_servers: vec![
@@ -1335,6 +1417,7 @@ mod tests {
             approvals: vec![],
             providers: vec![],
             drafts: BTreeMap::new(),
+            draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
             mcp_servers: vec![],
@@ -1422,6 +1505,7 @@ mod tests {
             approvals: vec![],
             providers: vec![],
             drafts: BTreeMap::new(),
+            draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
             mcp_servers: vec![],

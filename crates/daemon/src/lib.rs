@@ -9,6 +9,7 @@ mod core;
 mod folders;
 mod git;
 mod http;
+mod images;
 mod mcp;
 mod oauth;
 mod server;
@@ -106,6 +107,7 @@ impl Daemon {
         let machine_id = core.machine().id;
         tokio::spawn(core.clone().refresh_providers());
         tokio::spawn(core.clone().refresh_branches(None));
+        tokio::spawn(core.clone().collect_images());
         let (shutdown, shutdown_rx) = watch::channel(false);
         let accept_task = tokio::spawn(server::accept_loop(core.clone(), listener, shutdown_rx));
 

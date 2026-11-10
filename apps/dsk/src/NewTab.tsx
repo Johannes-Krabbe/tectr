@@ -79,6 +79,7 @@ export function NewTab({
         command: "send_prompt",
         session_id: started.session.id,
         text: choice.text,
+        images: choice.images,
       });
       onStarted(started.session.id);
     } catch (reason) {

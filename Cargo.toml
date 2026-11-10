@@ -25,6 +25,8 @@ bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+# Only the types agents take, for the daemon's thumbnails.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # Rustls rather than the system's TLS, so a daemon on Linux needs no OpenSSL.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json", "form"] }
 sha2 = "0.10"

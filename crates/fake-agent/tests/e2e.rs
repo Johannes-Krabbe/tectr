@@ -12,9 +12,9 @@ use engine::{Connection, Engine, EngineError};
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
     AgentCommand, Approval, ArchiveRisk, ClientMessage, Command, CommandOutput, DaemonState,
-    ErrorCode, MachineId, MoveTarget, PermissionMode, PermissionOutcome, ServerMessage, Session,
-    SessionEventKind, SessionRef, SessionStatus, StopReason, Topic, TopicId, Workspace,
-    WorktreeRisk,
+    ErrorCode, MachineId, MoveTarget, PermissionMode, PermissionOutcome, PromptImage,
+    ServerMessage, Session, SessionEventKind, SessionRef, SessionStatus, StopReason, Topic,
+    TopicId, Workspace, WorktreeRisk,
 };
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -205,6 +205,7 @@ async fn prompt(
             Command::SendPrompt {
                 session_id: session.session_id.clone(),
                 text: text.to_owned(),
+                images: vec![],
             },
         )
         .await
@@ -1373,6 +1374,7 @@ async fn every_client_sees_the_same_tabs_and_drafts() {
             Command::SetDraft {
                 session_id: older.session_id.clone(),
                 text: "half a tho".to_owned(),
+                images: vec![],
             },
         )
         .await
@@ -1402,6 +1404,195 @@ async fn every_client_sees_the_same_tabs_and_drafts() {
     daemon.shutdown().await;
 }
 
+/// A real one-pixel PNG, because the daemon only keeps images agents can read.
+const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+async fn add_image(engine: &Engine, machine: &MachineId, data: &str) -> PromptImage {
+    let command = Command::AddImage {
+        mime: "image/png".to_owned(),
+        data: data.to_owned(),
+    };
+    match engine.request(machine, command).await.unwrap() {
+        CommandOutput::ImageAdded { id } => PromptImage {
+            id,
+            number: 1,
+            mime: "image/png".to_owned(),
+            width: 4,
+            height: 3,
+        },
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn images_go_to_the_agent_by_name_and_stay_with_the_daemon() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let other = connect(&daemon).await;
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    let image = add_image(&engine, &machine, PIXEL).await;
+
+    // A draft's images reach every client.
+    engine
+        .request(
+            &machine,
+            Command::SetDraft {
+                session_id: session.session_id.clone(),
+                text: "images [Image #1]".to_owned(),
+                images: vec![image.clone()],
+            },
+        )
+        .await
+        .unwrap();
+    wait_for("the other client to see the draft's image", || {
+        (state_of(&other).draft_images.get(&session.session_id) == Some(&vec![image.clone()]))
+            .then_some(())
+    })
+    .await;
+
+    engine
+        .request(
+            &machine,
+            Command::SendPrompt {
+                session_id: session.session_id.clone(),
+                text: "images [Image #1]".to_owned(),
+                images: vec![image.clone()],
+            },
+        )
+        .await
+        .unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    assert_eq!(
+        agent_text(&engine, &session),
+        [format!("[Image #1] image/png {PIXEL}")]
+    );
+    let sent = engine
+        .events_after(&session, 0)
+        .into_iter()
+        .find_map(|event| match event.kind {
+            SessionEventKind::UserPrompt { images, .. } => Some(images),
+            _ => None,
+        });
+    assert_eq!(sent, Some(vec![image.clone()]));
+    assert!(state_of(&engine).draft_images.is_empty());
+
+    let read = engine
+        .request(
+            &machine,
+            Command::ReadImage {
+                id: image.id.clone(),
+                thumbnail: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        read,
+        CommandOutput::Image {
+            data: PIXEL.to_owned(),
+            mime: "image/png".to_owned(),
+        }
+    );
+    // One already small enough is its own thumbnail.
+    let thumbnail = engine
+        .request(
+            &machine,
+            Command::ReadImage {
+                id: image.id.clone(),
+                thumbnail: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(thumbnail, read);
+
+    // An image the daemon was never given can't be sent.
+    let unknown = PromptImage {
+        id: "0".repeat(64).as_str().into(),
+        ..image
+    };
+    let refused = engine
+        .request(
+            &machine,
+            Command::SendPrompt {
+                session_id: session.session_id.clone(),
+                text: "images".to_owned(),
+                images: vec![unknown],
+            },
+        )
+        .await;
+    assert!(matches!(
+        refused,
+        Err(EngineError::Command(error)) if error.code == ErrorCode::NotFound
+    ));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_doesnt_take_images_fails_the_turn_instead() {
+    let fixture = Fixture::new();
+    let mut config = fixture.config("d", 0);
+    config.agents.insert(
+        "blind".to_owned(),
+        AgentLauncher::Command {
+            program: env!("CARGO_BIN_EXE_fake-agent").into(),
+            args: vec!["--no-images".to_owned()],
+        },
+    );
+    let daemon = Daemon::start(config).await.unwrap();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let session = start_agent(
+        &engine,
+        &machine,
+        &topic.id,
+        "blind",
+        PermissionMode::Auto,
+        None,
+    )
+    .await
+    .unwrap();
+    let session = SessionRef {
+        machine_id: machine.clone(),
+        session_id: session.id,
+    };
+    engine.open_session(&session);
+    let image = add_image(&engine, &machine, PIXEL).await;
+    engine
+        .request(
+            &machine,
+            Command::SendPrompt {
+                session_id: session.session_id.clone(),
+                text: "images [Image #1]".to_owned(),
+                images: vec![image],
+            },
+        )
+        .await
+        .unwrap();
+
+    wait_for_status(&engine, &session, SessionStatus::Failed).await;
+    assert!(
+        engine
+            .events_after(&session, 0)
+            .iter()
+            .any(|event| matches!(
+                &event.kind,
+                SessionEventKind::Error { message } if message.contains("doesn't take images")
+            ))
+    );
+    assert!(agent_text(&engine, &session).is_empty());
+
+    // Without images it carries on.
+    prompt(&engine, &session, "echo fine").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    assert_eq!(agent_text(&engine, &session), ["fine"]);
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sending_a_prompt_clears_its_draft() {
     let fixture = Fixture::new();
@@ -1416,6 +1607,7 @@ async fn sending_a_prompt_clears_its_draft() {
             Command::SetDraft {
                 session_id: session.session_id.clone(),
                 text: "echo hi".to_owned(),
+                images: vec![],
             },
         )
         .await
@@ -1444,6 +1636,7 @@ async fn closing_a_finished_tab_kills_its_agent_and_drops_its_draft() {
     let draft = Command::SetDraft {
         session_id: second.session_id.clone(),
         text: "never sent".to_owned(),
+        images: vec![],
     };
     engine.request(&machine, draft).await.unwrap();
 

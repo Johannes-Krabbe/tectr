@@ -88,6 +88,7 @@ export function NewTopic({
         command: "send_prompt",
         session_id: started.session.id,
         text: choice.text,
+        images: choice.images,
       });
       onStarted(machineId, topic.id, started.session.id);
     } catch (reason) {

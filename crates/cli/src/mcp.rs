@@ -696,6 +696,7 @@ mod tests {
             approvals: vec![],
             providers: vec![],
             drafts: BTreeMap::new(),
+            draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: protocol::DeviceSettings::default(),
             mcp_servers: servers,

@@ -151,6 +151,18 @@ export interface Folder {
   is_repo: boolean;
 }
 
+/** An image in a prompt or a draft. Its bytes stay with the daemon: see `add_image` and
+ * `read_image`. */
+export interface PromptImage {
+  /** The SHA-256 of its bytes, so the same image has the same ID on every device. */
+  id: string;
+  /** What the text calls it: `[Image #3]` is number 3. Numbers count up through a session. */
+  number: number;
+  mime: string;
+  width: number;
+  height: number;
+}
+
 export interface DaemonState {
   machine: { id: string; name: string };
   workspaces: Workspace[];
@@ -158,6 +170,8 @@ export interface DaemonState {
   providers?: Provider[];
   /** What's typed for each session but not sent yet. */
   drafts?: Record<string, string>;
+  /** The images in each session's draft. */
+  draft_images?: Record<string, PromptImage[]>;
   /** The slash commands each session's agent last said it has. */
   commands?: Record<string, AgentCommand[]>;
   /** Left out while every value is its default. */
@@ -220,7 +234,7 @@ export interface SessionRef {
 export type SessionEventKind =
   | { event: "status_changed"; status: SessionStatus }
   | { event: "agent_ready"; name: string; version: string | null; current_mode: string | null }
-  | { event: "user_prompt"; text: string }
+  | { event: "user_prompt"; text: string; images?: PromptImage[] }
   | { event: "agent_message"; text: string }
   | { event: "agent_thought"; text: string }
   | { event: "tool_call"; id: string; tool: ToolCallPatch }
@@ -254,7 +268,11 @@ export type Command =
       model: string | null;
       effort?: string | null;
     }
-  | { command: "send_prompt"; session_id: string; text: string }
+  | { command: "send_prompt"; session_id: string; text: string; images?: PromptImage[] }
+  /** Base64 data, answered with `image_added`. */
+  | { command: "add_image"; mime: string; data: string }
+  /** A thumbnail is a copy at most 640 px on its long side, or the image if it's smaller. */
+  | { command: "read_image"; id: string; thumbnail?: boolean }
   | { command: "cancel_turn"; session_id: string }
   | { command: "answer_approval"; approval_id: string; option_id: string }
   | { command: "rename_machine"; name: string }
@@ -276,7 +294,7 @@ export type Command =
       effort: string | null;
     }
   | { command: "set_unread"; session_id: string; unread: boolean }
-  | { command: "set_draft"; session_id: string; text: string }
+  | { command: "set_draft"; session_id: string; text: string; images?: PromptImage[] }
   | { command: "close_session"; session_id: string; force?: boolean }
   | {
       command: "save_mcp_server";
@@ -310,6 +328,9 @@ export type CommandOutput =
   | { output: "mcp_login"; url: string }
   /** The names added, and why each one left out was. */
   | { output: "mcp_import"; added: string[]; skipped: string[] }
+  | { output: "image_added"; id: string }
+  /** Base64. A thumbnail can be a different type from its image. */
+  | { output: "image"; data: string; mime: string }
   | { output: "done" }
   | { output: "unknown" };
 

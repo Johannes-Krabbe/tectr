@@ -342,6 +342,7 @@ async fn main() -> Result<()> {
                     Command::SendPrompt {
                         session_id: session.session_id,
                         text,
+                        images: vec![],
                     },
                 )
                 .await?;
@@ -715,7 +716,7 @@ impl Printer {
                 version.as_deref().unwrap_or(""),
                 current_mode.as_deref().unwrap_or("unknown"),
             ),
-            SessionEventKind::UserPrompt { text } => println!("> {text}"),
+            SessionEventKind::UserPrompt { text, .. } => println!("> {text}"),
             SessionEventKind::ToolCall { id, tool }
             | SessionEventKind::ToolCallUpdate { id, tool } => self.print_tool(id, tool),
             SessionEventKind::PermissionRequested { approval } => print_approval(approval),
@@ -819,6 +820,7 @@ async fn chat(engine: &Engine, session: &SessionRef) -> Result<()> {
                     None => Command::SendPrompt {
                         session_id: session.session_id.clone(),
                         text: line.to_owned(),
+                        images: vec![],
                     },
                 };
                 if let Err(error) = engine.request(&session.machine_id, command).await {

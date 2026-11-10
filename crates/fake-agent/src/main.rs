@@ -18,6 +18,9 @@
 //! - `mcp`: reports the MCP servers the session was opened with, and its `_meta`.
 //! - `mcp-call NAME`: sends an MCP initialize request to the HTTP server NAME and
 //!   reports the status and body it got back.
+//! - `images`: reports each image in the prompt as the text before it, its type and its data.
+//!
+//! It takes images in prompts unless started with `--no-images`.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -27,7 +30,7 @@ use agent_client_protocol::v1::schema::{
     AgentCapabilities, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
     CancelNotification, ContentBlock, ContentChunk, Implementation, InitializeRequest,
     InitializeResponse, McpCapabilities, McpServer, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+    PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
     RequestPermissionOutcome, RequestPermissionRequest, ResumeSessionRequest,
     ResumeSessionResponse, SessionCapabilities, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOption, SessionId, SessionInfoUpdate, SessionMode, SessionModeState,
@@ -111,6 +114,7 @@ async fn main() -> Result<(), Error> {
         ..State::default()
     }));
     let cancel = Arc::new(Notify::new());
+    let images = !std::env::args().any(|arg| arg == "--no-images");
 
     let on_new = state.clone();
     let on_resume = state.clone();
@@ -132,7 +136,8 @@ async fn main() -> Result<(), Error> {
                                     SessionCapabilities::new()
                                         .resume(SessionResumeCapabilities::new()),
                                 )
-                                .mcp_capabilities(McpCapabilities::new().http(true)),
+                                .mcp_capabilities(McpCapabilities::new().http(true))
+                                .prompt_capabilities(PromptCapabilities::new().image(images)),
                         )
                         .agent_info(Implementation::new("fake-agent", "0.0.0")),
                 )
@@ -229,14 +234,11 @@ async fn run_turn(
     request: PromptRequest,
 ) -> Result<StopReason, Error> {
     let session_id = request.session_id;
-    let text: String = request
-        .prompt
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .collect();
+    // The script is the first block. Any after it are images and the names they go by.
+    let text = match request.prompt.first() {
+        Some(ContentBlock::Text(text)) => text.text.clone(),
+        _ => String::new(),
+    };
     // A note from the daemon comes first. Repeating it lets tests see it arrived.
     let text = match text.split_once("\n\n") {
         Some((note, script)) if note.starts_with("[tectr]") => {
@@ -248,6 +250,20 @@ async fn run_turn(
     let mut words = text.split_whitespace();
 
     match words.next().unwrap_or_default() {
+        "images" => {
+            let mut label = String::new();
+            for block in request.prompt.iter().skip(1) {
+                match block {
+                    ContentBlock::Text(text) => label.clone_from(&text.text),
+                    ContentBlock::Image(image) => say(
+                        connection,
+                        &session_id,
+                        &format!("{label} {} {}", image.mime_type, image.data),
+                    )?,
+                    _ => {}
+                }
+            }
+        }
         "echo" => {
             for word in words {
                 say(connection, &session_id, word)?;

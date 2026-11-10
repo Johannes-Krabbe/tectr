@@ -15,20 +15,24 @@ use anyhow::{Context, Result};
 use protocol::{
     AgentCommand, Approval, ApprovalId, ArchiveRisk, Command, CommandError, CommandOutput,
     DaemonState, DeviceSettings, ErrorCode, Machine, MachineId, MoveTarget, PermissionMode,
-    PermissionOption, PermissionOutcome, Provider, ProviderCandidate, Session, SessionEvent,
-    SessionEventKind, SessionId, SessionRef, SessionStatus, StateChange, StopReason, ToolCallPatch,
-    Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
+    PermissionOption, PermissionOutcome, PromptImage, Provider, ProviderCandidate, Session,
+    SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, StateChange, StopReason,
+    ToolCallPatch, Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::agents::AgentLauncher;
 use crate::awake::{KeepAwake, KeepAwakeCommand};
+use crate::images::{self, Images};
 use crate::mcp::ConfigHome;
 use crate::store::Store;
 use crate::{acp, folders, git};
 
 mod mcp;
+
+/// How often image files nothing names are looked for, besides at startup.
+const COLLECT_IMAGES_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// A live update for connected clients.
 #[derive(Debug, Clone)]
@@ -45,9 +49,16 @@ pub struct SessionSettings {
     pub effort: Option<String>,
 }
 
+/// What an agent is sent for a prompt.
+pub struct Prompt {
+    pub text: String,
+    /// Each with its bytes in base64.
+    pub images: Vec<(PromptImage, String)>,
+}
+
 /// What the rest of the daemon can ask a running agent to do.
 pub enum SessionCommand {
-    Prompt(String),
+    Prompt(Prompt),
     Cancel,
     /// Answered with why the agent couldn't change, if it couldn't.
     Configure {
@@ -93,6 +104,7 @@ pub struct Core {
     inner: Mutex<Inner>,
     signals: broadcast::Sender<Signal>,
     data_dir: PathBuf,
+    images: Images,
     /// What the machine is called until someone names it.
     hostname: String,
     agents: BTreeMap<String, AgentLauncher>,
@@ -155,6 +167,7 @@ impl Core {
             inner: Mutex::new(inner),
             signals,
             data_dir: data_dir.to_owned(),
+            images: Images::new(data_dir),
             hostname,
             agents,
             adapter_install: tokio::sync::Mutex::new(()),
@@ -233,7 +246,31 @@ impl Core {
                 model,
                 effort,
             } => self.start_session(topic_id, agent, mode, model, effort),
-            Command::SendPrompt { session_id, text } => self.send_prompt(&session_id, text),
+            Command::SendPrompt {
+                session_id,
+                text,
+                images,
+            } => self.send_prompt(&session_id, text, images),
+            Command::AddImage { mime, data } => {
+                let images = self.images.clone();
+                blocking(move || images.add(&mime, &data))
+                    .await?
+                    .map(|id| CommandOutput::ImageAdded { id })
+                    .map_err(|error| invalid(format!("{error:#}")))
+            }
+            Command::ReadImage { id, thumbnail } => {
+                if !self.images.has(&id) {
+                    return Err(not_found("image", &id));
+                }
+                let images = self.images.clone();
+                blocking(move || images.read(&id, thumbnail))
+                    .await?
+                    .map(|image| CommandOutput::Image {
+                        data: image.data,
+                        mime: image.mime,
+                    })
+                    .map_err(internal)
+            }
             Command::CancelTurn { session_id } => self.cancel_turn(&session_id),
             Command::AnswerApproval {
                 approval_id,
@@ -263,7 +300,11 @@ impl Core {
                 self.set_session_settings(&session_id, settings).await
             }
             Command::SetUnread { session_id, unread } => self.set_unread(&session_id, unread),
-            Command::SetDraft { session_id, text } => self.set_draft(session_id, text),
+            Command::SetDraft {
+                session_id,
+                text,
+                images,
+            } => self.set_draft(session_id, text, images),
             Command::CloseSession { session_id, force } => self.close_session(&session_id, force),
             Command::SaveMcpServer {
                 id,
@@ -496,7 +537,7 @@ impl Core {
                 inner.set_status(&session.id, SessionStatus::Stopped);
             }
             // The topic is already archived in the database, so this can't turn back now.
-            if let Err(error) = inner.set_draft(&session.id, String::new()) {
+            if let Err(error) = inner.clear_draft(&session.id) {
                 tracing::error!(id = %session.id, "failed to clear a draft: {error:#}");
             }
         }
@@ -1000,13 +1041,25 @@ impl Core {
         self: &Arc<Self>,
         session_id: &SessionId,
         text: String,
+        images: Vec<PromptImage>,
     ) -> Result<CommandOutput, CommandError> {
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && images.is_empty() {
             return Err(invalid("the prompt is empty"));
         }
         if let Some(reason) = protocol::refused_prompt(&text) {
             return Err(invalid(reason));
         }
+        // Read before taking the lock, which nothing should wait on the disk for.
+        let attached = images
+            .iter()
+            .map(|image| {
+                let read = self
+                    .images
+                    .read(&image.id, false)
+                    .map_err(|_| not_found("image", &image.id))?;
+                Ok((image.clone(), read.data))
+            })
+            .collect::<Result<Vec<_>, CommandError>>()?;
         let mut inner = self.lock();
         let session = inner
             .state
@@ -1037,14 +1090,14 @@ impl Core {
             _ => text.clone(),
         };
 
-        inner.append(
-            session_id,
-            SessionEventKind::UserPrompt { text: text.clone() },
-        );
+        inner.append(session_id, SessionEventKind::UserPrompt { text, images });
         inner.set_status(session_id, SessionStatus::Working);
         let live = inner.live.get(session_id).expect("made live just above");
         live.commands
-            .send(SessionCommand::Prompt(sent))
+            .send(SessionCommand::Prompt(Prompt {
+                text: sent,
+                images: attached,
+            }))
             .map_err(|_| internal(anyhow::anyhow!("the agent has just exited")))?;
         if told.as_ref() != Some(&folder.path)
             && let Err(error) = inner.store.set_agent_cwd(session_id, &folder.path)
@@ -1052,7 +1105,7 @@ impl Core {
             tracing::error!(%session_id, "failed to store the agent's folder: {error:#}");
         }
         // It's been sent, so it's no longer a draft. A failure above leaves it in place.
-        if let Err(error) = inner.set_draft(session_id, String::new()) {
+        if let Err(error) = inner.clear_draft(session_id) {
             tracing::error!(%session_id, "failed to clear a draft: {error:#}");
         }
         Ok(CommandOutput::Done)
@@ -1228,12 +1281,18 @@ impl Core {
         &self,
         session_id: SessionId,
         text: String,
+        images: Vec<PromptImage>,
     ) -> Result<CommandOutput, CommandError> {
+        if let Some(image) = images.iter().find(|image| !self.images.has(&image.id)) {
+            return Err(not_found("image", &image.id));
+        }
         let mut inner = self.lock();
         if inner.state.session(&session_id).is_none() {
             return Err(not_found("session", &session_id));
         }
-        inner.set_draft(&session_id, text).map_err(internal)?;
+        inner
+            .set_draft(&session_id, text, images)
+            .map_err(internal)?;
         Ok(CommandOutput::Done)
     }
 
@@ -1266,10 +1325,44 @@ impl Core {
         inner.emit(StateChange::SessionRemoved {
             session_id: session_id.clone(),
         });
-        inner
-            .set_draft(session_id, String::new())
-            .map_err(internal)?;
+        inner.clear_draft(session_id).map_err(internal)?;
         Ok(CommandOutput::Done)
+    }
+
+    /// Removes the image files no draft or sent prompt names, now and then every few hours.
+    /// Prompts in closed and archived tabs count, because their transcripts can still be read.
+    pub async fn collect_images(self: Arc<Self>) {
+        let mut every = tokio::time::interval(COLLECT_IMAGES_EVERY);
+        loop {
+            every.tick().await;
+            if self.shutting_down.load(Ordering::Relaxed) {
+                return;
+            }
+            // Both from one moment, so an image moving from a draft to a prompt counts.
+            let keep = {
+                let inner = self.lock();
+                inner.store.prompt_image_ids().map(|mut keep| {
+                    let drafts = inner.state.draft_images.values().flatten();
+                    keep.extend(drafts.map(|image| image.id.clone()));
+                    keep
+                })
+            };
+            let keep = match keep {
+                Ok(keep) => keep,
+                Err(error) => {
+                    tracing::error!("failed to find the images in use: {error:#}");
+                    continue;
+                }
+            };
+            let images = self.images.clone();
+            let before = SystemTime::now() - images::UNREFERENCED_GRACE;
+            match tokio::task::spawn_blocking(move || images.collect(&keep, before)).await {
+                Ok(Ok(0)) => {}
+                Ok(Ok(removed)) => tracing::info!(removed, "removed images nothing names"),
+                Ok(Err(error)) => tracing::error!("failed to remove unused images: {error:#}"),
+                Err(error) => tracing::error!("failed to remove unused images: {error}"),
+            }
+        }
     }
 
     pub fn config_home(&self) -> &ConfigHome {
@@ -1576,21 +1669,37 @@ impl Inner {
     }
 
     /// Keeps what's typed for a session, if that changes anything. Empty removes it.
-    fn set_draft(&mut self, session_id: &SessionId, text: String) -> Result<()> {
+    fn set_draft(
+        &mut self,
+        session_id: &SessionId,
+        text: String,
+        images: Vec<PromptImage>,
+    ) -> Result<()> {
         let mut drafts = self.state.drafts.clone();
+        let mut draft_images = self.state.draft_images.clone();
         if text.is_empty() {
             drafts.remove(session_id);
         } else {
             drafts.insert(session_id.clone(), text.clone());
         }
-        if drafts != self.state.drafts {
-            self.store.set_drafts(&drafts)?;
+        if images.is_empty() {
+            draft_images.remove(session_id);
+        } else {
+            draft_images.insert(session_id.clone(), images.clone());
+        }
+        if drafts != self.state.drafts || draft_images != self.state.draft_images {
+            self.store.set_drafts(&drafts, &draft_images)?;
             self.emit(StateChange::DraftChanged {
                 session_id: session_id.clone(),
                 text,
+                images,
             });
         }
         Ok(())
+    }
+
+    fn clear_draft(&mut self, session_id: &SessionId) -> Result<()> {
+        self.set_draft(session_id, String::new(), vec![])
     }
 
     fn emit(&mut self, change: StateChange) {
@@ -1757,6 +1866,15 @@ fn invalid(message: impl Into<String>) -> CommandError {
         code: ErrorCode::InvalidInput,
         message: message.into(),
     }
+}
+
+/// Runs work that decodes or waits on the disk away from the threads handling connections.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, CommandError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| internal(anyhow::anyhow!("{error}")))
 }
 
 fn not_found(what: &str, id: &impl std::fmt::Display) -> CommandError {

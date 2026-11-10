@@ -42,3 +42,8 @@
 {"type":"response","id":1,"result":{"Ok":{"output":"mcp_login","url":"https://auth.example/authorize?x=1"}}}
 {"type":"response","id":1,"result":{"Ok":{"output":"mcp_import","added":["github"],"skipped":["old: sse servers aren't supported"]}}}
 {"type":"state_changed","change":{"change":"commands_changed","session_id":"s1","commands":[{"name":"usage","description":"Show plan usage limits"},{"name":"review","description":"Review a pull request","hint":"PR number"}]}}
+{"type":"response","id":1,"result":{"Ok":{"output":"image_added","id":"ab12"}}}
+{"type":"response","id":1,"result":{"Ok":{"output":"image","data":"iVBORw0KGgo=","mime":"image/png"}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":3,"at_ms":1000,"kind":{"event":"user_prompt","text":"see [Image #1]","images":[{"id":"ab12","number":1,"mime":"image/png","width":1440,"height":900}]}}}
+{"type":"state_changed","change":{"change":"draft_changed","session_id":"s1","text":"see [Image #1]","images":[{"id":"ab12","number":1,"mime":"image/png","width":1440,"height":900}]}}
+{"type":"snapshot","state":{"machine":{"id":"m1","name":"laptop"},"workspaces":[],"approvals":[],"drafts":{"s1":"see [Image #1]"},"draft_images":{"s1":[{"id":"ab12","number":1,"mime":"image/png","width":1440,"height":900}]}}}
