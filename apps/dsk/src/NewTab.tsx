@@ -8,7 +8,7 @@ import { hint, type Hint, useHints } from "./shortcuts";
 import { Icon, type IconName } from "./ui/Icon";
 import { Keys } from "./ui/StatusIcon";
 
-export type TabKind = "agent" | "terminal" | "diff";
+export type TabKind = "agent" | "terminal" | "git" | "diff";
 
 /** What this client has done in a topic's new tab: the kind chosen, if any, and the draft for
  * an agent, which stays when you go back to choosing. */
@@ -31,6 +31,7 @@ interface Kind {
 const KINDS: Kind[] = [
   { kind: "agent", label: "Agent", icon: "agent", action: "new_tab.agent", built: true },
   { kind: "terminal", label: "Terminal", icon: "terminal", action: "new_tab.terminal", built: false },
+  { kind: "git", label: "Git", icon: "git", action: "new_tab.git", built: false },
   { kind: "diff", label: "Diff", icon: "diff", action: "new_tab.diff", built: false },
 ];
 

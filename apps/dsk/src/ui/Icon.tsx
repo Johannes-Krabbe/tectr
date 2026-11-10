@@ -1,5 +1,6 @@
 import {
   Bot,
+  GitBranch,
   GitCompare,
   type LucideIcon,
   Minus,
@@ -15,6 +16,7 @@ const ICONS = {
   add: { glyph: Plus },
   agent: { glyph: Bot },
   diff: { glyph: GitCompare },
+  git: { glyph: GitBranch },
   lower: { glyph: Minus },
   raise: { glyph: Plus },
   settings: { glyph: Settings },

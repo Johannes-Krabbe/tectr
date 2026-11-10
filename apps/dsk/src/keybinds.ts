@@ -131,6 +131,7 @@ export type ActionId =
   | "new_tab.confirm"
   | "new_tab.agent"
   | "new_tab.terminal"
+  | "new_tab.git"
   | "new_tab.diff"
   | "new_topic.start"
   | "new_topic.newline"
