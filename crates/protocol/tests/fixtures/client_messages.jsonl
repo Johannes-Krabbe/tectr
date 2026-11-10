@@ -44,3 +44,5 @@
 {"type":"attach_terminal","terminal_id":"x1","cols":100,"rows":30}
 {"type":"resize_terminal","terminal_id":"x1","cols":100,"rows":30}
 {"type":"detach_terminal","terminal_id":"x1"}
+{"type":"request","id":1,"command":{"command":"list_conversations"}}
+{"type":"request","id":1,"command":{"command":"import_conversation","topic_id":"t1","agent":"claude","id":"10c95b72-5e91-4c10-b6ab-32d05e963631"}}

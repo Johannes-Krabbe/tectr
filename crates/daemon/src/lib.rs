@@ -10,6 +10,7 @@ mod core;
 mod folders;
 mod git;
 mod http;
+mod import;
 mod mcp;
 mod oauth;
 mod remote;
@@ -50,7 +51,8 @@ pub struct Config {
     pub event_buffer: usize,
     /// Runs while an agent works, if the device's settings allow it.
     pub keep_awake: Option<KeepAwakeCommand>,
-    /// Where agents keep the MCP configuration that tectr switches off and imports from.
+    /// Where agents keep the MCP configuration that tectr switches off and imports from, and
+    /// the conversations it imports.
     pub mcp_home: ConfigHome,
     /// What starts in a new terminal.
     pub shell: Shell,

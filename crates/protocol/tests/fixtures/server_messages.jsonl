@@ -46,3 +46,4 @@
 {"type":"state_changed","change":{"change":"terminal_changed","terminal":{"id":"x2","status":"exited","opened_at_ms":3000}}}
 {"type":"state_changed","change":{"change":"terminal_removed","terminal_id":"x2"}}
 {"type":"response","id":1,"result":{"Ok":{"output":"terminal","topic_id":"t1","terminal":{"id":"x2","status":"running","opened_at_ms":3000}}}}
+{"type":"response","id":1,"result":{"Ok":{"output":"conversations","conversations":[{"agent":"codex","id":"01a18876-b39d-75f2-906c-f7a10fd228b2","title":"Check the diff","cwd":"/Users/me/repo","updated_at_ms":1700000000000}]}}}
