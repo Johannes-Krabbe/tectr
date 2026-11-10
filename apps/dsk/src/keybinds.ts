@@ -114,6 +114,7 @@ export type ActionId =
   | "pane.pick_effort"
   | "pane.pick_mode"
   | "pane.open_images"
+  | "pane.branch"
   | "composer.send"
   | "composer.newline"
   | "composer.blur"

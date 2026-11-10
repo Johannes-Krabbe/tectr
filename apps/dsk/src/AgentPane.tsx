@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityItem, AgentMessage, LiveLine } from "./Activity";
 import { useCommandSuggestions } from "./CommandList";
 import { ImageComposer, ImageViewer, type OpenImages, PromptBubble, useImageField } from "./ImageField";
@@ -28,6 +28,8 @@ import {
 } from "./keybinds";
 import { inPane } from "./keys";
 import {
+  type AnswerEnd,
+  branchBlocked,
   foldState,
   foldTranscript,
   liveStepLabel,
@@ -167,6 +169,7 @@ export function AgentPane({
   commands,
   worktree,
   onInterrupt,
+  onBranched,
 }: {
   machineId: string;
   session: Session;
@@ -182,6 +185,8 @@ export function AgentPane({
   worktree: Worktree | undefined;
   /** Only there while the session has a turn to interrupt. */
   onInterrupt: (() => void) | undefined;
+  /** A branch of this session opened as the tab with this ID. */
+  onBranched: (sessionId: string) => void;
 }) {
   const sessionRef = { machine_id: machineId, session_id: session.id };
   const events = useSessionEvents(sessionRef);
@@ -258,6 +263,27 @@ export function AgentPane({
     onSend: (text) => void send(text),
   });
 
+  const lastAnswer = items.filter((item): item is AnswerEnd => item.kind === "answer_end").pop();
+  const blocked = (answer: AnswerEnd) => branchBlocked(answer, provider, session.agent, online);
+  const branch = (answer: AnswerEnd) => {
+    const reason = blocked(answer);
+    if (reason) {
+      setError(reason);
+      return;
+    }
+    setError(null);
+    request(machineId, { command: "fork_session", session_id: session.id, after_seq: answer.key })
+      .then((output) => {
+        if (output.output === "session") onBranched(output.session.id);
+      })
+      .catch((reason) => setError(errorText(reason)));
+  };
+  // The key handler is set up once, so it reaches the latest answer through a ref.
+  const branchLast = useRef(() => {});
+  branchLast.current = () => {
+    if (lastAnswer) branch(lastAnswer);
+  };
+
   const answers = pending ? requestHints(pending) : [];
   const pickers = sessionPickerHints(provider, session, online);
   useHints("pane", [
@@ -265,6 +291,7 @@ export function AgentPane({
     hint("Write", "pane.compose"),
     ...(sentImages.length > 0 ? [hint("Images", "pane.open_images")] : []),
     hint(stepsShown ? "Fold steps" : "Show steps", "pane.toggle_steps"),
+    ...(lastAnswer ? [hint("Branch", "pane.branch")] : []),
     ...(live ? [hint(fold.turnOpen ? "Fold this turn" : "Watch", "pane.toggle_turn")] : []),
     ...SCROLL_HINTS,
     ...pickers,
@@ -279,6 +306,17 @@ export function AgentPane({
     ...pickers,
   ]);
   useScreenPaletteItems([
+    ...(lastAnswer
+      ? [
+          {
+            id: "branch",
+            label: "Branch from the last answer into a new tab",
+            detail: blocked(lastAnswer),
+            keys: keysLabel("pane.branch"),
+            run: () => branchLast.current(),
+          },
+        ]
+      : []),
     ...(sentImages.length > 0
       ? [
           {
@@ -361,6 +399,7 @@ export function AgentPane({
       if (toggled) return;
       if (act(event, "pane.toggle_turn", () => toggleTurn.current())) return;
       if (act(event, "pane.open_images", () => openSentNow.current())) return;
+      if (act(event, "pane.branch", () => branchLast.current())) return;
       // In a text box, Ctrl+D and the like edit the text. Scrolling is for the transcript.
       if (!isTextField(event.target)) commands.some(([id, run]) => act(event, id, run));
     };
@@ -464,6 +503,24 @@ export function AgentPane({
                     {item.text}
                   </div>
                 );
+              case "answer_end": {
+                const reason = blocked(item);
+                return (
+                  <Fragment key={item.key}>
+                    {item.note && <div className="note">{item.note}</div>}
+                    <button
+                      type="button"
+                      className="branch"
+                      disabled={reason !== undefined}
+                      title={reason ?? "Branch from here into a new tab"}
+                      onClick={() => branch(item)}
+                    >
+                      <Icon name="branch" />
+                      Branch
+                    </button>
+                  </Fragment>
+                );
+              }
             }
           })}
           {live && (

@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 protocol.workspace = true
 
-agent-client-protocol = { workspace = true, features = ["process"] }
+agent-client-protocol = { workspace = true, features = ["process", "unstable_session_fork"] }
 anyhow.workspace = true
 base64.workspace = true
 bytes.workspace = true

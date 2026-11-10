@@ -52,3 +52,5 @@
 {"type":"state_changed","change":{"change":"terminal_removed","terminal_id":"x2"}}
 {"type":"response","id":1,"result":{"Ok":{"output":"terminal","topic_id":"t1","terminal":{"id":"x2","status":"running","opened_at_ms":3000}}}}
 {"type":"response","id":1,"result":{"Ok":{"output":"conversations","conversations":[{"agent":"codex","id":"01a18876-b39d-75f2-906c-f7a10fd228b2","title":"Check the diff","cwd":"/Users/me/repo","updated_at_ms":1700000000000}]}}}
+{"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":12,"at_ms":1000,"kind":{"event":"turn_ended","stop_reason":"end_turn","last_message":"msg_01"}}}
+{"type":"state_changed","change":{"change":"provider_changed","provider":{"agent":"claude","name":"Claude Code","version":"0.100.0","modes":["auto"],"models":[],"default_model":null,"can_fork":true}}}

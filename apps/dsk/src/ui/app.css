@@ -645,6 +645,23 @@ button.row:hover { background: var(--color-surface-raised); }
 }
 
 button.activity-line:hover { color: var(--color-text-secondary); }
+
+/* Under each answer, quiet until pointed at. */
+.branch {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.branch:hover:not(:disabled) { color: var(--color-text-secondary); }
+
+.branch svg {
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+}
 .activity-line .bad { color: var(--color-status-failed); }
 
 .activity-steps {

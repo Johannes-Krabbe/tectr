@@ -13,12 +13,20 @@
 //!   without waiting for the answer.
 //! - `hang`: does nothing until the turn is cancelled.
 //! - `crash`: exits immediately with an error.
-//! - `whoami`: reports the session's mode, model, directory, and whether it was
-//!   resumed, and which session.
+//! - `whoami`: reports the session's mode, model, directory, whether it was
+//!   resumed and which session, and what it was branched from.
+//! - `subagent`: says `main`, then has a subagent say something, marked the way
+//!   Claude's adapter marks it.
 //! - `mcp`: reports the MCP servers the session was opened with, and its `_meta`.
 //! - `mcp-call NAME`: sends an MCP initialize request to the HTTP server NAME and
 //!   reports the status and body it got back.
 //! - `images`: reports each image in the prompt as the text before it, its type and its data.
+//!
+//! Everything it says in a turn is one message, whose ID is `msg:` and the prompt with
+//! dashes for spaces. A
+//! branch is made from a session at the message `_meta.jetbrains.air.fork.messageId`
+//! names, as Claude's adapter does, unless started with `--no-fork`. Branching from the
+//! answer to `unforkable` fails.
 //!
 //! It takes images in prompts unless started with `--no-images`.
 
@@ -28,12 +36,13 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     AgentCapabilities, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
-    CancelNotification, ContentBlock, ContentChunk, Implementation, InitializeRequest,
-    InitializeResponse, McpCapabilities, McpServer, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, ResumeSessionRequest,
-    ResumeSessionResponse, SessionCapabilities, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionId, SessionInfoUpdate, SessionMode, SessionModeState,
+    CancelNotification, ContentBlock, ContentChunk, ForkSessionRequest, ForkSessionResponse,
+    Implementation, InitializeRequest, InitializeResponse, McpCapabilities, McpServer,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
+    PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
+    SessionForkCapabilities, SessionId, SessionInfoUpdate, SessionMode, SessionModeState,
     SessionNotification, SessionResumeCapabilities, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
     TextContent, ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
@@ -55,6 +64,8 @@ struct State {
     resumed: bool,
     /// The agent's own session it was asked to resume.
     resumed_id: Option<String>,
+    /// The session and message it was branched from, as `session@message`.
+    forked: Option<String>,
     mcp: Vec<McpServer>,
     meta: Option<serde_json::Map<String, serde_json::Value>>,
 }
@@ -117,9 +128,11 @@ async fn main() -> Result<(), Error> {
     }));
     let cancel = Arc::new(Notify::new());
     let images = !std::env::args().any(|arg| arg == "--no-images");
+    let fork = !std::env::args().any(|arg| arg == "--no-fork");
 
     let on_new = state.clone();
     let on_resume = state.clone();
+    let on_fork = state.clone();
     let on_mode = state.clone();
     let on_config = state.clone();
     let on_prompt = state.clone();
@@ -136,7 +149,8 @@ async fn main() -> Result<(), Error> {
                             AgentCapabilities::new()
                                 .session_capabilities(
                                     SessionCapabilities::new()
-                                        .resume(SessionResumeCapabilities::new()),
+                                        .resume(SessionResumeCapabilities::new())
+                                        .fork(fork.then(SessionForkCapabilities::new)),
                                 )
                                 .mcp_capabilities(McpCapabilities::new().http(true))
                                 .prompt_capabilities(PromptCapabilities::new().image(images)),
@@ -170,6 +184,30 @@ async fn main() -> Result<(), Error> {
                 state.resumed_id = Some(request.session_id.to_string());
                 responder.respond(
                     ResumeSessionResponse::new()
+                        .modes(mode_state(&state.mode))
+                        .config_options(config_options(&state)),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: ForkSessionRequest, responder, _connection| {
+                let mut state = on_fork.lock().unwrap();
+                let at = request
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("jetbrains")?.pointer("/air/fork/messageId"))
+                    .and_then(|id| id.as_str())
+                    .unwrap_or("latest");
+                if at == "msg:unforkable" {
+                    return responder.respond_with_error(Error::invalid_params().data(at));
+                }
+                state.forked = Some(format!("{}@{at}", request.session_id));
+                state.cwd = request.cwd;
+                state.mcp = request.mcp_servers;
+                state.meta = request.meta;
+                responder.respond(
+                    ForkSessionResponse::new("fake-fork")
                         .modes(mode_state(&state.mode))
                         .config_options(config_options(&state)),
                 )
@@ -243,13 +281,20 @@ async fn run_turn(
         _ => String::new(),
     };
     // A note from the daemon comes first. Repeating it lets tests see it arrived.
-    let text = match text.split_once("\n\n") {
+    let (note, text) = match text.split_once("\n\n") {
         Some((note, script)) if note.starts_with("[tectr]") => {
-            say(connection, &session_id, note)?;
-            script.to_owned()
+            (Some(note.to_owned()), script.to_owned())
         }
-        _ => text,
+        _ => (None, text),
     };
+    let speaker = Speaker {
+        connection,
+        session_id: &session_id,
+        message_id: format!("msg:{}", text.replace(' ', "-")),
+    };
+    if let Some(note) = note {
+        speaker.say(&note)?;
+    }
     let mut words = text.split_whitespace();
 
     match words.next().unwrap_or_default() {
@@ -258,24 +303,22 @@ async fn run_turn(
             for block in request.prompt.iter().skip(1) {
                 match block {
                     ContentBlock::Text(text) => label.clone_from(&text.text),
-                    ContentBlock::Image(image) => say(
-                        connection,
-                        &session_id,
-                        &format!("{label} {} {}", image.mime_type, image.data),
-                    )?,
+                    ContentBlock::Image(image) => {
+                        speaker.say(&format!("{label} {} {}", image.mime_type, image.data))?
+                    }
                     _ => {}
                 }
             }
         }
         "echo" => {
             for word in words {
-                say(connection, &session_id, word)?;
+                speaker.say(word)?;
             }
         }
         "burst" => {
             let count: u32 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
             for n in 0..count {
-                say(connection, &session_id, &n.to_string())?;
+                speaker.say(&n.to_string())?;
             }
         }
         "commands" => {
@@ -306,7 +349,20 @@ async fn run_turn(
                 SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title(title)),
             ))?;
         }
-        "write" => return write_file(&state, connection, &session_id).await,
+        "write" => return write_file(&state, &speaker).await,
+        "subagent" => {
+            speaker.say("main")?;
+            let mut chunk =
+                ContentChunk::new(ContentBlock::Text(TextContent::new("from a subagent")))
+                    .message_id("msg:sub");
+            chunk.meta = serde_json::json!({ "claudeCode": { "parentToolUseId": "tool-1" } })
+                .as_object()
+                .cloned();
+            connection.send_notification(SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::AgentMessageChunk(chunk),
+            ))?;
+        }
         "abandon" => {
             let background = connection.clone();
             let request = RequestPermissionRequest::new(
@@ -337,17 +393,18 @@ async fn run_turn(
             let report = {
                 let state = state.lock().unwrap();
                 format!(
-                    "pid={} mode={} model={} effort={} resumed={} session={} cwd={}",
+                    "pid={} mode={} model={} effort={} resumed={} session={} forked={} cwd={}",
                     std::process::id(),
                     state.mode,
                     state.model.as_deref().unwrap_or("none"),
                     state.effort.as_deref().unwrap_or("none"),
                     state.resumed,
                     state.resumed_id.as_deref().unwrap_or("none"),
+                    state.forked.as_deref().unwrap_or("none"),
                     state.cwd.display()
                 )
             };
-            say(connection, &session_id, &report)?;
+            speaker.say(&report)?;
         }
         "mcp" => {
             let report = {
@@ -387,7 +444,7 @@ async fn run_turn(
                     .map_or_else(String::new, |m| serde_json::Value::Object(m).to_string());
                 format!("mcp={} meta={meta}", servers.join(" "))
             };
-            say(connection, &session_id, &report)?;
+            speaker.say(&report)?;
         }
         "mcp-call" => {
             let name = words.next().unwrap_or_default();
@@ -402,18 +459,16 @@ async fn run_turn(
                 Some(url) => call_mcp(&url).await,
                 None => format!("no HTTP server called {name}"),
             };
-            say(connection, &session_id, &report)?;
+            speaker.say(&report)?;
         }
-        other => say(connection, &session_id, &format!("unknown script: {other}"))?,
+        other => speaker.say(&format!("unknown script: {other}"))?,
     }
     Ok(StopReason::EndTurn)
 }
 
-async fn write_file(
-    state: &Mutex<State>,
-    connection: &ConnectionTo<Client>,
-    session_id: &SessionId,
-) -> Result<StopReason, Error> {
+async fn write_file(state: &Mutex<State>, speaker: &Speaker<'_>) -> Result<StopReason, Error> {
+    let connection = speaker.connection;
+    let session_id = speaker.session_id;
     let (cwd, mode) = {
         let state = state.lock().unwrap();
         (state.cwd.clone(), state.mode.clone())
@@ -450,7 +505,7 @@ async fn write_file(
                 if selected.option_id.to_string() == "allow" => {}
             RequestPermissionOutcome::Selected(_) => {
                 finish_tool(connection, session_id, tool_id, ToolCallStatus::Failed)?;
-                say(connection, session_id, "denied")?;
+                speaker.say("denied")?;
                 return Ok(StopReason::EndTurn);
             }
             _ => {
@@ -462,7 +517,7 @@ async fn write_file(
 
     std::fs::write(&path, "written by the fake agent\n").map_err(Error::into_internal_error)?;
     finish_tool(connection, session_id, tool_id, ToolCallStatus::Completed)?;
-    say(connection, session_id, "wrote the file")?;
+    speaker.say("wrote the file")?;
     Ok(StopReason::EndTurn)
 }
 
@@ -505,11 +560,20 @@ async fn call_mcp(url: &str) -> String {
     }
 }
 
-fn say(connection: &ConnectionTo<Client>, session_id: &SessionId, text: &str) -> Result<(), Error> {
-    connection.send_notification(SessionNotification::new(
-        session_id.clone(),
-        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
-            text,
-        )))),
-    ))
+/// Says things as one message of a turn.
+struct Speaker<'a> {
+    connection: &'a ConnectionTo<Client>,
+    session_id: &'a SessionId,
+    message_id: String,
+}
+
+impl Speaker<'_> {
+    fn say(&self, text: &str) -> Result<(), Error> {
+        let chunk = ContentChunk::new(ContentBlock::Text(TextContent::new(text)))
+            .message_id(self.message_id.as_str());
+        self.connection.send_notification(SessionNotification::new(
+            self.session_id.clone(),
+            SessionUpdate::AgentMessageChunk(chunk),
+        ))
+    }
 }

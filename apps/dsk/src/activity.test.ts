@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Session, SessionEvent, SessionEventKind } from "./engine";
+import type { Provider, Session, SessionEvent, SessionEventKind } from "./engine";
 import {
   type Activity,
   activitySummary,
+  branchBlocked,
   foldState,
   foldTranscript,
   formatWorked,
@@ -103,9 +104,48 @@ test("answers to requests fold with the tools, and errors and stops never do", (
       { event: "turn_ended", stop_reason: "cancelled" },
     ),
   );
-  assert.deepEqual(kinds(items), ["activity", "note", "activity", "note"]);
+  assert.deepEqual(kinds(items), ["activity", "note", "activity", "answer_end"]);
   const [first] = activities(items);
   assert.deepEqual(first.steps[1], { kind: "note", key: 3, text: "Request: rm -rf. Deny" });
+});
+
+test("every answer ends in a place to branch from, saying how it stopped if unusually", () => {
+  const items = foldTranscript(
+    events(
+      prompt("one"),
+      said("First"),
+      { event: "turn_ended", stop_reason: "end_turn", last_message: "msg_1" },
+      prompt("two"),
+      { event: "turn_ended", stop_reason: "cancelled" },
+    ),
+  );
+  assert.deepEqual(items.slice(2), [
+    { kind: "answer_end", key: 3, note: undefined, branchable: true },
+    { kind: "prompt", key: 4, text: "two", images: [] },
+    { kind: "answer_end", key: 5, note: "Interrupted", branchable: false },
+  ]);
+});
+
+test("branching needs the device, an agent that can copy sessions, and where the answer ends", () => {
+  const answer = { kind: "answer_end" as const, key: 3, branchable: true };
+  const claude: Provider = {
+    agent: "claude",
+    name: "Claude Code",
+    version: null,
+    modes: ["auto"],
+    models: [],
+    default_model: null,
+    can_fork: true,
+  };
+  const codex: Provider = { ...claude, agent: "codex", name: "Codex", can_fork: undefined };
+  assert.equal(branchBlocked(answer, claude, "claude", true), undefined);
+  assert.equal(branchBlocked(answer, claude, "claude", false), "The device is offline");
+  assert.equal(branchBlocked(answer, codex, "codex", true), "Codex can't branch sessions");
+  assert.equal(branchBlocked(answer, undefined, "codex", true), "codex can't branch sessions");
+  assert.match(
+    branchBlocked({ ...answer, branchable: false }, claude, "claude", true) ?? "",
+    /can't be branched/,
+  );
 });
 
 test("time worked runs from going quiet to speaking again, without time waiting on you", () => {

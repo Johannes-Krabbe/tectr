@@ -86,6 +86,8 @@ struct Transcript {
     events: Vec<(i64, SessionEventKind)>,
     in_turn: bool,
     first_prompt: Option<String>,
+    /// The agent's ID for the last thing it said this turn, as its adapter would report it.
+    last_message: Option<String>,
 }
 
 impl Transcript {
@@ -102,6 +104,7 @@ impl Transcript {
             },
         ));
         self.in_turn = true;
+        self.last_message = None;
     }
 
     fn message(&mut self, at: i64, text: &str) {
@@ -149,9 +152,15 @@ impl Transcript {
     }
 
     fn end_turn(&mut self, at: i64, stop_reason: StopReason) {
+        let last_message = self.last_message.take();
         if std::mem::take(&mut self.in_turn) {
-            self.events
-                .push((at, SessionEventKind::TurnEnded { stop_reason }));
+            self.events.push((
+                at,
+                SessionEventKind::TurnEnded {
+                    stop_reason,
+                    last_message,
+                },
+            ));
         }
     }
 
@@ -465,6 +474,11 @@ mod claude {
             let text: Vec<&str> = blocks.iter().filter_map(|b| str_at(b, "text")).collect();
             transcript.error(at, text.join("\n"));
             return;
+        }
+        // What Claude's adapter calls a message, so a branch can start after it.
+        let id = entry.pointer("/message/id").and_then(Value::as_str);
+        if let Some(id) = id.or_else(|| str_at(entry, "uuid")) {
+            transcript.last_message = Some(id.to_owned());
         }
         for block in &blocks {
             match str_at(block, "type") {
@@ -922,7 +936,7 @@ mod tests {
 {"parentUuid":"x1","isSidechain":false,"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/repo/src/auth.rs"}}]},"uuid":"x2","timestamp":"2026-11-10T11:30:29.000Z"}
 {"parentUuid":"x2","isSidechain":false,"type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":"fn login() {}","is_error":false}]},"uuid":"r1","timestamp":"2026-11-10T11:30:30.000Z"}
 {"parentUuid":"r1","isSidechain":true,"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"a subagent talking"}]},"uuid":"s1","timestamp":"2026-11-10T11:30:30.500Z"}
-{"parentUuid":"r1","isSidechain":false,"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Found it."}]},"uuid":"x3","timestamp":"2026-11-10T11:30:31.000Z"}
+{"parentUuid":"r1","isSidechain":false,"type":"assistant","message":{"id":"msg_found","role":"assistant","content":[{"type":"text","text":"Found it."}]},"uuid":"x3","timestamp":"2026-11-10T11:30:31.000Z"}
 {"parentUuid":"x3","isSidechain":false,"type":"user","message":{"role":"user","content":"Abandoned idea"},"uuid":"u2","timestamp":"2026-11-10T11:31:00.000Z"}
 {"parentUuid":"x3","isSidechain":false,"type":"user","isMeta":true,"message":{"role":"user","content":"<local-command-caveat>Caveat</local-command-caveat>"},"uuid":"m1","timestamp":"2026-11-10T11:31:10.000Z"}
 {"parentUuid":"m1","isSidechain":false,"type":"user","message":{"role":"user","content":"<command-name>/review</command-name>\n<command-message>review</command-message>\n<command-args>the diff</command-args>"},"uuid":"u3","timestamp":"2026-11-10T11:31:20.000Z"}
@@ -974,8 +988,10 @@ mod tests {
                 &SessionEventKind::AgentMessage {
                     text: "Found it.".into()
                 },
+                // The API's ID where there is one, as the adapter reports it.
                 &SessionEventKind::TurnEnded {
-                    stop_reason: StopReason::EndTurn
+                    stop_reason: StopReason::EndTurn,
+                    last_message: Some("msg_found".into()),
                 },
                 &SessionEventKind::UserPrompt {
                     text: "/review the diff".into(),
@@ -985,7 +1001,8 @@ mod tests {
                     text: "Reviewing.".into()
                 },
                 &SessionEventKind::TurnEnded {
-                    stop_reason: StopReason::Cancelled
+                    stop_reason: StopReason::Cancelled,
+                    last_message: Some("x4".into()),
                 },
             ]
         );
@@ -1053,14 +1070,16 @@ mod tests {
                     text: "Looks fine.".into()
                 },
                 &SessionEventKind::TurnEnded {
-                    stop_reason: StopReason::EndTurn
+                    stop_reason: StopReason::EndTurn,
+                    last_message: None,
                 },
                 &SessionEventKind::UserPrompt {
                     text: "and now?".into(),
                     images: vec![]
                 },
                 &SessionEventKind::TurnEnded {
-                    stop_reason: StopReason::Cancelled
+                    stop_reason: StopReason::Cancelled,
+                    last_message: None,
                 },
             ]
         );
@@ -1087,7 +1106,8 @@ mod tests {
                     text: "\n\nthere".into()
                 },
                 &SessionEventKind::TurnEnded {
-                    stop_reason: StopReason::EndTurn
+                    stop_reason: StopReason::EndTurn,
+                    last_message: None,
                 },
             ]
         );

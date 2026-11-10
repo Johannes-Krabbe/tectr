@@ -3,16 +3,16 @@
 //! ACP messages into tectr events and tectr commands into ACP messages.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion};
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    AvailableCommandInput, CancelNotification, ContentBlock, EnvVariable, ImageContent,
-    InitializeRequest, InitializeResponse, McpServer, McpServerHttp, McpServerStdio, Meta,
-    NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    AvailableCommandInput, CancelNotification, ContentBlock, ContentChunk, EnvVariable,
+    ForkSessionRequest, ImageContent, InitializeRequest, InitializeResponse, McpServer,
+    McpServerHttp, McpServerStdio, Meta, NewSessionRequest, PermissionOption, PermissionOptionKind,
+    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
     SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelect,
     SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionModeState,
@@ -42,8 +42,18 @@ pub struct AgentSpawn {
     pub settings: SessionSettings,
     /// The agent's own session ID, if this session has run before.
     pub resume: Option<String>,
+    /// Where the agent's session is copied from, if it has none yet and is a branch.
+    pub fork: Option<ForkPoint>,
     /// The MCP servers it gets, and the only ones.
     pub mcp: Vec<AgentMcp>,
+}
+
+/// Where a branch starts: an answer in another of the agent's own sessions.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ForkPoint {
+    pub agent_session_id: String,
+    /// What [`tp::SessionEventKind::TurnEnded`] holds as the answer's last message.
+    pub message_id: String,
 }
 
 /// Starts the agent with its own MCP servers switched off.
@@ -131,6 +141,9 @@ async fn drive(
     let on_update_id = id.clone();
     let on_permission_core = core.clone();
     let on_permission_id = id.clone();
+    // The last thing the agent said this turn, which goes on the turn's end.
+    let last_message: Arc<Mutex<Option<String>>> = Arc::default();
+    let on_update_last = last_message.clone();
 
     // These callbacks run in the connection's dispatch loop, which keeps events
     // in order. They must not wait for anything, so a permission request stores
@@ -139,7 +152,12 @@ async fn drive(
         .v1()
         .on_receive_notification(
             async move |notification: SessionNotification, _connection| {
-                handle_update(&on_update_core, &on_update_id, notification.update);
+                handle_update(
+                    &on_update_core,
+                    &on_update_id,
+                    &on_update_last,
+                    notification.update,
+                );
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -188,22 +206,28 @@ async fn drive(
                                 core.turn_ended(
                                     &id,
                                     Err("This agent doesn't take images. Send it again without them".to_owned()),
+                                    None,
                                 );
                                 continue;
                             }
                             let core = core.clone();
                             let id = id.clone();
+                            let last_message = last_message.clone();
+                            *last_message.lock().unwrap() = None;
                             connection
                                 .send_request(PromptRequest::new(
                                     agent_session.id.clone(),
                                     prompt_blocks(prompt),
                                 ))
                                 .on_receiving_result(async move |result| {
+                                    // Every update of the turn comes before its result.
+                                    let message = last_message.lock().unwrap().take();
                                     core.turn_ended(
                                         &id,
                                         result
                                             .map(|response| stop_reason_from_acp(response.stop_reason))
                                             .map_err(|error| error.to_string()),
+                                        message,
                                     );
                                     // The turn may have switched branches. Git is asked
                                     // elsewhere, because this runs in the dispatch loop.
@@ -432,8 +456,8 @@ async fn open_session(
     servers: Vec<McpServer>,
     meta: Option<Meta>,
 ) -> Result<OpenedSession> {
-    let (id, modes, options): (SessionId, _, _) = match &spawn.resume {
-        Some(agent_id) => {
+    let (id, modes, options): (SessionId, _, _) = match (&spawn.resume, &spawn.fork) {
+        (Some(agent_id), _) => {
             if init
                 .agent_capabilities
                 .session_capabilities
@@ -457,7 +481,27 @@ async fn open_session(
                 response.config_options.unwrap_or_default(),
             )
         }
-        None => {
+        (None, Some(fork)) => {
+            if init.agent_capabilities.session_capabilities.fork.is_none() {
+                bail!("this agent can't branch a session");
+            }
+            let response = connection
+                .send_request(
+                    ForkSessionRequest::new(fork.agent_session_id.clone(), spawn.cwd.clone())
+                        .mcp_servers(servers)
+                        .meta(fork_meta(meta, &fork.message_id)),
+                )
+                .block_task()
+                .await
+                .map_err(|error| anyhow!("failed to branch the agent's session: {error}"))?;
+            core.agent_session_created(&spawn.session_id, &response.session_id.to_string());
+            (
+                response.session_id,
+                response.modes,
+                response.config_options.unwrap_or_default(),
+            )
+        }
+        (None, None) => {
             let response = connection
                 .send_request(
                     NewSessionRequest::new(spawn.cwd.clone())
@@ -493,6 +537,18 @@ async fn open_session(
         .apply(connection, &spawn.launcher, &spawn.settings)
         .await?;
     Ok(session)
+}
+
+/// Asks for the copy to end at the answer. ACP's fork has no field for that yet, so it goes
+/// where Claude's adapter reads it, a key it shares with JetBrains AIR. Another agent that
+/// offers fork but ignores the key would copy its whole session, later answers included.
+fn fork_meta(meta: Option<Meta>, message_id: &str) -> Meta {
+    let mut meta = meta.unwrap_or_default();
+    meta.insert(
+        "jetbrains".to_owned(),
+        serde_json::json!({ "air": { "fork": { "version": 1, "messageId": message_id } } }),
+    );
+    meta
 }
 
 /// The text as typed, then each image after the name the text calls it by, so the agent can
@@ -608,6 +664,7 @@ pub async fn probe(
                 default_model,
                 default_effort,
                 recommended_model,
+                can_fork: init.agent_capabilities.session_capabilities.fork.is_some(),
             })
         })
         .await
@@ -637,14 +694,34 @@ fn ready_event(init: &InitializeResponse, session: &OpenedSession) -> tp::Sessio
     }
 }
 
-fn handle_update(core: &Core, id: &tp::SessionId, update: SessionUpdate) {
+/// Keeps the ID of a message the agent is saying, unless a subagent says it. Claude's adapter
+/// marks those, and their messages live in another transcript, so no branch can start there.
+fn note_message(last_message: &Mutex<Option<String>>, chunk: &ContentChunk) {
+    let subagent = chunk
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("claudeCode")?.get("parentToolUseId"))
+        .is_some();
+    if let (Some(message_id), false) = (&chunk.message_id, subagent) {
+        *last_message.lock().unwrap() = Some(message_id.0.to_string());
+    }
+}
+
+fn handle_update(
+    core: &Core,
+    id: &tp::SessionId,
+    last_message: &Mutex<Option<String>>,
+    update: SessionUpdate,
+) {
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => {
+            note_message(last_message, &chunk);
             if let ContentBlock::Text(text) = chunk.content {
                 core.agent_event(id, tp::SessionEventKind::AgentMessage { text: text.text });
             }
         }
         SessionUpdate::AgentThoughtChunk(chunk) => {
+            note_message(last_message, &chunk);
             if let ContentBlock::Text(text) = chunk.content {
                 core.agent_event(id, tp::SessionEventKind::AgentThought { text: text.text });
             }

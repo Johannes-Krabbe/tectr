@@ -174,6 +174,8 @@ export interface Provider {
   default_model: string | null;
   default_effort?: string | null;
   recommended_model?: string | null;
+  /** Whether it can copy a session, which branching from an answer needs. */
+  can_fork?: boolean;
 }
 
 export interface ProviderCandidate {
@@ -292,7 +294,8 @@ export type SessionEventKind =
       approval_id: string;
       outcome: { outcome: "selected"; option_id: string } | { outcome: "cancelled" | "unknown" };
     }
-  | { event: "turn_ended"; stop_reason: string }
+  /** `last_message` is where a branch from this answer starts, when the agent says. */
+  | { event: "turn_ended"; stop_reason: string; last_message?: string }
   | { event: "error"; message: string }
   | { event: "unknown" };
 
@@ -364,6 +367,8 @@ export type Command =
   | { command: "import_mcp_servers" }
   | { command: "list_conversations" }
   | { command: "import_conversation"; topic_id: string; agent: string; id: string }
+  /** `after_seq` is the answer's `turn_ended`. Answered with `session`. */
+  | { command: "fork_session"; session_id: string; after_seq?: number }
   | { command: "start_pairing" }
   | { command: "cancel_pairing" }
   | { command: "remove_paired_client"; key: string };

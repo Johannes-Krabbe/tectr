@@ -343,6 +343,11 @@ pub const ACTIONS: &[Action] = &[
         "Open the images in the conversation",
         &["v"],
     ),
+    once(
+        "pane.branch",
+        "Branch from the last answer into a new tab",
+        &["b"],
+    ),
     once("composer.send", "Send", &["enter"]),
     once("composer.newline", "New line", &["shift+enter"]),
     follows("composer.blur", "Leave the message box", "nav.back"),
