@@ -32,6 +32,7 @@ use crate::store::Store;
 use crate::terminal::{self, Shell, Subscriber};
 use crate::{acp, folders, git};
 
+mod import;
 mod mcp;
 mod remote;
 
@@ -129,7 +130,7 @@ pub struct Core {
     shutting_down: AtomicBool,
     /// The port the daemon listens on, which the MCP proxy and login redirects use.
     port: u16,
-    /// Where agents keep the MCP configuration that gets switched off.
+    /// Where agents keep the MCP configuration that gets switched off, and their conversations.
     config_home: ConfigHome,
     /// For MCP servers and their logins.
     http: reqwest::Client,
@@ -377,6 +378,12 @@ impl Core {
                 .map(|_| CommandOutput::Done),
             Command::LogoutMcpServer { id } => self.logout_mcp_server(&id),
             Command::ImportMcpServers => self.import_mcp_servers().await,
+            Command::ListConversations => self.list_conversations().await,
+            Command::ImportConversation {
+                topic_id,
+                agent,
+                id,
+            } => self.import_conversation(topic_id, agent, id).await,
             Command::StartPairing => self.start_pairing().await,
             Command::CancelPairing => Ok(self.cancel_pairing()),
             Command::RemovePairedClient { key } => self.remove_paired_client(&key),

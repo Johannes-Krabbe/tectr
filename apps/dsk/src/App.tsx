@@ -39,6 +39,8 @@ import {
 } from "./keys";
 import {
   allTopics,
+  conversationsFor,
+  folderName,
   isOnline,
   keepsAwake,
   type MoveChoice,
@@ -472,6 +474,42 @@ export function App() {
       .catch(reportFailure);
   };
 
+  /** Conversations are in each agent's own files on the topic's device, so it's asked when this
+   * opens. The imported one opens as a tab, which from the new tab takes the new tab's place. */
+  const findConversations = async (target: TopicEntry) => {
+    if (!isOnline(target.device)) return;
+    const { machineId, topic } = target;
+    const fromNewTab = onNewTab && target === entry;
+    const output = await request(machineId, { command: "list_conversations" });
+    const listed = output.output === "conversations" ? output.conversations : [];
+    const providers = target.device.state?.providers ?? [];
+    const importIt = (agent: string, id: string) => {
+      setError(null);
+      request(machineId, { command: "import_conversation", topic_id: topic.id, agent, id })
+        .then((imported) => {
+          if (imported.output !== "session") return;
+          if (fromNewTab) onTabStarted(topic.id, imported.session.id);
+          else selectTab(topic.id, imported.session.id);
+        })
+        .catch(reportFailure);
+    };
+    const items = conversationsFor(listed, target.workspace, topic).map((c) => ({
+      id: `conversation/${c.agent}/${c.id}`,
+      label: c.title,
+      detail: [
+        providers.find((p) => p.agent === c.agent)?.name ?? c.agent,
+        folderName(c.cwd),
+        archivedOn(c.updated_at_ms),
+      ].join(", "),
+      run: () => importIt(c.agent, c.id),
+    }));
+    setPicker({
+      placeholder: `Import a conversation into ${topic.name}`,
+      empty: "No Claude Code or Codex conversations to import",
+      items,
+    });
+  };
+
   /** The prompt stays in the new tab, because it never reached the agent. */
   const onTabStalled = (topicId: string, sessionId: string, reason: string) => {
     replaceNewTab(topicId, sessionId);
@@ -711,6 +749,13 @@ export function App() {
         label: `New terminal in ${entry.topic.name}`,
         keys: onNewTab ? keysLabel("new_tab.terminal") : undefined,
         run: openTerminal,
+      });
+      items.push({
+        id: "import-conversation",
+        label: `Import a conversation into ${entry.topic.name}`,
+        detail: "Claude Code or Codex",
+        keys: keysLabel(onNewTab ? "new_tab.import" : "global.import_conversation"),
+        run: () => void findConversations(entry).catch(reportFailure),
       });
       items.push({
         id: "topic-mcp",
@@ -992,6 +1037,10 @@ export function App() {
         ["global.toggle_vim", () => toggleVim().catch(reportFailure)],
         ["global.move_topic", () => entry && pickFolder(entry)],
         ["global.archived_topics", () => void findArchived().catch(reportFailure)],
+        [
+          "global.import_conversation",
+          () => entry && void findConversations(entry).catch(reportFailure),
+        ],
         ["global.pair_machine", () => localDevice && void pairWith(localDevice).catch(reportFailure)],
         ["global.add_device", () => setSheet({ kind: "add_device" })],
         ["global.topic_mcp", openTopicMcp],
@@ -1160,6 +1209,7 @@ export function App() {
                   onState={(state) => setNewTabState(entry.topic.id, state)}
                   onSettings={openSettings}
                   onTerminal={openTerminal}
+                  onImport={() => void findConversations(entry).catch(reportFailure)}
                   onStarted={(sessionId) => onTabStarted(entry.topic.id, sessionId)}
                   onStalled={(sessionId, reason) =>
                     onTabStalled(entry.topic.id, sessionId, reason)

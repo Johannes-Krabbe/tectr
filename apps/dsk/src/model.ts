@@ -2,6 +2,7 @@
 
 import type {
   ArchiveRisk,
+  Conversation,
   DaemonState,
   Device,
   DeviceSettings,
@@ -230,6 +231,24 @@ export function moveChoices(topic: Topic, repoPath: string): MoveChoice[] {
     });
   }
   return choices;
+}
+
+/** Conversations to import into a topic. Those from its workspace or its folders are most likely
+ * the one, so they come first, each group staying newest first. */
+export function conversationsFor(
+  conversations: Conversation[],
+  workspace: Workspace,
+  topic: Topic,
+): Conversation[] {
+  const folders = [workspace.path, ...topic.worktrees.map((w) => w.path)];
+  const inside = (c: Conversation) =>
+    folders.some((folder) => c.cwd === folder || c.cwd.startsWith(`${folder}/`));
+  return [...conversations.filter(inside), ...conversations.filter((c) => !inside(c))];
+}
+
+/** The last part of a path, which is what tells folders apart in a list. */
+export function folderName(path: string): string {
+  return path.split("/").filter(Boolean).pop() ?? path;
 }
 
 export type ActivityStep =

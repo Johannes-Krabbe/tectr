@@ -266,6 +266,11 @@ pub const ACTIONS: &[Action] = &[
     once("global.move_topic", "Move the topic to another folder", &[]),
     once("global.archived_topics", "Restore an archived topic", &[]),
     once(
+        "global.import_conversation",
+        "Import a Claude Code or Codex conversation into the topic",
+        &[],
+    ),
+    once(
         "global.pair_machine",
         "Pair another machine with this one",
         &[],
@@ -383,6 +388,7 @@ pub const ACTIONS: &[Action] = &[
     once("new_tab.terminal", "Open a terminal", &["2", "t"]),
     once("new_tab.git", "Open git", &["3"]),
     once("new_tab.diff", "Open a diff", &["4", "d"]),
+    once("new_tab.import", "Import a conversation", &["5", "i"]),
     once("new_topic.start", "Start", &["enter"]),
     once("new_topic.newline", "New line", &["shift+enter"]),
     follows("new_topic.cancel", "Cancel", "nav.back"),

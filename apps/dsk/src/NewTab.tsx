@@ -8,7 +8,7 @@ import { hint, type Hint, useHints } from "./shortcuts";
 import { Icon, type IconName } from "./ui/Icon";
 import { Keys } from "./ui/StatusIcon";
 
-export type TabKind = "agent" | "terminal" | "git" | "diff";
+export type TabKind = "agent" | "terminal" | "git" | "diff" | "import";
 
 /** What this client has done in a topic's new tab: the kind chosen, if any, and the draft for
  * an agent, which stays when you go back to choosing. */
@@ -33,6 +33,13 @@ const KINDS: Kind[] = [
   { kind: "terminal", label: "Terminal", icon: "terminal", action: "new_tab.terminal", built: true },
   { kind: "git", label: "Git", icon: "git", action: "new_tab.git", built: false },
   { kind: "diff", label: "Diff", icon: "diff", action: "new_tab.diff", built: false },
+  {
+    kind: "import",
+    label: "Import a conversation",
+    icon: "import",
+    action: "new_tab.import",
+    built: true,
+  },
 ];
 
 const BUILT = KINDS.filter((k) => k.built);
@@ -46,6 +53,7 @@ export function NewTab({
   onState,
   onSettings,
   onTerminal,
+  onImport,
   onStarted,
   onStalled,
 }: {
@@ -55,6 +63,8 @@ export function NewTab({
   onSettings: (machineId: string) => void;
   /** A terminal needs no setup, so choosing one opens it. */
   onTerminal: () => void;
+  /** Chooses a Claude Code or Codex conversation to carry on here. */
+  onImport: () => void;
   onStarted: (sessionId: string) => void;
   /** The agent started but its prompt didn't reach it, so starting again would make another. */
   onStalled: (sessionId: string, reason: string) => void;
@@ -65,6 +75,10 @@ export function NewTab({
     if (!KINDS.some((k) => k.kind === kind && k.built)) return;
     if (kind === "terminal") {
       onTerminal();
+      return;
+    }
+    if (kind === "import") {
+      onImport();
       return;
     }
     onState({ ...state, kind });

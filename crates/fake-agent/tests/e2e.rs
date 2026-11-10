@@ -3120,3 +3120,113 @@ async fn a_paired_daemon_listens_again_after_a_restart() {
     assert_eq!(connection(&remote, &url), Some(Connection::Online));
     daemon.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_imported_conversation_shows_its_history_and_carries_on_where_it_was() {
+    let fixture = Fixture::new();
+    let home = fixture.root.join("home");
+    let id = "7f0c2a52-9a8e-4c1e-9d47-3c1f1c0d2b6e";
+    let conversation = [
+        r#"{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Fix the login bug"},"uuid":"u1","timestamp":"2026-11-10T11:30:00.000Z","cwd":"/elsewhere"}"#,
+        r#"{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Fixed it."}]},"uuid":"a1","timestamp":"2026-11-10T11:30:05.000Z"}"#,
+        r#"{"type":"ai-title","aiTitle":"Login bug"}"#,
+    ]
+    .join("\n");
+    let folder = home.join(".claude/projects/-elsewhere");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(format!("{id}.jsonl")), conversation).unwrap();
+
+    // The fake agent stands in for Claude, whose conversations these are.
+    let mut config = fixture.config("d", 0);
+    config.agents = BTreeMap::from([(
+        "claude".to_owned(),
+        AgentLauncher::Command {
+            program: env!("CARGO_BIN_EXE_fake-agent").into(),
+            args: vec![],
+        },
+    )]);
+    config.mcp_home = daemon::ConfigHome {
+        home: Some(home),
+        codex_home: None,
+        xdg_config: None,
+        opencode_config: None,
+        opencode_content: None,
+    };
+    let daemon = Daemon::start(config).await.unwrap();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let list = async || match engine
+        .request(&machine, Command::ListConversations)
+        .await
+        .unwrap()
+    {
+        CommandOutput::Conversations { conversations } => conversations,
+        other => panic!("unexpected output {other:?}"),
+    };
+    let import = |topic: &Topic| Command::ImportConversation {
+        topic_id: topic.id.clone(),
+        agent: "claude".to_owned(),
+        id: id.to_owned(),
+    };
+
+    // Only an agent added to the device has conversations to import.
+    assert_eq!(list().await, []);
+    let topic = add_unnamed_topic(&engine, &machine, &fixture.repo).await;
+    let refused = engine.request(&machine, import(&topic)).await.unwrap_err();
+    assert!(matches!(refused, EngineError::Command(e) if e.code == ErrorCode::InvalidInput));
+    let add = Command::AddProvider {
+        agent: "claude".to_owned(),
+    };
+    engine.request(&machine, add).await.unwrap();
+    let found = list().await;
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        (found[0].id.as_str(), found[0].title.as_str()),
+        (id, "Login bug")
+    );
+    assert_eq!(found[0].cwd, "/elsewhere");
+
+    let session = match engine.request(&machine, import(&topic)).await.unwrap() {
+        CommandOutput::Session { session, .. } => session,
+        other => panic!("unexpected output {other:?}"),
+    };
+    assert_eq!(session.status, SessionStatus::Stopped);
+    assert_eq!(session.title.as_deref(), Some("Login bug"));
+    assert_eq!(session.mode, PermissionMode::Auto);
+    let session = SessionRef {
+        machine_id: machine.clone(),
+        session_id: session.id,
+    };
+    engine.open_session(&session);
+    wait_for("the imported history", || {
+        (agent_text(&engine, &session) == ["Fixed it."]).then_some(())
+    })
+    .await;
+    let history = engine.events_after(&session, 0);
+    assert!(
+        matches!(&history[0].kind, SessionEventKind::UserPrompt { text, .. } if text == "Fix the login bug")
+    );
+    assert_eq!(history[0].at_ms, 1_794_310_200_000);
+    assert_gapless(&engine, &session);
+    wait_for_topic_name(&engine, &topic, "Login bug").await;
+
+    // Once open, it can't be listed or imported again.
+    assert_eq!(list().await, []);
+    let twice = engine.request(&machine, import(&topic)).await.unwrap_err();
+    assert!(matches!(twice, EngineError::Command(e) if e.code == ErrorCode::InvalidInput));
+
+    // Its first prompt resumes the agent's own session, told it's in a new folder now.
+    prompt(&engine, &session, "whoami").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let said = agent_text(&engine, &session);
+    assert!(
+        said[1].starts_with("[tectr] This conversation moved"),
+        "{said:?}"
+    );
+    assert!(said[1].contains("no longer in /elsewhere"), "{said:?}");
+    assert!(
+        said[2].contains(&format!("resumed=true session={id}")),
+        "{said:?}"
+    );
+    daemon.shutdown().await;
+}
