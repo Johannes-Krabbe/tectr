@@ -9,15 +9,18 @@ publish.workspace = true
 [dependencies]
 protocol.workspace = true
 
+dirs.workspace = true
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite.workspace = true
+iroh.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 
 [lints]

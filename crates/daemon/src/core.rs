@@ -25,10 +25,12 @@ use tokio::task::JoinHandle;
 use crate::agents::AgentLauncher;
 use crate::awake::{KeepAwake, KeepAwakeCommand};
 use crate::mcp::ConfigHome;
+use crate::remote::Network;
 use crate::store::Store;
 use crate::{acp, folders, git};
 
 mod mcp;
+mod remote;
 
 /// A live update for connected clients.
 #[derive(Debug, Clone)]
@@ -111,6 +113,12 @@ pub struct Core {
     logins: Mutex<HashMap<String, mcp::PendingLogin>>,
     /// Refreshing one login at a time keeps two requests from using up one refresh token.
     token_refresh: tokio::sync::Mutex<()>,
+    /// What this daemon proves to remote clients, and what they dial.
+    remote_key: iroh::SecretKey,
+    network: Network,
+    /// Set once something needs remote clients: a pairing, or a client already paired.
+    endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
+    pairing: Mutex<Option<remote::Pairing>>,
 }
 
 /// What `Core::open` needs besides the data directory.
@@ -121,6 +129,7 @@ pub struct CoreOptions {
     pub keep_awake: Option<KeepAwakeCommand>,
     pub port: u16,
     pub config_home: ConfigHome,
+    pub network: Network,
 }
 
 impl Core {
@@ -132,8 +141,16 @@ impl Core {
             keep_awake,
             port,
             config_home,
+            network,
         } = options;
         let store = Store::open(&data_dir.join("tectr.db"))?;
+        let remote_key = store.remote_key(|| {
+            let bytes = iroh::SecretKey::generate().to_bytes();
+            bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+        })?;
+        let remote_key: iroh::SecretKey = remote_key
+            .parse()
+            .context("the stored remote key is damaged")?;
         let machine = Machine {
             id: store.machine_id()?,
             name: store.machine_name()?.unwrap_or_else(|| hostname.clone()),
@@ -169,6 +186,10 @@ impl Core {
                 .context("failed to set up HTTP for MCP servers")?,
             logins: Mutex::new(HashMap::new()),
             token_refresh: tokio::sync::Mutex::new(()),
+            remote_key,
+            network,
+            endpoint: tokio::sync::OnceCell::new(),
+            pairing: Mutex::new(None),
         }))
     }
 
@@ -288,6 +309,9 @@ impl Core {
                 .map(|_| CommandOutput::Done),
             Command::LogoutMcpServer { id } => self.logout_mcp_server(&id),
             Command::ImportMcpServers => self.import_mcp_servers().await,
+            Command::StartPairing => self.start_pairing().await,
+            Command::CancelPairing => Ok(self.cancel_pairing()),
+            Command::RemovePairedClient { key } => self.remove_paired_client(&key),
             Command::Unknown => Err(invalid("this daemon doesn't know that command")),
         }
     }
@@ -1441,6 +1465,10 @@ impl Core {
     /// Stops every agent and waits for them to exit.
     pub async fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
+        // Remote clients go first, so none of them sees agents stopping one by one.
+        if let Some(endpoint) = self.endpoint.get() {
+            endpoint.close().await;
+        }
         let tasks: Vec<_> = {
             let mut inner = self.lock();
             let mut tasks: Vec<_> = inner
@@ -1791,6 +1819,7 @@ mod tests {
                 opencode_config: None,
                 opencode_content: None,
             },
+            network: Network::Local,
         }
     }
 
@@ -1813,6 +1842,70 @@ mod tests {
         assert_eq!(name(&core), "Desk");
         core.handle(rename(" ")).await.unwrap();
         assert_eq!(name(&core), "host");
+    }
+
+    #[tokio::test]
+    async fn a_pairing_code_works_once_and_wrong_secrets_use_it_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(dir.path(), options("host", None)).unwrap();
+        let start = || async {
+            let Ok(CommandOutput::Pairing { code, .. }) = core.handle(Command::StartPairing).await
+            else {
+                panic!("no code");
+            };
+            protocol::PairingCode::parse(&code).unwrap()
+        };
+        let request = |secret: &str| protocol::PairRequest {
+            secret: secret.to_owned(),
+            name: "  Laptop  ".to_owned(),
+        };
+        let paired = |response: protocol::PairResponse| {
+            matches!(response, protocol::PairResponse::Paired { .. })
+        };
+        let laptop = iroh::SecretKey::generate().public();
+        let phone = iroh::SecretKey::generate().public();
+
+        let code = start().await;
+        assert_eq!(code.daemon_key, core.remote_id().to_string());
+        assert!(core.remote_addr().is_some(), "pairing starts listening");
+        assert!(!core.is_paired(&laptop));
+        assert!(paired(core.pair(&laptop, &request(&code.secret))));
+        assert!(core.is_paired(&laptop));
+        let clients = core.snapshot_and_subscribe().0.paired_clients;
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name, "Laptop");
+        assert!(
+            !paired(core.pair(&phone, &request(&code.secret))),
+            "a code works once"
+        );
+
+        let code = start().await;
+        for _ in 0..5 {
+            assert!(!paired(core.pair(&phone, &request("wrong"))));
+        }
+        assert!(
+            !paired(core.pair(&phone, &request(&code.secret))),
+            "too many wrong secrets use the code up"
+        );
+
+        let code = start().await;
+        core.handle(Command::CancelPairing).await.unwrap();
+        assert!(!core.pairing_open());
+        assert!(!paired(core.pair(&phone, &request(&code.secret))));
+
+        let key = laptop.to_string();
+        let remove = || Command::RemovePairedClient { key: key.clone() };
+        core.handle(remove()).await.unwrap();
+        assert!(!core.is_paired(&laptop));
+        assert!(core.handle(remove()).await.is_err());
+        core.shutdown().await;
+
+        let reopened = Core::open(dir.path(), options("host", None)).unwrap();
+        assert_eq!(
+            reopened.remote_id(),
+            code.daemon_key.parse().unwrap(),
+            "the key survives a restart"
+        );
     }
 
     #[tokio::test]

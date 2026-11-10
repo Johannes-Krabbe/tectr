@@ -1,0 +1,141 @@
+//! Connections from clients on other machines, over iroh. A paired client gets the same
+//! websocket protocol as loopback, on one QUIC stream. Any other key may only try to pair,
+//! and only while a code is out.
+
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use iroh::endpoint::{Connection, Incoming, presets};
+use iroh::{Endpoint, EndpointId, SecretKey};
+use protocol::{PAIRING_ALPN, PairRequest, PairResponse, REMOTE_ALPN};
+use tokio::task::JoinSet;
+
+use crate::core::Core;
+
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// A pairing request is a secret and a name, so anything longer isn't one.
+const MAX_PAIR_REQUEST: usize = 4096;
+
+/// QUIC close codes, so a refused client can tell why.
+const CLOSE_DONE: u32 = 0;
+const CLOSE_NOT_PAIRED: u32 = 1;
+
+/// How the daemon reaches the network for remote clients.
+#[derive(Debug, Clone, Default)]
+pub enum Network {
+    /// n0's public relays and address lookup, so clients find this daemon by its key alone.
+    #[default]
+    Public,
+    /// Loopback only, with no relay or lookup, for tests. Clients need the address from
+    /// [`crate::Daemon::remote_addr`].
+    Local,
+}
+
+pub(crate) async fn bind(network: &Network, key: SecretKey) -> Result<Endpoint> {
+    let builder = match network {
+        Network::Public => Endpoint::builder(presets::N0),
+        Network::Local => Endpoint::builder(presets::Minimal)
+            .clear_ip_transports()
+            .bind_addr("127.0.0.1:0")
+            .context("invalid loopback address")?,
+    };
+    builder
+        .secret_key(key)
+        .alpns(vec![REMOTE_ALPN.to_vec(), PAIRING_ALPN.to_vec()])
+        .bind()
+        .await
+        .context("couldn't start listening for remote clients")
+}
+
+/// Runs until the endpoint closes, which also ends every connection. It's boxed because a
+/// connection can start a pairing, which is what starts this loop, and the compiler can't
+/// work out that cycle's type by itself.
+pub(crate) fn accept_loop(
+    core: Arc<Core>,
+    endpoint: Endpoint,
+) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+    Box::pin(run_accept_loop(core, endpoint))
+}
+
+async fn run_accept_loop(core: Arc<Core>, endpoint: Endpoint) {
+    let mut connections = JoinSet::new();
+    loop {
+        tokio::select! {
+            incoming = endpoint.accept() => {
+                let Some(incoming) = incoming else { return };
+                let core = core.clone();
+                connections.spawn(async move {
+                    if let Err(error) = handle(core, incoming).await {
+                        tracing::debug!("remote connection ended: {error:#}");
+                    }
+                });
+            }
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
+        }
+    }
+}
+
+async fn handle(core: Arc<Core>, incoming: Incoming) -> Result<()> {
+    let connection = tokio::time::timeout(HANDSHAKE_TIMEOUT, incoming.accept()?)
+        .await
+        .context("no handshake in time")??;
+    let peer = connection.remote_id();
+    if connection.alpn() == REMOTE_ALPN {
+        if !core.is_paired(&peer) {
+            connection.close(CLOSE_NOT_PAIRED.into(), b"not paired with this device");
+            return Ok(());
+        }
+        tracing::debug!(peer = %peer.fmt_short(), "remote client connected");
+        let result = serve(core.clone(), &connection, peer).await;
+        if core.is_paired(&peer) {
+            connection.close(CLOSE_DONE.into(), b"");
+        } else {
+            connection.close(CLOSE_NOT_PAIRED.into(), b"not paired with this device");
+        }
+        result
+    } else if connection.alpn() == PAIRING_ALPN {
+        pair(&core, &connection, peer).await
+    } else {
+        bail!("unexpected protocol");
+    }
+}
+
+async fn serve(core: Arc<Core>, connection: &Connection, peer: EndpointId) -> Result<()> {
+    let (send, recv) = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.accept_bi())
+        .await
+        .context("no stream in time")??;
+    crate::server::serve_remote(core, tokio::io::join(recv, send), peer.to_string()).await
+}
+
+async fn pair(core: &Core, connection: &Connection, peer: EndpointId) -> Result<()> {
+    // Nothing to check a secret against, so there's no reason to read one.
+    if !core.pairing_open() {
+        connection.close(
+            CLOSE_NOT_PAIRED.into(),
+            b"this device isn't pairing right now",
+        );
+        return Ok(());
+    }
+    let (mut send, mut recv) = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.accept_bi())
+        .await
+        .context("no stream in time")??;
+    let request = tokio::time::timeout(HANDSHAKE_TIMEOUT, recv.read_to_end(MAX_PAIR_REQUEST))
+        .await
+        .context("no pairing request in time")??;
+    let response = match serde_json::from_slice::<PairRequest>(&request) {
+        Ok(request) => core.pair(&peer, &request),
+        Err(_) => PairResponse::Refused {
+            reason: "that wasn't a pairing request".to_owned(),
+        },
+    };
+    if let PairResponse::Paired { .. } = response {
+        tracing::info!(peer = %peer.fmt_short(), "paired a new client");
+    }
+    send.write_all(&serde_json::to_vec(&response)?).await?;
+    send.finish()?;
+    // Closing now could drop the answer, so the client closes once it has read it.
+    let _ = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.closed()).await;
+    Ok(())
+}

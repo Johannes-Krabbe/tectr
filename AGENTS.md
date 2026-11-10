@@ -11,7 +11,7 @@ We don't care about backwards compatibility, this app is only used by me and i a
 
 A fast desktop and mobile app for running, watching and steering many coding agents in parallel, across your own machines, with no central server. It is a **keyboard-first, highly customizable power user tool**.
 
-Today: daemon, CLI and a first desktop app. iOS is a placeholder. Pairing, the push relay, Tailscale discovery and diffing aren't built.
+Today: daemon, CLI and a first desktop app, with pairing and remote connections over iroh. iOS is a placeholder. The push relay and diffing aren't built.
 
 ## Power user rules
 
@@ -41,7 +41,7 @@ Device -> workspace -> topic -> tabs. A workspace lives on one device. The daemo
 ## Invariants
 
 - **Thin clients:** apps render state and send actions. They never touch a socket or talk to an agent. Shared logic goes in `engine`.
-- **Loopback only:** the daemon's address stays hardcoded until pairing exists, and no setting may change it. A network listener would effectively be remote code execution.
+- **Loopback or a paired key:** the daemon's websocket stays on a hardcoded loopback address, and no setting may change it. Remote clients connect only over iroh, and only with a key on the daemon's allowed list. Anything else would effectively be remote code execution.
 - **Speed is a feature:** instant startup, batched per-frame updates, deltas rather than whole transcripts, virtualized transcripts, heavy work off the UI thread.
 - **Tokens:** app code uses tokens, with no raw colors. Edit `design/tokens/*.tokens.json`, never `generated/`, then run `mise run tokens`.
 - **`unsafe`:** forbidden except `color_title_bar`. Ask before adding another.
