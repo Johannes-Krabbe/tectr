@@ -53,12 +53,9 @@ stop, stop and tell the user what happened, with the exact error output.
 1. Find the last release: `git describe --tags --abbrev=0` (for example `v0.1.0`).
 2. If `$ARGUMENTS` is a version like `0.2.0` (three numbers, no `v`), use it. It must be
    higher than the last release. If it isn't, stop and ask.
-3. If `$ARGUMENTS` is empty, list what changed with
-   `git log <last-tag>..HEAD --oneline` and propose a version:
-   - While the version is below 1.0.0: new features or breaking changes -> bump the middle
-     number (0.1.3 -> 0.2.0). Only fixes and small changes -> bump the last number
-     (0.1.3 -> 0.1.4).
-   - Ask the user to confirm the version before continuing. Do not continue without an answer.
+3. If `$ARGUMENTS` is empty, bump the middle number of the last release (0.2.0 -> 0.3.0)
+   and reset the last number to 0. Always do this, whatever the commits contain, unless the
+   user specified another version. Do not ask for confirmation; state the version you chose.
 4. If `git log <last-tag>..HEAD --oneline` prints nothing, there's nothing to release. Stop
    and tell the user.
 
