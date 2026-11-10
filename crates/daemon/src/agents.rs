@@ -151,6 +151,51 @@ pub async fn check_node() -> Result<()> {
     }
 }
 
+/// The Claude Code the Claude adapter ships with and runs, installing the adapter first if
+/// needed. The caller must not run two installs at the same time.
+pub async fn bundled_claude_code(data_dir: &Path) -> Result<PathBuf> {
+    install_adapter(data_dir, &CLAUDE_ADAPTER).await?;
+    let install_dir = data_dir
+        .join("adapters")
+        .join(CLAUDE_ADAPTER.directory)
+        .join(CLAUDE_ADAPTER.version);
+    // The same packages the adapter looks for: a native binary for each platform, an
+    // optional dependency of the SDK, which npm may not hoist.
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    };
+    let packages = match std::env::consts::OS {
+        "macos" => vec![format!("claude-agent-sdk-darwin-{arch}")],
+        "linux" => vec![
+            format!("claude-agent-sdk-linux-{arch}"),
+            format!("claude-agent-sdk-linux-{arch}-musl"),
+        ],
+        other => vec![format!("claude-agent-sdk-{other}-{arch}")],
+    };
+    let roots = [
+        install_dir.join("node_modules"),
+        install_dir
+            .join("node_modules/@anthropic-ai/claude-agent-sdk")
+            .join("node_modules"),
+    ];
+    roots
+        .iter()
+        .flat_map(|root| {
+            packages
+                .iter()
+                .map(move |package| root.join("@anthropic-ai").join(package).join("claude"))
+        })
+        .find(|binary| binary.is_file())
+        .with_context(|| {
+            format!(
+                "the Claude adapter in {} has no Claude Code for this platform",
+                install_dir.display()
+            )
+        })
+}
+
 async fn install_adapter(data_dir: &Path, adapter: &NpmAdapter) -> Result<PathBuf> {
     let versions = data_dir.join("adapters").join(adapter.directory);
     let install_dir = versions.join(adapter.version);

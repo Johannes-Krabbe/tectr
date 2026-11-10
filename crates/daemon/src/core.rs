@@ -378,6 +378,7 @@ impl Core {
                 .map(|_| CommandOutput::Done),
             Command::LogoutMcpServer { id } => self.logout_mcp_server(&id),
             Command::ImportMcpServers => self.import_mcp_servers().await,
+            Command::RefreshMcpConnectors => self.refresh_mcp_connectors().await,
             Command::ListConversations => self.list_conversations().await,
             Command::ImportConversation {
                 topic_id,
@@ -1068,11 +1069,13 @@ impl Core {
             .context("the session's topic no longer exists")?;
         let proxy_secret = crate::new_id();
         let proxy = format!("http://127.0.0.1:{}/mcp/{proxy_secret}", self.port);
-        let (mcp_ids, mcp_servers) = crate::mcp::agent_servers(&inner.state, topic, &proxy);
+        let topic_mcp = crate::mcp::agent_servers(&inner.state, topic, &proxy);
+        let mcp_ids = topic_mcp.ids;
         let mcp_fingerprint = mcp::fingerprint(&inner.state, topic);
         let spawn = acp::AgentSpawn {
             run: proxy_secret.clone(),
-            mcp: mcp_servers,
+            mcp: topic_mcp.servers,
+            connectors: topic_mcp.connectors,
             session_id: session.id.clone(),
             cwd: cwd.into(),
             launcher,
@@ -2214,9 +2217,125 @@ mod tests {
                 xdg_config: None,
                 opencode_config: None,
                 opencode_content: None,
+                claude_code: None,
             },
             network: Network::Local,
         }
+    }
+
+    #[tokio::test]
+    async fn connectors_follow_what_the_agents_list_and_only_turn_on_or_off() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Stands in for the Claude Code that lists connectors.
+        let listing = dir.path().join("list.txt");
+        let claude = dir.path().join("claude");
+        std::fs::write(&claude, format!("#!/bin/sh\ncat '{}'\n", listing.display())).unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let codex_cache = dir.path().join("codex/cache/codex_apps_tools");
+        std::fs::create_dir_all(&codex_cache).unwrap();
+        std::fs::write(
+            codex_cache.join("a.json"),
+            r#"{"tools":[{"connector_id":"asdk_app_1","connector_name":"Slack"}]}"#,
+        )
+        .unwrap();
+        let mut options = options("host", None);
+        options.agents = crate::agents::default_agents();
+        options.config_home.claude_code = Some(claude);
+        options.config_home.codex_home = Some(dir.path().join("codex"));
+        std::fs::create_dir_all(dir.path().join("data")).unwrap();
+        let core = Core::open(&dir.path().join("data"), options).unwrap();
+        let refresh = || async {
+            match core.handle(Command::RefreshMcpConnectors).await {
+                Ok(CommandOutput::McpConnectors {
+                    added,
+                    removed,
+                    problems,
+                }) => Ok((added, removed, problems)),
+                Ok(other) => panic!("unexpected output {other:?}"),
+                Err(error) => Err(error.message),
+            }
+        };
+        let server = |name: &str| {
+            core.snapshot_and_subscribe()
+                .0
+                .mcp_servers
+                .into_iter()
+                .find(|server| server.name == name)
+        };
+
+        let error = refresh().await.unwrap_err();
+        assert!(error.contains("Add one of them"), "{error}");
+
+        for agent in ["claude", "codex"] {
+            let provider: protocol::Provider = serde_json::from_value(serde_json::json!({
+                "agent": agent, "name": agent, "version": null, "modes": [], "models": [],
+                "default_model": null,
+            }))
+            .unwrap();
+            let mut inner = core.lock();
+            inner.store.upsert_provider(&provider).unwrap();
+            inner.emit(StateChange::ProviderChanged { provider });
+        }
+        std::fs::write(
+            &listing,
+            "claude.ai Slack: https://mcp.slack.com/mcp - Connected\n\
+             claude.ai Linear: https://mcp.linear.app/mcp - Connected\n",
+        )
+        .unwrap();
+        let (added, removed, problems) = refresh().await.unwrap();
+        assert_eq!(
+            added,
+            ["claude.ai Slack", "claude.ai Linear", "ChatGPT Slack"]
+        );
+        assert!(removed.is_empty() && problems.is_empty(), "{problems:?}");
+        let slack = server("claude.ai Slack").unwrap();
+        assert!(!slack.enabled, "a new connector starts off");
+
+        // Turning one on keeps its own name, whatever is sent.
+        core.handle(Command::SaveMcpServer {
+            id: Some(slack.id.clone()),
+            name: "renamed".to_owned(),
+            topic_id: None,
+            transport: slack.transport.clone(),
+            enabled: true,
+        })
+        .await
+        .unwrap();
+        assert!(server("claude.ai Slack").unwrap().enabled);
+        let made_up = protocol::McpTransport::ClaudeConnector {
+            url: "https://elsewhere".to_owned(),
+        };
+        for id in [None, Some(slack.id.clone())] {
+            let error = core
+                .handle(Command::SaveMcpServer {
+                    id,
+                    name: "x".to_owned(),
+                    topic_id: None,
+                    transport: made_up.clone(),
+                    enabled: true,
+                })
+                .await
+                .unwrap_err();
+            assert!(error.message.contains("refreshing"), "{}", error.message);
+        }
+
+        // A gone connector goes, and an agent that can't be asked keeps what it had.
+        std::fs::write(
+            &listing,
+            "claude.ai Slack: https://mcp.slack.com/mcp - Connected\n\
+             claude.ai Notion: https://mcp.notion.com/mcp - Connected\n",
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&codex_cache).unwrap();
+        let (added, removed, problems) = refresh().await.unwrap();
+        assert_eq!(added, ["claude.ai Notion"]);
+        assert_eq!(removed, ["claude.ai Linear"]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(server("claude.ai Slack").unwrap().enabled, "it stays on");
+        assert!(server("ChatGPT Slack").is_some());
+        assert!(server("claude.ai Linear").is_none());
     }
 
     #[tokio::test]

@@ -906,6 +906,7 @@ mod tests {
             xdg_config: None,
             opencode_config: None,
             opencode_content: None,
+            claude_code: None,
         }
     }
 

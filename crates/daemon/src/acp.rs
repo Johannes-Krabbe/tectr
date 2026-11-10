@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 
 use crate::agents::AgentLauncher;
 use crate::core::{Core, Prompt, SessionCommand, SessionSettings};
-use crate::mcp::{self, AgentMcp, Isolation};
+use crate::mcp::{self, AgentConnector, AgentMcp, Isolation};
 
 /// An agent mid-turn can be slow to answer, but nothing else reaches it until it does, and
 /// that includes cancelling. So one that takes this long is treated as having failed.
@@ -42,8 +42,10 @@ pub struct AgentSpawn {
     pub settings: SessionSettings,
     /// The agent's own session ID, if this session has run before.
     pub resume: Option<String>,
-    /// The MCP servers it gets, and the only ones.
+    /// The MCP servers it gets, and the only ones apart from `connectors`.
     pub mcp: Vec<AgentMcp>,
+    /// Its agent's own connectors that its topic turns on.
+    pub connectors: Vec<AgentConnector>,
 }
 
 /// Starts the agent with its own MCP servers switched off.
@@ -122,8 +124,13 @@ async fn drive(
     spawn: AgentSpawn,
     mut commands: mpsc::UnboundedReceiver<SessionCommand>,
 ) -> Result<()> {
-    let keep: Vec<&str> = spawn.mcp.iter().map(AgentMcp::name).collect();
-    let isolation = mcp::isolation(&spawn.launcher, &spawn.cwd, &keep, core.config_home());
+    let isolation = mcp::isolation(
+        &spawn.launcher,
+        &spawn.cwd,
+        &spawn.mcp,
+        &spawn.connectors,
+        core.config_home(),
+    );
     let agent = launch(core, &spawn.launcher, &isolation).await?;
 
     let id = spawn.session_id.clone();
@@ -515,7 +522,7 @@ pub async fn probe(
     cwd: PathBuf,
 ) -> Result<tp::Provider> {
     // Its own servers would only slow it down, and it uses none.
-    let isolation = mcp::isolation(launcher, &cwd, &[], core.config_home());
+    let isolation = mcp::isolation(launcher, &cwd, &[], &[], core.config_home());
     let agent = launch(core, launcher, &isolation).await?;
     Client
         .v1()

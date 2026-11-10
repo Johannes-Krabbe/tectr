@@ -64,6 +64,14 @@ pub enum McpCmd {
         #[arg(long)]
         on: Option<String>,
     },
+    /// Bring in the claude.ai connectors and ChatGPT apps of the device's Claude and Codex.
+    /// New ones start off. Turn one on by its name in quotes, like "claude.ai Slack".
+    Connectors {
+        /// The machine to refresh, by name or ID prefix. Needed only with more than one
+        /// daemon.
+        #[arg(long)]
+        on: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -204,6 +212,28 @@ pub async fn run(engine: &Engine, command: McpCmd) -> Result<()> {
                 }
                 for reason in skipped {
                     println!("skipped {reason}");
+                }
+            }
+        }
+        McpCmd::Connectors { on } => {
+            let machine = choose_machine(engine, on.as_deref())?;
+            let output = engine
+                .request(&machine, Command::RefreshMcpConnectors)
+                .await?;
+            if let CommandOutput::McpConnectors {
+                added,
+                removed,
+                problems,
+            } = output
+            {
+                for name in added {
+                    println!("added {name}");
+                }
+                for name in removed {
+                    println!("removed {name}");
+                }
+                for problem in problems {
+                    println!("couldn't list: {problem}");
                 }
             }
         }
@@ -473,6 +503,8 @@ fn describe_transport(transport: &McpTransport) -> String {
             }
             line
         }
+        McpTransport::ClaudeConnector { url } => format!("claude.ai connector {url}"),
+        McpTransport::CodexApp { id } => format!("ChatGPT app {id}"),
         McpTransport::Unknown => "unknown transport".to_owned(),
     }
 }
@@ -529,12 +561,13 @@ fn print_servers(state: &DaemonState) {
     }
 }
 
-/// One line for `tectr status`: the device's servers, with what needs attention.
+/// One line for `tectr status`: the device's servers, with what needs attention. Connectors
+/// that are off are left out, because there can be many.
 pub fn status_line(state: &DaemonState) -> Option<String> {
     let servers: Vec<_> = state
         .mcp_servers
         .iter()
-        .filter(|s| s.topic_id.is_none())
+        .filter(|s| s.topic_id.is_none() && (s.enabled || !s.transport.is_connector()))
         .map(|s| format!("{} {}{}", s.name, on_off(s.enabled), auth_label(s.auth)))
         .collect();
     (!servers.is_empty()).then(|| format!("mcp {}", servers.join(", ")))
