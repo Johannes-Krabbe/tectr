@@ -45,7 +45,16 @@ build() {
   # build would be a dev build.
   export TECTR_CHANNEL=release
   pnpm install --frozen-lockfile
-  pnpm --dir apps/dsk tauri build
+
+  # Tauri runs actool with stdin closed. actool then starts its ibtoold helper
+  # without a stdin, which fails with "Bad file descriptor", and since ibtoold
+  # stays running, every later actool run fails the same way until it's killed.
+  # The shim gives actool a stdin.
+  local shim="$root/target/actool-shim"
+  mkdir -p "$shim"
+  printf '#!/bin/sh\nexec /usr/bin/actool "$@" </dev/null\n' >"$shim/actool"
+  chmod +x "$shim/actool"
+  PATH="$shim:$PATH" pnpm --dir apps/dsk tauri build
   cargo build --release --locked -p daemon -p cli
 
   # A dev build would quietly use the dev port and data, so check before shipping.

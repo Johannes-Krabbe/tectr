@@ -45,7 +45,11 @@ stop, stop and tell the user what happened, with the exact error output.
 - Never force-push, delete tags on `origin`, or delete GitHub releases without asking first.
 - Writing rule for anything you write (commit messages, notes): plain ASCII only. No em
   dashes, no ellipsis character, no arrows. Use `...` and `->`.
-- `mise` may not be on PATH in your shell. Call the scripts and tools directly, as shown.
+- Run the build, test and release commands through `mise exec --`, as shown, so they get the
+  zig, node and pnpm pinned in `mise.toml`. The daemon's release build needs zig. If `mise`
+  isn't on PATH, it's at `/opt/homebrew/bin/mise`.
+- Run Step 4 outside any command sandbox. It pushes and uploads, and Xcode's actool needs its
+  helper daemon.
 - Run every command from the repo root: `/Users/johanneskrabbe/Developer/tectr`.
 
 ## Step 1: Choose the version
@@ -84,12 +88,12 @@ uname -sm                          # must print: Darwin arm64
 Do not release a version that fails these. Run each one and wait for it to finish:
 
 ```sh
-cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo clippy -p dsk --all-targets -- -D warnings
-cargo test
-node --experimental-strip-types --test apps/dsk/src/*.test.ts
-node --test design/tokens/tokens.test.mjs
+mise exec -- cargo fmt --all --check
+mise exec -- cargo clippy --all-targets -- -D warnings
+mise exec -- cargo clippy -p dsk --all-targets -- -D warnings
+mise exec -- cargo test
+mise exec -- node --experimental-strip-types --test apps/dsk/src/*.test.ts
+mise exec -- node --test design/tokens/tokens.test.mjs
 ```
 
 If any of them fails, stop and show the failing output. Do not try to fix the code as part of
@@ -100,7 +104,7 @@ the release.
 Run this, with a timeout of 600000 ms, because the build takes several minutes:
 
 ```sh
-scripts/release.sh publish <version>
+mise exec -- scripts/release.sh publish <version>
 ```
 
 Success ends with these two lines:
