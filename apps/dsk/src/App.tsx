@@ -1191,6 +1191,7 @@ export function App() {
                   commands={entry.device.state?.commands?.[session.id]}
                   worktree={topicWorktree(entry.topic)}
                   onInterrupt={isActive(session) ? interrupt : undefined}
+                  onBranched={(id) => selectTab(entry.topic.id, id)}
                 />
               ) : shownTerminal ? (
                 <Suspense fallback={<div className="pane terminal" />}>

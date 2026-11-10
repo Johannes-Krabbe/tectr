@@ -117,6 +117,10 @@ enum Cmd {
         /// The conversation's ID or a prefix of it, as `tectr conversations` lists it.
         conversation: String,
     },
+    /// Open a new tab in the session's topic that carries on from its latest finished answer,
+    /// with the agent remembering everything up to there. Only agents that can copy their
+    /// sessions can do this.
+    Fork { session: String },
     /// Send a prompt and return without waiting for the agent.
     Prompt { session: String, text: String },
     /// Print a session's history and follow it live.
@@ -408,6 +412,21 @@ async fn main() -> Result<()> {
                         topic_id,
                         agent: found.agent,
                         id: found.id,
+                    },
+                )
+                .await?;
+            if let CommandOutput::Session { session, .. } = output {
+                println!("session {} {}", short(&session.id.0), session.agent);
+            }
+        }
+        Cmd::Fork { session } => {
+            let session = resolve_session(&engine, &session)?;
+            let output = engine
+                .request(
+                    &session.machine_id,
+                    Command::ForkSession {
+                        session_id: session.session_id,
+                        after_seq: None,
                     },
                 )
                 .await?;
@@ -887,7 +906,9 @@ impl Printer {
             SessionEventKind::PermissionResolved { outcome, .. } => {
                 println!("[permission] {outcome:?}");
             }
-            SessionEventKind::TurnEnded { stop_reason } => println!("[turn ended] {stop_reason:?}"),
+            SessionEventKind::TurnEnded { stop_reason, .. } => {
+                println!("[turn ended] {stop_reason:?}");
+            }
             SessionEventKind::Error { message } => println!("[error] {message}"),
             SessionEventKind::Unknown => {}
         }

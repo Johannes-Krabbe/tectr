@@ -2431,7 +2431,8 @@ async fn a_second_prompt_during_a_turn_is_refused_and_cancel_stops_it() {
             .any(|event| matches!(
                 event.kind,
                 SessionEventKind::TurnEnded {
-                    stop_reason: StopReason::Cancelled
+                    stop_reason: StopReason::Cancelled,
+                    ..
                 }
             ))
     );
@@ -3228,6 +3229,241 @@ async fn an_imported_conversation_shows_its_history_and_carries_on_where_it_was(
     assert!(
         said[2].contains(&format!("resumed=true session={id}")),
         "{said:?}"
+    );
+    daemon.shutdown().await;
+}
+
+async fn add_provider(engine: &Engine, machine: &MachineId, agent: &str) -> protocol::Provider {
+    let add = Command::AddProvider {
+        agent: agent.to_owned(),
+    };
+    match engine.request(machine, add).await.unwrap() {
+        CommandOutput::Provider { provider } => provider,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+async fn fork(
+    engine: &Engine,
+    session: &SessionRef,
+    after_seq: Option<u64>,
+) -> Result<Session, EngineError> {
+    let command = Command::ForkSession {
+        session_id: session.session_id.clone(),
+        after_seq,
+    };
+    match engine.request(&session.machine_id, command).await? {
+        CommandOutput::Session { session, .. } => Ok(session),
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+/// Each finished answer's `seq` with what the agent said is its last message.
+fn answer_ends(engine: &Engine, session: &SessionRef) -> Vec<(u64, Option<String>)> {
+    engine
+        .events_after(session, 0)
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            SessionEventKind::TurnEnded { last_message, .. } => Some((event.seq, last_message)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn prompts(engine: &Engine, session: &SessionRef) -> Vec<String> {
+    engine
+        .events_after(session, 0)
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            SessionEventKind::UserPrompt { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_branch_carries_on_from_an_earlier_answer_while_the_source_works() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    assert!(add_provider(&engine, &machine, "fake").await.can_fork);
+    let (topic, source) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Manual).await;
+    for text in ["echo one", "echo two"] {
+        prompt(&engine, &source, text).await.unwrap();
+        wait_for_status(&engine, &source, SessionStatus::Done).await;
+    }
+    let ends = answer_ends(&engine, &source);
+    assert_eq!(
+        ends.iter().map(|(_, id)| id.as_deref()).collect::<Vec<_>>(),
+        [Some("msg:echo-one"), Some("msg:echo-two")]
+    );
+    // The source is busy with a third answer meanwhile.
+    prompt(&engine, &source, "hang").await.unwrap();
+    wait_for_status(&engine, &source, SessionStatus::Working).await;
+
+    let branch = fork(&engine, &source, Some(ends[0].0)).await.unwrap();
+    let original = session_state(&engine, &source);
+    assert_eq!(branch.status, SessionStatus::Starting);
+    assert_eq!(branch.mode, PermissionMode::Manual);
+    assert_eq!(branch.opened_at_ms, original.opened_at_ms + 1);
+    let state = state_of(&engine);
+    let tabs = &state.topic(&topic.id).unwrap().sessions;
+    assert!(tabs.iter().any(|s| s.id == branch.id));
+    let branch = SessionRef {
+        machine_id: machine.clone(),
+        session_id: branch.id,
+    };
+    engine.open_session(&branch);
+    wait_for_status(&engine, &branch, SessionStatus::Ready).await;
+
+    // Only the history up to that answer came along, with no process events of the source's.
+    assert_eq!(prompts(&engine, &branch), ["echo one"]);
+    assert_eq!(agent_text(&engine, &branch), ["one"]);
+    assert_eq!(
+        answer_ends(&engine, &branch)[0].1.as_deref(),
+        Some("msg:echo-one")
+    );
+    assert_gapless(&engine, &branch);
+    let ready_events = engine
+        .events_after(&branch, 0)
+        .into_iter()
+        .filter(|event| matches!(event.kind, SessionEventKind::AgentReady { .. }))
+        .count();
+    assert_eq!(ready_events, 1);
+
+    // Its agent copied the source's session up to there, and carries on separately.
+    let report = agent_report(&engine, &branch).await;
+    assert_eq!(word_after(&report, "forked="), "fake-session@msg:echo-one");
+    assert_eq!(word_after(&report, "resumed="), "false");
+    assert_eq!(status(&engine, &source), Some(SessionStatus::Working));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_branch_starts_after_the_latest_answer_and_never_at_a_subagent_message() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    add_provider(&engine, &machine, "fake").await;
+    let (_, source) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    prompt(&engine, &source, "title Login bug").await.unwrap();
+    wait_for_status(&engine, &source, SessionStatus::Done).await;
+    prompt(&engine, &source, "subagent").await.unwrap();
+    wait_for_status(&engine, &source, SessionStatus::Done).await;
+    assert_eq!(
+        answer_ends(&engine, &source).last().unwrap().1.as_deref(),
+        Some("msg:subagent")
+    );
+
+    let branch = fork(&engine, &source, None).await.unwrap();
+    assert_eq!(branch.title.as_deref(), Some("Login bug (branch)"));
+    let branch = SessionRef {
+        machine_id: machine.clone(),
+        session_id: branch.id,
+    };
+    engine.open_session(&branch);
+    let report = agent_report(&engine, &branch).await;
+    assert_eq!(word_after(&report, "forked="), "fake-session@msg:subagent");
+
+    // A branch of a branch doesn't pile up suffixes.
+    let again = fork(&engine, &branch, None).await.unwrap();
+    assert_eq!(again.title.as_deref(), Some("Login bug (branch)"));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_branch_copies_again_rather_than_starting_empty() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    add_provider(&engine, &machine, "fake").await;
+    let (_, source) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    prompt(&engine, &source, "unforkable").await.unwrap();
+    wait_for_status(&engine, &source, SessionStatus::Done).await;
+
+    let branch = fork(&engine, &source, None).await.unwrap();
+    let branch = SessionRef {
+        machine_id: machine.clone(),
+        session_id: branch.id,
+    };
+    engine.open_session(&branch);
+    wait_for_status(&engine, &branch, SessionStatus::Failed).await;
+    prompt(&engine, &branch, "whoami").await.unwrap();
+    wait_for_status(&engine, &branch, SessionStatus::Failed).await;
+    let errors: Vec<String> = engine
+        .events_after(&branch, 0)
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            SessionEventKind::Error { message } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(
+        errors.iter().all(|e| e.contains("failed to branch")),
+        "{errors:?}"
+    );
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_answer_of_an_agent_that_can_copy_sessions_can_be_branched() {
+    let fixture = Fixture::new();
+    let mut config = fixture.config("d", 0);
+    config.agents.insert(
+        "plain".to_owned(),
+        AgentLauncher::Command {
+            program: env!("CARGO_BIN_EXE_fake-agent").into(),
+            args: vec!["--no-fork".to_owned()],
+        },
+    );
+    let daemon = Daemon::start(config).await.unwrap();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let refused = |result: Result<Session, EngineError>, wanted: &str| match result {
+        Err(EngineError::Command(e)) => {
+            assert_eq!(e.code, ErrorCode::InvalidInput);
+            assert!(e.message.contains(wanted), "{}", e.message);
+        }
+        other => panic!("unexpected result {other:?}"),
+    };
+
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let plain = start_agent(
+        &engine,
+        &machine,
+        &topic.id,
+        "plain",
+        PermissionMode::Auto,
+        None,
+    )
+    .await
+    .unwrap();
+    let plain = SessionRef {
+        machine_id: machine.clone(),
+        session_id: plain.id,
+    };
+    engine.open_session(&plain);
+    prompt(&engine, &plain, "echo hi").await.unwrap();
+    wait_for_status(&engine, &plain, SessionStatus::Done).await;
+    assert!(!add_provider(&engine, &machine, "plain").await.can_fork);
+    refused(fork(&engine, &plain, None).await, "can't branch sessions");
+
+    add_provider(&engine, &machine, "fake").await;
+    let source = start_session(&engine, &machine, &topic, PermissionMode::Auto, None).await;
+    wait_for_status(&engine, &source, SessionStatus::Ready).await;
+    refused(fork(&engine, &source, None).await, "no finished answer");
+    prompt(&engine, &source, "echo hi").await.unwrap();
+    wait_for_status(&engine, &source, SessionStatus::Done).await;
+    refused(
+        fork(&engine, &source, Some(1)).await,
+        "isn't the end of an answer",
     );
     daemon.shutdown().await;
 }

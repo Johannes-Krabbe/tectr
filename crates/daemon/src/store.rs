@@ -13,6 +13,7 @@ use protocol::{
     WorktreeId,
 };
 
+use crate::acp::ForkPoint;
 use crate::oauth::Login;
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -128,6 +129,11 @@ const MIGRATIONS: &[&str] = &[
         name TEXT NOT NULL,
         paired_at_ms INTEGER NOT NULL
     );
+",
+    // A branch keeps where it was copied from until its agent has a session of its own, so a
+    // failed copy is tried again instead of starting over empty.
+    "
+    ALTER TABLE sessions ADD COLUMN fork_from TEXT;
 ",
 ];
 
@@ -889,6 +895,64 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Adds a tab branched from another, with the history it copies, all or nothing.
+    pub fn insert_branch(
+        &self,
+        topic_id: &TopicId,
+        session: &Session,
+        fork: &ForkPoint,
+        agent_cwd: &str,
+        events: &[SessionEvent],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.insert_session(topic_id, session)?;
+        self.conn.execute(
+            "UPDATE sessions SET fork_from = ?2 WHERE id = ?1",
+            params![session.id.0, serde_json::to_string(fork)?],
+        )?;
+        self.set_agent_cwd(&session.id, agent_cwd)?;
+        for event in events {
+            self.insert_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Where a branch's agent session is copied from. It only matters until it has its own.
+    pub fn fork_from(&self, session_id: &SessionId) -> Result<Option<ForkPoint>> {
+        let fork: Option<String> = self.conn.query_row(
+            "SELECT fork_from FROM sessions WHERE id = ?1",
+            [&session_id.0],
+            |row| row.get(0),
+        )?;
+        fork.map(|fork| Ok(serde_json::from_str(&fork)?))
+            .transpose()
+    }
+
+    /// The events of a session up to and including `seq`, in order.
+    pub fn events_through(
+        &self,
+        machine_id: &MachineId,
+        session_id: &SessionId,
+        seq: u64,
+    ) -> Result<Vec<SessionEvent>> {
+        self.events_after(machine_id, session_id, 0, usize::try_from(seq)?)
+    }
+
+    /// The `seq` of a session's latest finished answer.
+    pub fn last_turn_end(&self, session_id: &SessionId) -> Result<Option<u64>> {
+        Ok(self
+            .conn
+            .query_row(
+                r#"SELECT seq FROM events
+                   WHERE session_id = ?1 AND kind LIKE '{"event":"turn_ended"%'
+                   ORDER BY seq DESC LIMIT 1"#,
+                [&session_id.0],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// The agents' own conversations open in a tab, as `(agent, agent session ID)`. Archived

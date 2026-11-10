@@ -32,6 +32,7 @@ use crate::store::Store;
 use crate::terminal::{self, Shell, Subscriber};
 use crate::{acp, folders, git};
 
+mod fork;
 mod import;
 mod mcp;
 mod remote;
@@ -385,6 +386,10 @@ impl Core {
                 agent,
                 id,
             } => self.import_conversation(topic_id, agent, id).await,
+            Command::ForkSession {
+                session_id,
+                after_seq,
+            } => self.fork_session(&session_id, after_seq),
             Command::StartPairing => self.start_pairing().await,
             Command::CancelPairing => Ok(self.cancel_pairing()),
             Command::RemovePairedClient { key } => self.remove_paired_client(&key),
@@ -1040,7 +1045,7 @@ impl Core {
     }
 
     /// Starts the agent process for a session, resuming the agent's own session
-    /// if it already has one.
+    /// if it already has one, or else copying the one it branched from.
     fn spawn_agent(
         self: &Arc<Self>,
         inner: &mut Inner,
@@ -1067,6 +1072,11 @@ impl Core {
             .topics()
             .find(|topic| topic.sessions.iter().any(|s| s.id == session.id))
             .context("the session's topic no longer exists")?;
+        let resume = inner.store.agent_session_id(&session.id)?;
+        let fork = match resume {
+            Some(_) => None,
+            None => inner.store.fork_from(&session.id)?,
+        };
         let proxy_secret = crate::new_id();
         let proxy = format!("http://127.0.0.1:{}/mcp/{proxy_secret}", self.port);
         let topic_mcp = crate::mcp::agent_servers(&inner.state, topic, &proxy);
@@ -1084,7 +1094,8 @@ impl Core {
                 model: session.model.clone(),
                 effort: session.effort.clone(),
             },
-            resume: inner.store.agent_session_id(&session.id)?,
+            resume,
+            fork,
         };
         let (commands, receiver) = mpsc::unbounded_channel();
         let task = tokio::spawn(acp::run(self.clone(), spawn, receiver));
@@ -1741,7 +1752,12 @@ impl Core {
         inner.set_status(id, SessionStatus::WaitingForYou);
     }
 
-    pub fn turn_ended(&self, id: &SessionId, result: Result<StopReason, String>) {
+    pub fn turn_ended(
+        &self,
+        id: &SessionId,
+        result: Result<StopReason, String>,
+        last_message: Option<String>,
+    ) {
         let mut inner = self.lock();
         // Background work can still be asking for something after a turn ends.
         // The session then keeps waiting until that's answered.
@@ -1751,7 +1767,13 @@ impl Core {
         });
         match result {
             Ok(stop_reason) => {
-                inner.append(id, SessionEventKind::TurnEnded { stop_reason });
+                inner.append(
+                    id,
+                    SessionEventKind::TurnEnded {
+                        stop_reason,
+                        last_message,
+                    },
+                );
                 let status = if still_waiting {
                     SessionStatus::WaitingForYou
                 } else {

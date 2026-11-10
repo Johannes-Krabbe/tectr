@@ -512,6 +512,17 @@ pub enum Command {
         agent: String,
         id: String,
     },
+    /// Open a new tab in the same topic that carries on from one of a tab's answers, with the
+    /// history up to there and the agent's memory of it, answered with
+    /// [`CommandOutput::Session`]. It uses the agent's own way of copying a session, so only
+    /// providers with `can_fork` can. The source can be working on a later answer meanwhile.
+    ForkSession {
+        session_id: SessionId,
+        /// The `seq` of the answer's [`SessionEventKind::TurnEnded`]. Without it, the latest
+        /// finished answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_seq: Option<u64>,
+    },
     /// Show a code that pairs one more client from another machine, answered with
     /// [`CommandOutput::Pairing`]. Only a client on the daemon's own machine can ask, so
     /// letting a new machine in needs someone at this one. A new code replaces the last.
@@ -1219,6 +1230,9 @@ pub struct Provider {
     /// The model the agent itself names as recommended, if it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recommended_model: Option<String>,
+    /// Whether the agent can copy one of its sessions, which [`Command::ForkSession`] needs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_fork: bool,
 }
 
 impl Provider {
@@ -1513,6 +1527,10 @@ pub enum SessionEventKind {
     },
     TurnEnded {
         stop_reason: StopReason,
+        /// The agent's ID for the last thing it said this turn, which is where a branch from
+        /// this answer starts. Missing when the agent doesn't report one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_message: Option<String>,
     },
     Error {
         message: String,

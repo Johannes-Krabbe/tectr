@@ -271,7 +271,17 @@ export type TranscriptItem =
   | { kind: "prompt"; key: number; text: string; images: PromptImage[] }
   | { kind: "message"; key: number; text: string }
   | Activity
-  | { kind: "note"; key: number; text: string; failed?: boolean };
+  | { kind: "note"; key: number; text: string; failed?: boolean }
+  | AnswerEnd;
+
+/** Where an answer finished, which can be branched from when the agent said where. `note` says
+ * how it stopped, if that wasn't the usual way. */
+export interface AnswerEnd {
+  kind: "answer_end";
+  key: number;
+  note?: string;
+  branchable: boolean;
+}
 
 const STOP_NOTES: Record<string, string> = {
   cancelled: "Interrupted",
@@ -379,8 +389,12 @@ export function foldTranscript(events: SessionEvent[]): TranscriptItem[] {
         break;
       case "turn_ended": {
         close(at);
-        const note = STOP_NOTES[kind.stop_reason];
-        if (note) items.push({ kind: "note", key: seq, text: note });
+        items.push({
+          kind: "answer_end",
+          key: seq,
+          note: STOP_NOTES[kind.stop_reason],
+          branchable: kind.last_message !== undefined,
+        });
         break;
       }
       case "error":
@@ -393,6 +407,19 @@ export function foldTranscript(events: SessionEvent[]): TranscriptItem[] {
     previousAt = at;
   }
   return items;
+}
+
+/** Why an answer can't be branched from, or `undefined` when it can. */
+export function branchBlocked(
+  item: AnswerEnd,
+  provider: Provider | undefined,
+  agent: string,
+  online: boolean,
+): string | undefined {
+  if (!online) return "The device is offline";
+  if (!provider?.can_fork) return `${provider?.name ?? agent} can't branch sessions`;
+  if (!item.branchable) return "The agent didn't say where this answer ends, so it can't be branched";
+  return undefined;
 }
 
 /** What in a transcript is happening now, as opposed to what it already had when it opened.
