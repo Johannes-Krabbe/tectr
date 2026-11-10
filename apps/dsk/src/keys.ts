@@ -6,14 +6,15 @@
 
 import type { KeyboardPlace } from "./shortcuts";
 
-/** A sheet or dropdown is open, and takes the keyboard from everything behind it. */
+/** A sheet, dropdown or full-size image is open, and takes the keyboard from everything
+ * behind it. */
 export function overlayOpen(): boolean {
-  return document.querySelector(".sheet, .select-popup") !== null;
+  return document.querySelector(".sheet, .select-popup, .viewer") !== null;
 }
 
-/** A sheet is open. The palette is one too. */
+/** A sheet is open. The palette is one too, and so is a full-size image. */
 export function sheetOpen(): boolean {
-  return document.querySelector(".sheet") !== null;
+  return document.querySelector(".sheet, .viewer") !== null;
 }
 
 /** Whether a key is typed into a terminal, where only Cmd shortcuts are the app's. */

@@ -220,6 +220,7 @@ impl Fixture {
         self.run(Command::SendPrompt {
             session_id: session.session_id.clone(),
             text: text.to_owned(),
+            images: vec![],
         })
         .await
         .unwrap();
@@ -328,6 +329,7 @@ async fn a_topic_s_servers_reach_its_agent_and_a_change_restarts_it() {
     f.run(Command::SendPrompt {
         session_id: session.session_id.clone(),
         text: "hang".to_owned(),
+        images: vec![],
     })
     .await
     .unwrap();

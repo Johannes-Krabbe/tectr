@@ -9,6 +9,7 @@ import {
   Settings,
   Square,
   SquareTerminal,
+  X,
 } from "lucide-react";
 
 // The only file that imports lucide-react, which a test checks. Swapping one icon, or drawing
@@ -21,6 +22,7 @@ const ICONS = {
   import: { glyph: History },
   lower: { glyph: Minus },
   raise: { glyph: Plus },
+  remove: { glyph: X },
   settings: { glyph: Settings },
   stop: { glyph: Square, filled: true },
   terminal: { glyph: SquareTerminal },

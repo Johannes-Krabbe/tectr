@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityItem, AgentMessage, LiveLine } from "./Activity";
 import { useCommandSuggestions } from "./CommandList";
+import { ImageComposer, ImageViewer, type OpenImages, PromptBubble, useImageField } from "./ImageField";
+import { highestNumber } from "./imageTokens";
 import { motionAllowed } from "./appearance";
 import {
   type AgentCommand,
   type Approval,
   errorText,
   type PermissionOption,
+  type PromptImage,
   type Provider,
   request,
   type Session,
@@ -33,6 +36,7 @@ import {
   transcriptTiming,
 } from "./model";
 import { FOLLOW_WITHIN, keepFollowing, newScroller } from "./motion";
+import { useScreenPaletteItems } from "./Palette";
 import { sessionPickerHints, SessionPickers } from "./SessionPickers";
 import { hint, type Hint, optionNumbersHint, useHints } from "./shortcuts";
 import { refusedPrompt } from "./slashCommands";
@@ -159,6 +163,7 @@ export function AgentPane({
   online,
   approvals,
   draft,
+  draftImages,
   commands,
   worktree,
   onInterrupt,
@@ -170,6 +175,8 @@ export function AgentPane({
   approvals: Approval[];
   /** What's typed for this session but not sent yet, which any client can carry on with. */
   draft: string;
+  /** The images the draft names. */
+  draftImages: PromptImage[];
   /** The slash commands the agent last said it has. */
   commands: AgentCommand[] | undefined;
   worktree: Worktree | undefined;
@@ -179,14 +186,42 @@ export function AgentPane({
   const sessionRef = { machine_id: machineId, session_id: session.id };
   const events = useSessionEvents(sessionRef);
   const items = useMemo(() => foldTranscript(events), [events]);
+  // The draft is saved with the images its text names at the time, which the field below
+  // knows, and it's made after this.
+  const imagesFor = useRef<(text: string) => PromptImage[]>(() => []);
   const message = useSyncedText(draft, (text) => {
+    const images = imagesFor.current(text);
     // The session may have just been closed, and then there's nothing left to keep this for.
-    request(machineId, { command: "set_draft", session_id: session.id, text }).catch(() => {});
+    request(machineId, { command: "set_draft", session_id: session.id, text, images }).catch(
+      () => {},
+    );
   });
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const vim = useVim(input);
+  const [viewing, setViewing] = useState<{ images: PromptImage[]; start: number } | null>(null);
+  const openImages: OpenImages = (images, start) => {
+    if (images.length > 0) setViewing({ images, start });
+  };
+  const sentImages = useMemo(
+    () => items.flatMap((item) => (item.kind === "prompt" ? item.images : [])),
+    [items],
+  );
+  const field = useImageField({
+    machineId,
+    input,
+    text: message.text,
+    known: draftImages,
+    sent: highestNumber(sentImages),
+    onError: setError,
+    onOpen: openImages,
+  });
+  imagesFor.current = field.imagesFor;
+  const openSent = () => openImages(sentImages, sentImages.length - 1);
+  // The key handler is set up once, so it reaches the current images through a ref.
+  const openSentNow = useRef(openSent);
+  openSentNow.current = openSent;
   const log = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -228,6 +263,7 @@ export function AgentPane({
   useHints("pane", [
     ...answers,
     hint("Write", "pane.compose"),
+    ...(sentImages.length > 0 ? [hint("Images", "pane.open_images")] : []),
     hint(stepsShown ? "Fold steps" : "Show steps", "pane.toggle_steps"),
     ...(live ? [hint(fold.turnOpen ? "Fold this turn" : "Watch", "pane.toggle_turn")] : []),
     ...SCROLL_HINTS,
@@ -239,7 +275,30 @@ export function AgentPane({
     ...answers,
     ...suggestions.hints,
     ...COMPOSER_HINTS,
+    ...(field.images.length > 0 ? [hint("Open image", "composer.open_image")] : []),
     ...pickers,
+  ]);
+  useScreenPaletteItems([
+    ...(sentImages.length > 0
+      ? [
+          {
+            id: "open-images",
+            label: "Open the images in the conversation",
+            keys: keysLabel("pane.open_images"),
+            run: openSent,
+          },
+        ]
+      : []),
+    ...(field.images.length > 0
+      ? [
+          {
+            id: "open-draft-images",
+            label: "Open the images in the message box",
+            keys: keysLabel("composer.open_image"),
+            run: field.openAtCursor,
+          },
+        ]
+      : []),
   ]);
 
   // Stay at the bottom unless the reader has scrolled up. This watches the size, because a
@@ -301,6 +360,7 @@ export function AgentPane({
       });
       if (toggled) return;
       if (act(event, "pane.toggle_turn", () => toggleTurn.current())) return;
+      if (act(event, "pane.open_images", () => openSentNow.current())) return;
       // In a text box, Ctrl+D and the like edit the text. Scrolling is for the transcript.
       if (!isTextField(event.target)) commands.some(([id, run]) => act(event, id, run));
     };
@@ -325,8 +385,10 @@ export function AgentPane({
     // bring it back.
     message.cancel();
     try {
-      await request(machineId, { command: "send_prompt", session_id: session.id, text });
+      const images = field.imagesFor(text);
+      await request(machineId, { command: "send_prompt", session_id: session.id, text, images });
       message.clear();
+      field.clear();
       // Sent, so back to reading what comes next.
       if (document.activeElement === input.current) log.current?.focus();
     } catch (reason) {
@@ -368,9 +430,13 @@ export function AgentPane({
             switch (item.kind) {
               case "prompt":
                 return (
-                  <div key={item.key} className="you">
-                    {item.text}
-                  </div>
+                  <PromptBubble
+                    key={item.key}
+                    machineId={machineId}
+                    text={item.text}
+                    images={item.images}
+                    onOpen={openImages}
+                  />
                 );
               case "message":
                 return (
@@ -421,39 +487,45 @@ export function AgentPane({
             void send();
           }}
         >
-          <textarea
-            ref={input}
-            rows={1}
-            value={message.text}
-            placeholder={
-              pending && keysLabel("composer.blur")
-                ? `Press ${keysLabel("composer.blur")} to answer`
-                : "Message the agent"
-            }
-            aria-label="Message the agent"
-            autoCorrect="off"
-            autoCapitalize="off"
-            onChange={(event) => message.change(event.target.value)}
-            {...vim.props}
-            {...suggestions.boxProps(vim.props)}
-            onKeyDown={(event) => {
-              if (vim.onKeyDown(event)) return;
-              if (suggestions.onKeyDown(event)) return;
-              textBoxKey(
-                event,
-                [
-                  "composer.send",
-                  () => {
-                    if (suggestions.sendChosen()) return;
-                    if (message.text.trim()) void send();
-                    else log.current?.focus();
-                  },
-                ],
-                "composer.newline",
-                ["composer.blur", () => log.current?.focus()],
-              );
-            }}
-          />
+          <ImageComposer field={field} text={message.text} input={input} machineId={machineId}>
+            <textarea
+              ref={input}
+              rows={1}
+              value={message.text}
+              placeholder={
+                pending && keysLabel("composer.blur")
+                  ? `Press ${keysLabel("composer.blur")} to answer`
+                  : "Message the agent"
+              }
+              aria-label="Message the agent"
+              autoCorrect="off"
+              autoCapitalize="off"
+              onChange={(event) => message.change(event.target.value)}
+              {...vim.props}
+              {...suggestions.boxProps(vim.props)}
+              onPaste={(event) => {
+                if (!field.onPaste(event)) vim.props.onPaste(event);
+              }}
+              onKeyDown={(event) => {
+                if (field.onKeyDown(event, vim.shown)) return;
+                if (vim.onKeyDown(event)) return;
+                if (suggestions.onKeyDown(event)) return;
+                textBoxKey(
+                  event,
+                  [
+                    "composer.send",
+                    () => {
+                      if (suggestions.sendChosen()) return;
+                      if (message.text.trim()) void send();
+                      else log.current?.focus();
+                    },
+                  ],
+                  "composer.newline",
+                  ["composer.blur", () => log.current?.focus()],
+                );
+              }}
+            />
+          </ImageComposer>
           <div className="composer-foot">
             <SessionPickers
               machineId={machineId}
@@ -489,6 +561,14 @@ export function AgentPane({
         </form>
         {error && <p className="error">{error}</p>}
       </div>
+      {viewing && (
+        <ImageViewer
+          machineId={machineId}
+          images={viewing.images}
+          start={viewing.start}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </div>
   );
 }

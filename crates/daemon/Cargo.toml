@@ -23,6 +23,7 @@ futures-util.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+image.workspace = true
 # Ghostty's terminal engine keeps each terminal's screen, so a client attaching or falling
 # behind gets the screen as it is instead of a replay. Building it needs Zig (see mise.toml).
 # The bindings on crates.io predate libghostty-vt 1.0, so this pins the revision that builds

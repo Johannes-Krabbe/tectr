@@ -231,7 +231,8 @@ export function useVim(input: RefObject<HTMLTextAreaElement | null>): VimBox {
       onBlur(event) {
         setFocused(false);
         const to = event.relatedTarget;
-        const toOverlay = to instanceof Element && to.closest(".sheet, .select-popup") !== null;
+        const toOverlay =
+          to instanceof Element && to.closest(".sheet, .select-popup, .viewer") !== null;
         // Coming back from elsewhere in the app starts over. Switching apps, or opening a
         // list or the palette from the box, comes back to the mode it was in.
         if (!document.hasFocus() || toOverlay) return;

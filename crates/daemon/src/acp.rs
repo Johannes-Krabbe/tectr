@@ -9,15 +9,16 @@ use std::time::Duration;
 use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion};
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    AvailableCommandInput, CancelNotification, ContentBlock, EnvVariable, InitializeRequest,
-    InitializeResponse, McpServer, McpServerHttp, McpServerStdio, Meta, NewSessionRequest,
-    PermissionOption, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionValue, SessionConfigSelect, SessionConfigSelectOption,
-    SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, TextContent, ToolCall,
-    ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdateFields, ToolKind,
+    AvailableCommandInput, CancelNotification, ContentBlock, EnvVariable, ImageContent,
+    InitializeRequest, InitializeResponse, McpServer, McpServerHttp, McpServerStdio, Meta,
+    NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelect,
+    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionModeState,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
+    StopReason, TextContent, ToolCall, ToolCallContent, ToolCallLocation, ToolCallStatus,
+    ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
 use anyhow::{Result, anyhow, bail};
@@ -25,7 +26,7 @@ use protocol as tp;
 use tokio::sync::mpsc;
 
 use crate::agents::AgentLauncher;
-use crate::core::{Core, SessionCommand, SessionSettings};
+use crate::core::{Core, Prompt, SessionCommand, SessionSettings};
 use crate::mcp::{self, AgentMcp, Isolation};
 
 /// An agent mid-turn can be slow to answer, but nothing else reaches it until it does, and
@@ -180,13 +181,22 @@ async fn drive(
             loop {
                 tokio::select! {
                     command = commands.recv() => match command {
-                        Some(SessionCommand::Prompt(text)) => {
+                        Some(SessionCommand::Prompt(prompt)) => {
+                            if !prompt.images.is_empty()
+                                && !init.agent_capabilities.prompt_capabilities.image
+                            {
+                                core.turn_ended(
+                                    &id,
+                                    Err("This agent doesn't take images. Send it again without them".to_owned()),
+                                );
+                                continue;
+                            }
                             let core = core.clone();
                             let id = id.clone();
                             connection
                                 .send_request(PromptRequest::new(
                                     agent_session.id.clone(),
-                                    vec![ContentBlock::Text(TextContent::new(text))],
+                                    prompt_blocks(prompt),
                                 ))
                                 .on_receiving_result(async move |result| {
                                     core.turn_ended(
@@ -483,6 +493,17 @@ async fn open_session(
         .apply(connection, &spawn.launcher, &spawn.settings)
         .await?;
     Ok(session)
+}
+
+/// The text as typed, then each image after the name the text calls it by, so the agent can
+/// tell which one `[Image #2]` means.
+fn prompt_blocks(prompt: Prompt) -> Vec<ContentBlock> {
+    let mut blocks = vec![ContentBlock::Text(TextContent::new(prompt.text))];
+    for (image, data) in prompt.images {
+        blocks.push(ContentBlock::Text(TextContent::new(image.token())));
+        blocks.push(ContentBlock::Image(ImageContent::new(data, image.mime)));
+    }
+    blocks
 }
 
 /// Starts an agent just long enough to ask what it offers. It sends no prompt,

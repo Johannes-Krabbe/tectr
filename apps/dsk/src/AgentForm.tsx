@@ -1,5 +1,7 @@
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
-import { type Device, errorText, type PermissionMode } from "./engine";
+import { type Device, errorText, type PermissionMode, type PromptImage } from "./engine";
+import { ImageComposer, ImageViewer, useImageField } from "./ImageField";
+import { sendImages } from "./images";
 import { act, type ActionId, textBoxKey, titled } from "./keybinds";
 import { defaultEffort, isOnline, modelLabel, MODES } from "./model";
 import { hint, type Hint, useHints } from "./shortcuts";
@@ -14,6 +16,8 @@ import { useVim, VimModeLabel } from "./VimBox";
  * restarting clears it. */
 export interface AgentDraft {
   text?: string;
+  /** The images the text names. */
+  images?: PromptImage[];
   agent?: string;
   model?: string;
   effort?: string;
@@ -27,6 +31,8 @@ export interface AgentChoice {
   model: string | null;
   effort: string | null;
   text: string;
+  /** Already given to the device the agent starts on. */
+  images: PromptImage[];
 }
 
 /** What a screen's own picker needs to open from its key and close back to the message box. */
@@ -42,6 +48,8 @@ export interface ExtraPicker {
   label: string;
   action: ActionId;
 }
+
+const NO_IMAGES: PromptImage[] = [];
 
 const AGENT_PICKERS: { name: string; label: string; action: ActionId }[] = [
   { name: "provider", label: "Provider", action: "new_topic.pick_provider" },
@@ -83,8 +91,18 @@ export function AgentForm({
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const vim = useVim(input);
+  const [viewing, setViewing] = useState<{ images: PromptImage[]; start: number } | null>(null);
 
   const machineId = device?.state?.machine.id;
+  const field = useImageField({
+    machineId,
+    input,
+    text,
+    known: draft.images ?? NO_IMAGES,
+    sent: 0,
+    onError: setError,
+    onOpen: (images, start) => setViewing({ images, start }),
+  });
   const online = device !== undefined && isOnline(device);
   const providers = device?.state?.providers ?? [];
   const provider = providers.find((p) => p.agent === draft.agent) ?? providers[0];
@@ -125,6 +143,7 @@ export function AgentForm({
     ...(canStart ? [hint("Start", "new_topic.start")] : []),
     hint("New line", "new_topic.newline"),
     hint("Cancel", "new_topic.cancel"),
+    ...(field.images.length > 0 ? [hint("Open image", "composer.open_image")] : []),
     ...pickerHints,
   ]);
 
@@ -154,12 +173,17 @@ export function AgentForm({
     setBusy(true);
     setError(null);
     try {
+      // Pasted before the workspace was chosen, or on another device, they aren't there yet.
+      // Nothing on the daemon names them until now, so it may have removed them since.
+      const images = field.imagesFor(prompt);
+      if (machineId !== undefined) await sendImages(machineId, images, { again: true });
       await onStart({
         agent: provider.agent,
         mode: mode.mode,
         model: model?.id ?? null,
         effort: effort?.id ?? null,
         text: prompt,
+        images,
       });
     } catch (reason) {
       setError(errorText(reason));
@@ -179,27 +203,35 @@ export function AgentForm({
       <div className="create-in">
         {selects?.(control)}
         <div className="composer">
-          <textarea
-            ref={input}
-            autoFocus={autoFocus}
-            readOnly={busy}
-            value={text}
-            placeholder="What should the agent do?"
-            aria-label="First prompt"
-            autoCorrect="off"
-            autoCapitalize="off"
-            onChange={(event) => onDraft({ text: event.target.value })}
-            {...vim.props}
-            onKeyDown={(event) => {
-              if (vim.onKeyDown(event)) return;
-              textBoxKey(
-                event,
-                ["new_topic.start", () => void start()],
-                "new_topic.newline",
-                ["new_topic.cancel", onCancel],
-              );
-            }}
-          />
+          <ImageComposer field={field} text={text} input={input} machineId={machineId}>
+            <textarea
+              ref={input}
+              autoFocus={autoFocus}
+              readOnly={busy}
+              value={text}
+              placeholder="What should the agent do?"
+              aria-label="First prompt"
+              autoCorrect="off"
+              autoCapitalize="off"
+              onChange={(event) =>
+                onDraft({ text: event.target.value, images: field.imagesFor(event.target.value) })
+              }
+              {...vim.props}
+              onPaste={(event) => {
+                if (!field.onPaste(event)) vim.props.onPaste(event);
+              }}
+              onKeyDown={(event) => {
+                if (field.onKeyDown(event, vim.shown)) return;
+                if (vim.onKeyDown(event)) return;
+                textBoxKey(
+                  event,
+                  ["new_topic.start", () => void start()],
+                  "new_topic.newline",
+                  ["new_topic.cancel", onCancel],
+                );
+              }}
+            />
+          </ImageComposer>
           <div className="composer-pickers">
             {provider ? (
               <>
@@ -287,6 +319,14 @@ export function AgentForm({
         )}
         {error && <p className="error">{error}</p>}
       </div>
+      {viewing && (
+        <ImageViewer
+          machineId={machineId}
+          images={viewing.images}
+          start={viewing.start}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </form>
   );
 }

@@ -6,10 +6,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use protocol::{
-    AgentCommand, Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, Machine,
-    MachineId, McpServer, McpServerId, PairedClient, PermissionMode, Provider, Session,
-    SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, Terminal, TerminalId,
-    TerminalStatus, Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId,
+    AgentCommand, Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, ImageId,
+    Machine, MachineId, McpServer, McpServerId, PairedClient, PermissionMode, PromptImage,
+    Provider, Session, SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus,
+    Terminal, TerminalId, TerminalStatus, Topic, TopicId, Workspace, WorkspaceId, Worktree,
+    WorktreeId,
 };
 
 use crate::oauth::Login;
@@ -280,7 +281,8 @@ impl Store {
                 .iter()
                 .map(|provider| serde_json::from_str(provider))
                 .collect::<Result<_, _>>()?,
-            drafts: self.drafts()?,
+            drafts: self.meta_json("drafts")?,
+            draft_images: self.meta_json("draft_images")?,
             commands: self.commands(
                 "SELECT sessions.id, sessions.commands FROM sessions
                  JOIN topics ON topics.id = sessions.topic_id
@@ -425,12 +427,10 @@ impl Store {
 
     /// A value written by a newer version might not parse. Losing drafts is better than
     /// not starting.
-    fn drafts(&self) -> Result<BTreeMap<SessionId, String>> {
+    fn meta_json<T: serde::de::DeserializeOwned + Default>(&self, key: &str) -> Result<T> {
         let stored: Option<String> = self
             .conn
-            .query_row("SELECT value FROM meta WHERE key = 'drafts'", [], |r| {
-                r.get(0)
-            })
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
             .optional()?;
         Ok(stored
             .and_then(|text| serde_json::from_str(&text).ok())
@@ -482,12 +482,23 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_drafts(&self, drafts: &BTreeMap<SessionId, String>) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('drafts', ?1)
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [serde_json::to_string(drafts)?],
-        )?;
+    pub fn set_drafts(
+        &self,
+        drafts: &BTreeMap<SessionId, String>,
+        images: &BTreeMap<SessionId, Vec<PromptImage>>,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (key, value) in [
+            ("drafts", serde_json::to_string(drafts)?),
+            ("draft_images", serde_json::to_string(images)?),
+        ] {
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [key, &value],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -826,6 +837,26 @@ impl Store {
         Ok(())
     }
 
+    /// Every image a sent prompt names, in every session there's a record of.
+    pub fn prompt_image_ids(&self) -> Result<HashSet<ImageId>> {
+        // A prompt's kind starts with its tag, so most events are passed over without parsing.
+        let kinds: Vec<String> = self.collect(
+            r#"SELECT kind FROM events
+               WHERE kind LIKE '{"event":"user_prompt"%' AND kind LIKE '%"images":%'"#,
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(kinds
+            .iter()
+            .filter_map(|kind| match serde_json::from_str(kind) {
+                Ok(SessionEventKind::UserPrompt { images, .. }) => Some(images),
+                _ => None,
+            })
+            .flatten()
+            .map(|image| image.id)
+            .collect())
+    }
+
     pub fn insert_event(&self, event: &SessionEvent) -> Result<()> {
         self.conn
             .prepare_cached(
@@ -1113,10 +1144,21 @@ mod tests {
         store.close_session(&"s1".into(), 1).unwrap();
 
         let mut drafts = BTreeMap::new();
+        let mut images = BTreeMap::new();
         drafts.insert(SessionId::from("s2"), "half a".to_owned());
-        store.set_drafts(&drafts).unwrap();
-        drafts.insert(SessionId::from("s2"), "half a tho".to_owned());
-        store.set_drafts(&drafts).unwrap();
+        store.set_drafts(&drafts, &images).unwrap();
+        drafts.insert(SessionId::from("s2"), "half a tho [Image #1]".to_owned());
+        images.insert(
+            SessionId::from("s2"),
+            vec![PromptImage {
+                id: "ab12".into(),
+                number: 1,
+                mime: "image/png".to_owned(),
+                width: 4,
+                height: 3,
+            }],
+        );
+        store.set_drafts(&drafts, &images).unwrap();
 
         let command = |name: &str| AgentCommand {
             name: name.to_owned(),
@@ -1135,6 +1177,7 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, SessionId::from("s2"));
         assert_eq!(state.drafts, drafts);
+        assert_eq!(state.draft_images, images);
         assert_eq!(
             state.commands,
             BTreeMap::from([(SessionId::from("s2"), vec![command("usage")])])
@@ -1381,6 +1424,45 @@ mod tests {
         let events = store.events_after(&machine_id, &session_id, 2, 2).unwrap();
         let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
         assert_eq!(seqs, [3, 4]);
-        assert_eq!(store.last_seqs().unwrap(), [(session_id, 5)]);
+        assert_eq!(store.last_seqs().unwrap(), [(session_id.clone(), 5)]);
+
+        // Only what prompts sent counts as an image in use, not text that looks like one.
+        let image = |id: &str| PromptImage {
+            id: id.into(),
+            number: 1,
+            mime: "image/png".to_owned(),
+            width: 1,
+            height: 1,
+        };
+        let kinds = [
+            SessionEventKind::UserPrompt {
+                text: "see [Image #1]".to_owned(),
+                images: vec![image("a"), image("b")],
+            },
+            SessionEventKind::UserPrompt {
+                text: "no images".to_owned(),
+                images: vec![],
+            },
+            SessionEventKind::AgentMessage {
+                text: r#"{"event":"user_prompt","images":[{"id":"c"}]}"#.to_owned(),
+            },
+        ];
+        for (seq, kind) in (6..).zip(kinds) {
+            store
+                .insert_event(&SessionEvent {
+                    session: SessionRef {
+                        machine_id: machine_id.clone(),
+                        session_id: session_id.clone(),
+                    },
+                    seq,
+                    at_ms: 0,
+                    kind,
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            store.prompt_image_ids().unwrap(),
+            HashSet::from([ImageId::from("a"), ImageId::from("b")])
+        );
     }
 }

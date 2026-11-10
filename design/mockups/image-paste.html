@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tectr - pasting images</title>
+<link rel="stylesheet" href="../tokens/generated/tokens.css">
+<style>
+:root { --layout-content-width: 760px; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--color-surface-base);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+
+.page { max-width: 1080px; margin: 0 auto; padding: 40px 32px 96px; }
+header.top { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 36px; }
+h1 { font: var(--text-title); margin: 0 0 6px; }
+h2 { font: var(--text-heading); margin: 0 0 6px; }
+h3 { font: var(--text-label); margin: 0 0 8px; }
+.lede { color: var(--color-text-secondary); margin: 0; max-width: 66ch; }
+.sub { color: var(--color-text-secondary); margin: 0 0 14px; max-width: 76ch; line-height: 1.55; }
+section { margin-top: 56px; }
+.section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+
+.controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.seg { display: inline-flex; background: var(--color-surface-control); border-radius: var(--radius-sm); padding: 2px; }
+.seg button { padding: 3px 10px; border-radius: var(--radius-xs); color: var(--color-text-secondary); font: var(--text-meta); }
+.seg button[aria-pressed="true"] { background: var(--color-surface-control-hover); color: var(--color-text-primary); }
+.btn { padding: 5px 11px; border-radius: var(--radius-sm); background: var(--color-surface-control); color: var(--color-text-primary); font: var(--text-meta); }
+.btn:hover { background: var(--color-surface-control-hover); }
+.label { color: var(--color-text-tertiary); font: var(--text-meta); }
+.kbd { display: inline-flex; align-items: center; height: 17px; padding: 0 4px; border-radius: var(--radius-xs); background: var(--color-surface-control); color: var(--color-text-secondary); font: var(--text-meta); white-space: nowrap; }
+code { font: var(--text-code-small); color: var(--color-text-primary); background: var(--color-surface-control); padding: 1px 4px; border-radius: var(--radius-xs); }
+
+.card { background: var(--color-surface-panel); border: 1px solid var(--color-line-subtle); border-radius: var(--radius-lg); }
+.try { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; }
+
+.pros { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.pros div { padding: 12px 14px; border-radius: var(--radius-md); background: var(--color-surface-panel); border: 1px solid var(--color-line-subtle); color: var(--color-text-secondary); line-height: 1.55; }
+.pros b { display: block; color: var(--color-text-primary); font: var(--text-label); margin-bottom: 4px; }
+.pros ul { margin: 0; padding-left: 18px; }
+
+/* ---------- Pane replica, after apps/dsk/src/ui/app.css ---------- */
+.app { height: 560px; display: flex; flex-direction: column; overflow: hidden; background: var(--color-surface-base); }
+.tabs { flex: none; height: 38px; display: flex; align-items: flex-end; gap: var(--space-md); padding: 0 var(--space-lg); border-bottom: 1px solid var(--color-line-subtle); }
+.tab { position: relative; padding: 0 var(--space-xs) var(--space-sm); color: var(--color-text-tertiary); font: var(--text-label); }
+.tab.shown { color: var(--color-text-primary); }
+.tab.shown::after { content: ""; position: absolute; left: var(--space-xs); right: var(--space-xs); bottom: 0; height: 1.5px; background: var(--color-accent-text); }
+
+.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.log, .dock { scrollbar-gutter: stable both-edges; }
+.log { flex: 1; min-height: 0; overflow-y: auto; }
+.log-in { display: flex; flex-direction: column; gap: var(--space-md); max-width: var(--layout-content-width); margin: 0 auto; padding: var(--space-md) var(--space-xl); }
+
+.you-group { align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-xs); max-width: calc(100% * 5 / 6); }
+.you { padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md); background: var(--color-surface-control); overflow-wrap: anywhere; font: var(--text-reading); white-space: pre-wrap; }
+.agent-message { font: var(--text-reading); overflow-wrap: anywhere; }
+.agent-message code { font: var(--text-code-small); }
+
+.dock { flex: none; padding: 0 var(--space-xl) var(--space-md); }
+.dock > * { max-width: calc(var(--layout-content-width) - 2 * var(--space-xl)); margin-inline: auto; }
+
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-height: var(--size-input);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+}
+.composer:focus-within { border-color: var(--color-accent-text); }
+
+.editor {
+  min-height: 1lh;
+  max-height: 200px;
+  overflow-y: auto;
+  outline: 0;
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.editor:empty::before { content: attr(data-placeholder); color: var(--color-text-tertiary); pointer-events: none; }
+
+.composer-foot { display: flex; align-items: center; gap: var(--space-md); }
+.composer-pickers { display: flex; gap: var(--space-xs); margin-left: calc(-1 * var(--space-xs)); }
+.picker { display: inline-flex; align-items: center; height: calc(24 * var(--unit)); padding: 0 var(--space-xs); border-radius: var(--radius-sm); color: var(--color-text-secondary); font: var(--text-meta); }
+.picker:hover { background: var(--color-surface-control-hover); color: var(--color-text-primary); }
+.composer-context { display: flex; align-items: center; gap: var(--space-sm); min-width: 0; margin-left: auto; }
+.composer-branch { color: var(--color-text-tertiary); font: var(--text-code-small); white-space: nowrap; }
+.composer-count { color: var(--color-text-tertiary); font: var(--text-meta); }
+
+/* Dragging a file over the box */
+.composer.drop { border-style: dashed; border-color: var(--color-accent-text); background: var(--color-accent-tint); }
+.composer.drop > * { visibility: hidden; }
+.composer.drop::after { content: "Drop images to attach"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--color-accent-text); font: var(--text-label); }
+
+/* ---------- The reference token ---------- */
+.ref {
+  padding: 0 3px;
+  margin: 0 1px;
+  border-radius: var(--radius-xs);
+  background: var(--color-accent-tint);
+  color: var(--color-accent-text);
+  cursor: default;
+  white-space: nowrap;
+  transition: box-shadow var(--motion-fast) ease;
+}
+.ref:hover, .ref.on { box-shadow: inset 0 0 0 1px var(--color-accent-text); }
+.ref-chip { display: none; }
+body.look-chip .ref-text { display: none; }
+body.look-chip .ref-chip { display: inline-flex; align-items: center; gap: 4px; vertical-align: -2px; }
+body.look-chip .ref { padding: 1px 5px 1px 2px; }
+.ref-chip img { width: calc(14 * var(--unit)); height: calc(14 * var(--unit)); object-fit: cover; border-radius: 2px; }
+.ref.bad { background: none; color: var(--color-status-failed); text-decoration: underline dashed; text-underline-offset: 3px; }
+
+/* ---------- Tray of thumbnails ---------- */
+.tray { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
+.tray[hidden] { display: none; }
+.thumb {
+  position: relative;
+  width: calc(52 * var(--unit));
+  height: calc(40 * var(--unit));
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  outline: 0;
+  box-shadow: 0 0 0 1px var(--color-line-subtle);
+  cursor: default;
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb:focus, .thumb.on { box-shadow: 0 0 0 1.5px var(--color-accent-text); }
+.thumb .n, .att .n {
+  position: absolute; left: 3px; bottom: 3px;
+  padding: 0 3px; border-radius: var(--radius-xs);
+  background: var(--color-surface-overlay); color: var(--color-text-secondary);
+  font: 500 calc(10 * var(--unit))/1.4 var(--font-ui);
+}
+.thumb .x {
+  position: absolute; top: 3px; right: 3px;
+  width: 16px; height: 16px; border-radius: 50%;
+  display: none; align-items: center; justify-content: center;
+  background: var(--color-surface-overlay); color: var(--color-text-primary);
+}
+.thumb:hover .x, .thumb:focus .x { display: inline-flex; }
+.x svg { width: 8px; height: 8px; }
+
+/* Images in a sent message */
+.att { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-xs); }
+.att button { position: relative; width: 112px; height: 76px; border-radius: var(--radius-md); overflow: hidden; box-shadow: 0 0 0 1px var(--color-line-subtle); }
+.att button:hover, .att button.on { box-shadow: 0 0 0 1.5px var(--color-accent-text); }
+.att img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* ---------- Hover preview ---------- */
+.pop {
+  position: fixed; z-index: 20; top: 0; left: 0;
+  padding: var(--space-xs);
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-popover);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity var(--motion-fast) ease, transform var(--motion-fast) ease;
+}
+.pop.shown { opacity: 1; transform: none; }
+.pop.static { position: static; opacity: 1; transform: none; display: inline-block; }
+.pop img { display: block; border-radius: var(--radius-sm); }
+.cap { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-xs) var(--space-2xs) 0; color: var(--color-text-tertiary); font: var(--text-meta); white-space: nowrap; }
+.cap b { color: var(--color-text-secondary); font-weight: 500; }
+.cap .keys { margin-left: auto; display: inline-flex; gap: var(--space-sm); padding-left: var(--space-md); }
+
+/* ---------- Full size ---------- */
+.lightbox { position: fixed; inset: 0; z-index: 30; display: none; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-md); background: var(--color-scrim); outline: 0; }
+.lightbox.shown { display: flex; }
+.lightbox img { max-width: 86vw; max-height: 78vh; border-radius: var(--radius-md); box-shadow: var(--shadow-sheet); }
+.lightbox .cap { padding: var(--space-xs) var(--space-md); border-radius: var(--radius-md); background: var(--color-surface-overlay); border: 1px solid var(--color-line-strong); }
+
+/* ---------- States ---------- */
+.states { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.state { padding: 18px; }
+.state .sub { margin-bottom: 12px; }
+.state .error { margin: var(--space-xs) 0 0; color: var(--color-status-failed); font: var(--text-meta); }
+.state .note { margin: var(--space-xs) 0 0; color: var(--color-text-tertiary); font: var(--text-meta); }
+.send-off { opacity: .45; }
+
+/* ---------- Tables ---------- */
+table.spec { width: 100%; border-collapse: collapse; }
+.spec th, .spec td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--color-line-subtle); vertical-align: top; }
+.spec th { color: var(--color-text-tertiary); font: var(--text-meta); }
+.spec td { color: var(--color-text-secondary); line-height: 1.5; }
+.spec td:first-child { color: var(--color-text-primary); white-space: nowrap; }
+.spec tr:last-child td { border-bottom: 0; }
+pre.toml { margin: 0; padding: 14px 16px; font: var(--text-code-small); color: var(--color-text-secondary); white-space: pre; overflow-x: auto; }
+pre.toml .c { color: var(--color-text-tertiary); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="top">
+  <div>
+    <h1>Pasting images into the message box</h1>
+    <p class="lede">Three ways to show pasted images, each live: copy any image (a screenshot with <span class="kbd">&#8984;&#8963;&#8679;4</span> works) and press <span class="kbd">&#8984;V</span> in a box, drop a file on it, or use "Paste a sample". <span class="kbd">Enter</span> sends.</p>
+  </div>
+  <div class="controls">
+    <div class="seg" id="theme">
+      <button data-v="dark" aria-pressed="true">Dark</button>
+      <button data-v="light" aria-pressed="false">Light</button>
+    </div>
+  </div>
+</header>
+
+<!-- A -->
+<section style="margin-top:0">
+  <div class="section-head">
+    <div>
+      <h2>A. Inline reference</h2>
+      <p class="sub">Pasting drops <code>[Image #3]</code> where the cursor is, so you can say which image you mean. Hover it to see the image, click to open it full size. With the keyboard, putting the cursor right next to a token shows the same preview, <span class="kbd">&#8984;Y</span> opens it, and <span class="kbd">Backspace</span> removes it whole. Numbers count up per tab, so "#1" means the same image to you and the agent for the whole conversation.</p>
+    </div>
+    <div class="controls">
+      <span class="label">Token</span>
+      <div class="seg" id="look">
+        <button data-v="text" aria-pressed="true">[Image #1]</button>
+        <button data-v="chip" aria-pressed="false">Thumbnail chip</button>
+      </div>
+    </div>
+  </div>
+  <div class="try"><button class="btn" data-sample="a">Paste a sample</button><span class="label">Try: click after the token and press Left, then <span class="kbd">&#8984;Y</span></span></div>
+  <div class="card app" id="pane-a"></div>
+</section>
+
+<!-- B -->
+<section>
+  <h2>B. Tray above the text</h2>
+  <p class="sub">Images collect as thumbnails at the top of the box and the text stays plain. Hover a thumbnail for a bigger preview. <span class="kbd">Up</span> at the start of the box moves into the tray, where <span class="kbd">Left</span> <span class="kbd">Right</span> move, <span class="kbd">Space</span> opens, <span class="kbd">Backspace</span> removes and <span class="kbd">Down</span> or <span class="kbd">Esc</span> goes back to the text.</p>
+  <div class="try"><button class="btn" data-sample="b">Paste a sample</button></div>
+  <div class="card app" id="pane-b"></div>
+</section>
+
+<!-- C -->
+<section>
+  <h2>C. Both: tokens in the text, numbered tray above</h2>
+  <p class="sub">The tray shows everything attached at a glance, and the tokens say where each image belongs. Hovering either one lights up the other, and removing one removes both. Sent messages show the thumbnails above the bubble with their numbers.</p>
+  <div class="try"><button class="btn" data-sample="c">Paste a sample</button></div>
+  <div class="card app" id="pane-c"></div>
+  <div class="pros">
+    <div><b>A suits</b><ul><li>Talking about images: "before [Image #1], after [Image #2]"</li><li>Densest: the box doesn't grow</li><li>Same convention as Claude Code, which many agents already expect</li></ul></div>
+    <div><b>B and C suit</b><ul><li>Pasting several images at once without describing them</li><li>Seeing what's attached without hovering</li><li>B is simplest to build: no styled text inside the box</li></ul></div>
+  </div>
+</section>
+
+<!-- States -->
+<section>
+  <h2>Edge cases</h2>
+  <p class="sub">Shown with the inline token, but they work the same with the tray.</p>
+  <div class="states">
+    <div class="card state">
+      <h3>The agent doesn't take images</h3>
+      <p class="sub">ACP agents say whether they accept images (<code>promptCapabilities.image</code>). Knowing before sending beats an error after: the token turns red and sending waits until it's removed.</p>
+      <div class="composer" data-scope>
+        <div class="editor" id="bad-editor">Here's the crash </div>
+        <div class="composer-foot">
+          <div class="composer-pickers"><button class="picker">Codex</button><button class="picker">Default</button></div>
+          <div class="composer-context"><span class="composer-branch">main</span></div>
+        </div>
+      </div>
+      <p class="error">This agent doesn't take images. Remove them to send.</p>
+    </div>
+
+    <div class="card state">
+      <h3>Dropping a file</h3>
+      <p class="sub">Dragging images from Finder works like pasting. The box shows where they'll land. Drag a real file onto any box above to see it there.</p>
+      <div class="composer drop">
+        <div class="editor">Something you were typing</div>
+        <div class="composer-foot">
+          <div class="composer-pickers"><button class="picker">Opus 5.5</button><button class="picker">Default</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card state">
+      <h3>A big screenshot</h3>
+      <p class="sub">Retina screenshots are large. Anything over the size limit is scaled down before it's sent, and the preview says so. Models scale them down anyway, so this only saves time on the wire.</p>
+      <div id="big-pop"></div>
+    </div>
+
+    <div class="card state">
+      <h3>Many images</h3>
+      <p class="sub">Past a few, the inline tokens stay compact and a count in the footer says how many are attached, so nothing goes unnoticed.</p>
+      <div class="composer" data-scope>
+        <div class="editor" id="many-editor">Compare these </div>
+        <div class="composer-foot">
+          <div class="composer-pickers"><button class="picker">Opus 5.5</button><button class="picker">Default</button></div>
+          <div class="composer-context"><span class="composer-count">4 images</span><span class="composer-branch">fix/sidebar-clip</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Keys and settings -->
+<section>
+  <h2>Keys and settings</h2>
+  <p class="sub">Every action gets a rebindable key and a palette entry, as usual.</p>
+  <div class="card" style="padding:4px 4px">
+    <table class="spec">
+      <tr><th>Action</th><th>Default</th><th>What it does</th></tr>
+      <tr><td>Paste</td><td><span class="kbd">&#8984;V</span></td><td>Images on the clipboard become attachments. Text pastes as plain text.</td></tr>
+      <tr><td>Attach image...</td><td><span class="kbd">&#8984;&#8679;A</span></td><td>Opens a file picker, for when the image is a file and Finder isn't handy. Also in the palette.</td></tr>
+      <tr><td>Open image</td><td><span class="kbd">&#8984;Y</span></td><td>Opens the image next to the cursor, or the focused thumbnail, full size. Like Quick Look. <span class="kbd">Left</span> <span class="kbd">Right</span> step through the message's images, <span class="kbd">Esc</span> closes.</td></tr>
+      <tr><td>Remove image</td><td><span class="kbd">Backspace</span></td><td>Next to a token it removes the whole token. In vim normal mode, <span class="kbd">x</span> on a token does the same.</td></tr>
+      <tr><td>Open images in message</td><td><span class="kbd">o</span></td><td>In the transcript, opens the images of the message you're on.</td></tr>
+    </table>
+  </div>
+  <div class="card" style="margin-top:12px">
+<pre class="toml"><span class="c"># ~/.config/tectr/dsk.toml</span>
+[composer]
+images = "inline"           <span class="c"># inline | tray | both</span>
+image_preview = "hover"     <span class="c"># hover | hover_and_cursor | off</span>
+image_max_edge = 2000       <span class="c"># px on the long side; bigger pastes are scaled down before sending</span></pre>
+  </div>
+</section>
+
+</div>
+
+<div class="pop" id="pop"></div>
+<div class="lightbox" id="lightbox" tabindex="-1"><img alt=""><div class="cap"></div></div>
+
+<script>
+// ---------- Sample images, drawn so the mockup needs no files ----------
+const images = new Map();
+let nextId = 0;
+
+function addImage(url, w, h, bytes, type) {
+  const id = String(++nextId);
+  const img = { id, url, w, h, bytes, type };
+  images.set(id, img);
+  return img;
+}
+
+function draw(w, h, paint) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  paint(c.getContext("2d"), w, h);
+  const url = c.toDataURL("image/png");
+  return addImage(url, w, h, Math.round(url.length * 0.75), "PNG");
+}
+
+function roundRect(g, x, y, w, h, r, fill) {
+  g.beginPath(); g.roundRect(x, y, w, h, r); g.fillStyle = fill; g.fill();
+}
+
+const samples = [
+  // An error in a terminal
+  () => draw(1280, 760, (g, w, h) => {
+    g.fillStyle = "#16181d"; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#22252c"; g.fillRect(0, 0, w, 44);
+    ["#ff5f57", "#febc2e", "#28c840"].forEach((c, i) => { g.beginPath(); g.arc(24 + i * 22, 22, 7, 0, 7); g.fillStyle = c; g.fill(); });
+    g.font = "22px Menlo, monospace";
+    const lines = [
+      ["#8b93a1", "$ cargo test -p daemon"],
+      ["#8b93a1", "   Compiling tectr-daemon v0.2.0"],
+      ["#ff6b5a", "error[E0308]: mismatched types"],
+      ["#6b7380", "   --> crates/daemon/src/session.rs:212:18"],
+      ["#6b7380", "    |"],
+      ["#c8ccd4", "212 |     let blocks = prompt.images;"],
+      ["#ff6b5a", "    |                  ^^^^^^ expected `Vec<ContentBlock>`"],
+      ["#6b7380", "    |"],
+      ["#ff6b5a", "error: could not compile `tectr-daemon`"],
+      ["#8b93a1", "$ _"],
+    ];
+    lines.forEach(([c, t], i) => { g.fillStyle = c; g.fillText(t, 32, 100 + i * 40); });
+  }),
+  // The sidebar bug
+  () => draw(1440, 900, (g, w, h) => {
+    g.fillStyle = "#1c1e24"; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#23262d"; g.fillRect(0, 0, 340, h);
+    g.fillStyle = "#30333b"; g.fillRect(340, 0, 2, h);
+    g.font = "600 22px -apple-system, Helvetica, sans-serif";
+    g.fillStyle = "#e8e9ec"; g.fillText("mbp", 32, 70);
+    g.font = "21px -apple-system, Helvetica, sans-serif";
+    g.fillStyle = "#a3a7b0"; g.fillText("tectr", 56, 120);
+    const topics = ["Fix reconnect loop", "Settings sync for keybinds and themes across devices", "Image paste", "Release notes"];
+    topics.forEach((t, i) => {
+      if (i === 2) roundRect(g, 16, 146 + i * 50, 308, 40, 8, "#30333b");
+      g.fillStyle = "#e8e9ec"; g.fillText(t, 80, 174 + i * 50);
+      g.beginPath(); g.arc(60, 167 + i * 50, 7, 0, 7); g.strokeStyle = "#6f9cf2"; g.lineWidth = 2.5; g.stroke();
+    });
+    g.strokeStyle = "#ff5c47"; g.lineWidth = 4; g.strokeRect(300, 184, 470, 56);
+    g.fillStyle = "#3a3d45";
+    for (let i = 0; i < 6; i++) roundRect(g, 420, 320 + i * 70, 760 - (i % 3) * 140, 18, 9, "#2c2f36");
+  }),
+  // The design reference
+  () => draw(1600, 1000, (g, w, h) => {
+    g.fillStyle = "#e9eaee"; g.fillRect(0, 0, w, h);
+    roundRect(g, 120, 90, 1360, 820, 18, "#ffffff");
+    g.fillStyle = "#f4f5f7"; g.fillRect(120, 90, 380, 820);
+    g.font = "600 26px -apple-system, Helvetica, sans-serif";
+    g.fillStyle = "#1b1d22"; g.fillText("mbp", 160, 160);
+    g.font = "24px -apple-system, Helvetica, sans-serif";
+    ["Fix reconnect loop", "Settings sync for keybin...", "Image paste", "Release notes"].forEach((t, i) => {
+      if (i === 1) roundRect(g, 140, 196 + i * 58, 340, 46, 10, "#e3e8f7");
+      g.fillStyle = "#30333b"; g.fillText(t, 196, 228 + i * 58);
+      g.beginPath(); g.arc(172, 220 + i * 58, 8, 0, 7); g.strokeStyle = "#4b74d8"; g.lineWidth = 3; g.stroke();
+    });
+    for (let i = 0; i < 5; i++) roundRect(g, 560, 170 + i * 80, 820 - (i % 2) * 220, 22, 11, "#eceef2");
+    g.fillStyle = "#4b74d8"; g.font = "600 22px -apple-system, Helvetica, sans-serif"; g.fillText("Clips with a fade, no wrap", 560, 640);
+  }),
+  // A photo of a whiteboard sketch
+  () => draw(3024, 1964, (g, w, h) => {
+    const sky = g.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, "#f3efe6"); sky.addColorStop(1, "#ddd6c8");
+    g.fillStyle = sky; g.fillRect(0, 0, w, h);
+    g.strokeStyle = "#2d4f9c"; g.lineWidth = 14; g.lineCap = "round";
+    g.strokeRect(420, 360, 900, 1200);
+    g.strokeRect(1520, 360, 1100, 560);
+    g.strokeRect(1520, 1040, 1100, 520);
+    g.beginPath(); g.moveTo(1320, 700); g.lineTo(1520, 640); g.stroke();
+    g.beginPath(); g.moveTo(1320, 1200); g.lineTo(1520, 1300); g.stroke();
+    g.fillStyle = "#c2412d"; g.font = "bold 120px Marker Felt, Comic Sans MS, cursive";
+    g.fillText("daemon", 560, 980);
+    g.fillStyle = "#2d4f9c"; g.font = "bold 96px Marker Felt, Comic Sans MS, cursive";
+    g.fillText("dsk", 1900, 680); g.fillText("ios", 1920, 1330);
+  }),
+];
+const pool = samples.map((make) => make());
+let sampleIndex = 0;
+const nextSample = () => pool[sampleIndex++ % pool.length];
+
+// ---------- Shared bits ----------
+const X_SVG = '<svg viewBox="0 0 8 8"><path d="M1 1l6 6M7 1L1 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+const kb = (n) => `${Math.max(1, Math.round(n / 1024)).toLocaleString()} KB`;
+const size = (n) => (n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : kb(n));
+const MAX_EDGE = 2000;
+
+function dims(img) {
+  const long = Math.max(img.w, img.h);
+  if (long <= MAX_EDGE) return `<span>${img.w} x ${img.h}</span>`;
+  const s = MAX_EDGE / long;
+  return `<span>${img.w} x ${img.h} -> ${Math.round(img.w * s)} x ${Math.round(img.h * s)}</span>`;
+}
+
+function fit(img, maxW, maxH) {
+  const s = Math.min(maxW / img.w, maxH / img.h, 1);
+  return [Math.round(img.w * s), Math.round(img.h * s)];
+}
+
+function popHTML(img, n, keys) {
+  const [w, h] = fit(img, 320, 200);
+  const hints = keys === "keys"
+    ? '<span class="keys"><span class="kbd">&#8984;Y</span> open <span class="kbd">Backspace</span> remove</span>'
+    : keys === "hover" ? '<span class="keys">Click to open</span>' : "";
+  return `<img src="${img.url}" width="${w}" height="${h}" alt=""><div class="cap"><b>Image #${n}</b>${dims(img)}<span>${img.type} ${size(img.bytes)}</span>${hints}</div>`;
+}
+
+// ---------- Hover and cursor preview ----------
+const pop = document.getElementById("pop");
+let popFrom = null;
+
+function showPop(anchor, keys) {
+  const img = images.get(anchor.dataset.img);
+  pop.innerHTML = popHTML(img, anchor.dataset.n, keys);
+  const r = anchor.getBoundingClientRect();
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+  let top = r.top - ph - 8;
+  if (top < 8) top = r.bottom + 8;
+  const left = Math.min(Math.max(8, r.left + r.width / 2 - pw / 2), innerWidth - pw - 8);
+  pop.style.transform = "";
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+  pop.classList.add("shown");
+  popFrom = anchor;
+}
+
+function hidePop() {
+  pop.classList.remove("shown");
+  popFrom = null;
+}
+
+function light(scope, id, on) {
+  if (!scope) return;
+  for (const el of scope.querySelectorAll(`[data-img="${id}"]`)) el.classList.toggle("on", on);
+}
+
+document.addEventListener("pointerover", (e) => {
+  const el = e.target.closest("[data-img]");
+  if (!el || el.closest(".pop") || el.closest(".lightbox")) return;
+  if (el.contains(e.relatedTarget)) return;
+  showPop(el, "hover");
+  light(el.closest("[data-scope]"), el.dataset.img, true);
+});
+
+document.addEventListener("pointerout", (e) => {
+  const el = e.target.closest("[data-img]");
+  if (!el || el.contains(e.relatedTarget)) return;
+  light(el.closest("[data-scope]"), el.dataset.img, false);
+  if (popFrom === el) hidePop();
+  cursorPreview();
+});
+
+document.addEventListener("click", (e) => {
+  const x = e.target.closest("[data-remove]");
+  if (x) {
+    const p = panes.find((p) => p.root.contains(x));
+    removeImage(p, x.dataset.remove);
+    return;
+  }
+  const el = e.target.closest("[data-img]");
+  if (el && !el.closest(".pop")) openFrom(el);
+});
+
+// ---------- Full size ----------
+const lb = { el: document.getElementById("lightbox"), list: [], i: 0, back: null, range: null };
+
+function openFrom(el) {
+  const scope = el.closest("[data-scope]") || el.parentElement;
+  const list = [];
+  for (const x of scope.querySelectorAll("[data-img]")) {
+    if (!list.some((y) => y.id === x.dataset.img)) list.push({ id: x.dataset.img, n: x.dataset.n });
+  }
+  openLightbox(list, list.findIndex((y) => y.id === el.dataset.img));
+}
+
+function openLightbox(list, i) {
+  lb.back = document.activeElement;
+  const sel = getSelection();
+  lb.range = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+  lb.list = list; lb.i = Math.max(0, i);
+  renderLightbox();
+  hidePop();
+  lb.el.classList.add("shown");
+  lb.el.focus();
+}
+
+function renderLightbox() {
+  const { id, n } = lb.list[lb.i];
+  const img = images.get(id);
+  lb.el.querySelector("img").src = img.url;
+  const of = lb.list.length > 1 ? `<span>${lb.i + 1} of ${lb.list.length}</span>` : "";
+  lb.el.querySelector(".cap").innerHTML = `<b>Image #${n}</b>${dims(img)}<span>${img.type} ${size(img.bytes)}</span>${of}<span class="keys">${lb.list.length > 1 ? '<span class="kbd">Left</span> <span class="kbd">Right</span>' : ""}<span class="kbd">Esc</span> close</span>`;
+}
+
+function closeLightbox() {
+  lb.el.classList.remove("shown");
+  if (lb.back) lb.back.focus();
+  if (lb.range && lb.back?.isContentEditable) {
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(lb.range);
+  }
+}
+
+lb.el.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" || (e.metaKey && e.key === "y") || e.key === " ") { e.preventDefault(); closeLightbox(); }
+  else if (e.key === "ArrowLeft" || e.key === "h") { lb.i = (lb.i - 1 + lb.list.length) % lb.list.length; renderLightbox(); }
+  else if (e.key === "ArrowRight" || e.key === "l") { lb.i = (lb.i + 1) % lb.list.length; renderLightbox(); }
+});
+lb.el.addEventListener("click", closeLightbox);
+
+// ---------- Panes ----------
+function refEl(img, n, editable) {
+  const s = document.createElement("span");
+  s.className = "ref";
+  s.dataset.img = img.id;
+  s.dataset.n = n;
+  if (editable) s.contentEditable = "false";
+  s.innerHTML = `<span class="ref-text">[Image #${n}]</span><span class="ref-chip"><img src="${img.url}" alt="">Image ${n}</span>`;
+  return s;
+}
+
+function paneHTML(branch) {
+  return `
+  <div class="tabs"><button class="tab shown">Claude</button><button class="tab">Review</button></div>
+  <div class="pane">
+    <div class="log"><div class="log-in"></div></div>
+    <div class="dock">
+      <div class="composer" data-scope>
+        <div class="tray" hidden></div>
+        <div class="editor" contenteditable="true" spellcheck="false" role="textbox" aria-multiline="true" data-placeholder="Message the agent"></div>
+        <div class="composer-foot">
+          <div class="composer-pickers"><button class="picker" tabindex="-1">Opus 5.5</button><button class="picker" tabindex="-1">Ask before edits</button></div>
+          <div class="composer-context"><span class="composer-count"></span><span class="composer-branch">${branch}</span></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+const panes = [];
+
+function makePane(key, opts) {
+  const root = document.getElementById(`pane-${key}`);
+  root.innerHTML = paneHTML("fix/sidebar-clip");
+  const p = {
+    key, opts, root,
+    log: root.querySelector(".log"),
+    logIn: root.querySelector(".log-in"),
+    composer: root.querySelector(".composer"),
+    tray: root.querySelector(".tray"),
+    editor: root.querySelector(".editor"),
+    count: root.querySelector(".composer-count"),
+    sent: 0,
+    draft: [],
+  };
+  panes.push(p);
+  wire(p);
+  return p;
+}
+
+function charBefore(range) {
+  const { startContainer: n, startOffset: o } = range;
+  if (n.nodeType === 3) return o > 0 ? n.nodeValue[o - 1] : (n.previousSibling ? "x" : "");
+  const prev = n.childNodes[o - 1];
+  return prev ? (prev.nodeType === 3 ? prev.nodeValue.slice(-1) : "x") : "";
+}
+
+function attach(p, img) {
+  p.draft.push({ img, n: 0 });
+  if (p.opts.inline) {
+    const sel = getSelection();
+    let range;
+    if (sel.rangeCount && p.editor.contains(sel.anchorNode)) range = sel.getRangeAt(0);
+    else { range = document.createRange(); range.selectNodeContents(p.editor); range.collapse(false); }
+    range.deleteContents();
+    const lead = charBefore(range);
+    const span = refEl(img, 0, true);
+    const after = document.createTextNode(" ");
+    range.insertNode(after);
+    range.insertNode(span);
+    if (lead && !/\s/.test(lead)) span.before(document.createTextNode(" "));
+    range.setStart(after, 1); range.collapse(true);
+    sel.removeAllRanges(); sel.addRange(range);
+  }
+  sync(p);
+  // Brief feedback that it landed, since the cursor has already moved past it.
+  const shown = p.root.querySelector(`.editor [data-img="${img.id}"]`) || p.tray.querySelector(`[data-img="${img.id}"]`);
+  if (shown) {
+    showPop(shown, "none");
+    light(p.composer, img.id, true);
+    setTimeout(() => { light(p.composer, img.id, false); if (popFrom === shown) hidePop(); cursorPreview(); }, 1100);
+  }
+}
+
+function removeImage(p, id) {
+  for (const el of p.editor.querySelectorAll(`[data-img="${id}"]`)) {
+    // Take the space we added after it too.
+    const next = el.nextSibling;
+    if (next?.nodeType === 3 && next.nodeValue.startsWith(" ")) next.nodeValue = next.nodeValue.slice(1);
+    el.remove();
+  }
+  p.draft = p.draft.filter((d) => d.img.id !== id);
+  hidePop();
+  sync(p);
+}
+
+// Drafts number on from what the tab has already sent, in the order they appear.
+function sync(p) {
+  if (p.opts.inline) {
+    const order = [...p.editor.querySelectorAll(".ref")].map((el) => el.dataset.img);
+    p.draft = p.draft.filter((d) => order.includes(d.img.id)).sort((a, b) => order.indexOf(a.img.id) - order.indexOf(b.img.id));
+  }
+  p.draft.forEach((d, i) => { d.n = p.sent + i + 1; });
+  for (const el of p.editor.querySelectorAll(".ref")) {
+    const d = p.draft.find((d) => d.img.id === el.dataset.img);
+    el.dataset.n = d.n;
+    el.querySelector(".ref-text").textContent = `[Image #${d.n}]`;
+    el.querySelector(".ref-chip").lastChild.nodeValue = `Image ${d.n}`;
+  }
+  if (p.opts.tray) {
+    p.tray.hidden = p.draft.length === 0;
+    p.tray.innerHTML = p.draft.map((d) => `<div class="thumb" tabindex="-1" data-img="${d.img.id}" data-n="${d.n}"><img src="${d.img.url}" alt="">${p.opts.inline ? `<span class="n">#${d.n}</span>` : ""}<button class="x" tabindex="-1" aria-label="Remove" data-remove="${d.img.id}">${X_SVG}</button></div>`).join("");
+  }
+  p.count.textContent = !p.opts.tray && p.draft.length > 2 ? `${p.draft.length} images` : "";
+  if (!p.editor.querySelector(".ref") && p.editor.textContent === "") p.editor.innerHTML = "";
+}
+
+function refAtCursor(editor) {
+  const sel = getSelection();
+  if (!sel.rangeCount || !editor.contains(sel.anchorNode)) return null;
+  const r = sel.getRangeAt(0);
+  if (!r.collapsed) return null;
+  const { startContainer: n, startOffset: o } = r;
+  let before, after;
+  if (n.nodeType === 3) {
+    before = o === 0 ? n.previousSibling : null;
+    after = o === n.nodeValue.length ? n.nextSibling : null;
+  } else {
+    before = n.childNodes[o - 1];
+    after = n.childNodes[o];
+  }
+  return [before, after].find((x) => x?.classList?.contains("ref")) || null;
+}
+
+let cursorRef = null;
+function cursorPreview() {
+  const p = panes.find((p) => p.editor === document.activeElement);
+  const ref = p && p.opts.inline ? refAtCursor(p.editor) : null;
+  if (cursorRef && cursorRef !== ref) light(cursorRef.closest("[data-scope]"), cursorRef.dataset.img, false);
+  cursorRef = ref;
+  if (ref) { light(p.composer, ref.dataset.img, true); showPop(ref, "keys"); }
+  else if (popFrom && popFrom.closest(".editor") && !popFrom.matches(":hover")) hidePop();
+}
+document.addEventListener("selectionchange", cursorPreview);
+
+function addFiles(p, files) {
+  for (const f of files) {
+    if (!f.type.startsWith("image/")) continue;
+    const url = URL.createObjectURL(f);
+    const probe = new Image();
+    probe.onload = () => attach(p, addImage(url, probe.naturalWidth, probe.naturalHeight, f.size, f.type.replace("image/", "").toUpperCase()));
+    probe.src = url;
+  }
+}
+
+function wire(p) {
+  const ed = p.editor;
+  ed.addEventListener("paste", (e) => {
+    e.preventDefault();
+    const files = [...e.clipboardData.items].filter((i) => i.kind === "file").map((i) => i.getAsFile());
+    if (files.some((f) => f.type.startsWith("image/"))) { addFiles(p, files); return; }
+    document.execCommand("insertText", false, e.clipboardData.getData("text/plain"));
+  });
+  ed.addEventListener("input", () => sync(p));
+  ed.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(p); return; }
+    if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); document.execCommand("insertLineBreak"); return; }
+    if (e.metaKey && e.key === "y") {
+      e.preventDefault();
+      const ref = refAtCursor(ed);
+      if (ref) openFrom(ref);
+      return;
+    }
+    if (e.key === "Backspace" || e.key === "Delete") {
+      const sel = getSelection();
+      const r = sel.rangeCount && sel.getRangeAt(0);
+      if (!r || !r.collapsed) return;
+      const { startContainer: n, startOffset: o } = r;
+      let target = null;
+      if (e.key === "Backspace") target = n.nodeType === 3 ? (o === 0 ? n.previousSibling : null) : n.childNodes[o - 1];
+      else target = n.nodeType === 3 ? (o === n.nodeValue.length ? n.nextSibling : null) : n.childNodes[o];
+      if (target?.classList?.contains("ref")) { e.preventDefault(); removeImage(p, target.dataset.img); }
+      return;
+    }
+    if (e.key === "ArrowUp" && p.opts.tray && p.draft.length) {
+      const sel = getSelection();
+      const r = sel.rangeCount && sel.getRangeAt(0);
+      const pre = r && document.createRange();
+      if (pre) { pre.setStart(ed, 0); pre.setEnd(r.startContainer, r.startOffset); }
+      if (pre && pre.toString() === "" && !pre.cloneContents().querySelector?.(".ref")) {
+        e.preventDefault();
+        p.tray.lastElementChild.focus();
+      }
+    }
+  });
+
+  p.tray.addEventListener("keydown", (e) => {
+    const t = e.target.closest(".thumb");
+    if (!t) return;
+    if (e.key === "ArrowLeft" || e.key === "h") { e.preventDefault(); (t.previousElementSibling || t).focus(); }
+    else if (e.key === "ArrowRight" || e.key === "l") { e.preventDefault(); (t.nextElementSibling || t).focus(); }
+    else if (e.key === " " || (e.metaKey && e.key === "y")) { e.preventDefault(); openFrom(t); }
+    else if (e.key === "Backspace" || e.key === "Delete" || e.key === "x") {
+      e.preventDefault();
+      const next = t.previousElementSibling || t.nextElementSibling;
+      const id = t.dataset.img;
+      removeImage(p, id);
+      const again = next && p.tray.querySelector(`[data-img="${next.dataset.img}"]`);
+      if (again) again.focus(); else ed.focus();
+    } else if (e.key === "ArrowDown" || e.key === "Escape" || e.key === "j") {
+      e.preventDefault();
+      ed.focus();
+      const r = document.createRange(); r.setStart(ed, 0); r.collapse(true);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    }
+  });
+  p.tray.addEventListener("focusin", (e) => { const t = e.target.closest(".thumb"); if (t) showPop(t, "none"); });
+  p.tray.addEventListener("focusout", () => hidePop());
+
+  let depth = 0;
+  p.composer.addEventListener("dragenter", (e) => { e.preventDefault(); depth++; p.composer.classList.add("drop"); });
+  p.composer.addEventListener("dragover", (e) => e.preventDefault());
+  p.composer.addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; p.composer.classList.remove("drop"); } });
+  p.composer.addEventListener("drop", (e) => {
+    e.preventDefault(); depth = 0; p.composer.classList.remove("drop");
+    ed.focus();
+    addFiles(p, [...e.dataTransfer.files]);
+  });
+}
+
+function serialize(editor) {
+  const parts = [];
+  const walk = (node) => {
+    for (const c of node.childNodes) {
+      if (c.nodeType === 3) parts.push({ text: c.nodeValue });
+      else if (c.classList?.contains("ref")) parts.push({ id: c.dataset.img });
+      else if (c.nodeName === "BR") parts.push({ text: "\n" });
+      else { if (c.nodeName === "DIV" && parts.length) parts.push({ text: "\n" }); walk(c); }
+    }
+  };
+  walk(editor);
+  if (parts[0]?.text) parts[0].text = parts[0].text.replace(/^\s+/, "");
+  const last = parts[parts.length - 1];
+  if (last?.text) last.text = last.text.replace(/\s+$/, "");
+  return parts;
+}
+
+function addYou(p, parts, draft) {
+  const group = document.createElement("div");
+  group.className = "you-group";
+  group.dataset.scope = "";
+  const num = (id) => draft.find((d) => d.img.id === id).n;
+  if (p.opts.tray && draft.length) {
+    const att = document.createElement("div");
+    att.className = "att";
+    att.innerHTML = draft.map((d) => `<button data-img="${d.img.id}" data-n="${d.n}"><img src="${d.img.url}" alt="">${p.opts.inline ? `<span class="n">#${d.n}</span>` : ""}</button>`).join("");
+    group.append(att);
+  }
+  const text = parts.some((x) => (x.text ?? "").trim() || x.id);
+  if (text) {
+    const bubble = document.createElement("div");
+    bubble.className = "you";
+    for (const x of parts) bubble.append(x.id ? refEl(images.get(x.id), num(x.id), false) : document.createTextNode(x.text));
+    group.append(bubble);
+  }
+  p.logIn.append(group);
+}
+
+function addAgent(p, html) {
+  const m = document.createElement("div");
+  m.className = "agent-message";
+  m.innerHTML = html;
+  p.logIn.append(m);
+  p.log.scrollTop = p.log.scrollHeight;
+}
+
+function send(p) {
+  const parts = serialize(p.editor);
+  const draft = p.draft.slice();
+  const hasText = parts.some((x) => (x.text ?? "").trim());
+  if (!hasText && !draft.length) return;
+  addYou(p, parts, draft);
+  p.sent += draft.length;
+  p.draft = [];
+  p.editor.innerHTML = "";
+  sync(p);
+  hidePop();
+  p.log.scrollTop = p.log.scrollHeight;
+  const k = draft.length;
+  setTimeout(() => addAgent(p, k ? `Got ${k === 1 ? "the image" : `all ${k} images`}. Looking at ${k === 1 ? "it" : "them"} now.` : "On it."), 450);
+}
+
+// ---------- Seed each variant with a sent message and a draft ----------
+function seed(p, text) {
+  const [shot, design] = [pool[1], pool[2]];
+  const draft = [{ img: shot, n: 1 }, { img: design, n: 2 }];
+  const parts = p.opts.inline
+    ? [{ text: "The topic names overflow the sidebar, see " }, { id: shot.id }, { text: ". They should clip like the design in " }, { id: design.id }, { text: "." }]
+    : [{ text }];
+  addYou(p, parts, draft);
+  p.sent = 2;
+  addAgent(p, "The row is missing <code>min-width: 0</code>, so a long name pushes past the sidebar instead of clipping. Fixed in <code>Sidebar.tsx</code>: names now fade out at the edge like your second image.");
+  // The draft: one more image, partway through a sentence.
+  p.editor.append(document.createTextNode("Long branch names still push the picker out, "));
+  if (p.opts.inline) {
+    p.editor.append(refEl(pool[0], 3, true), document.createTextNode(" "));
+    p.editor.append(document.createTextNode("is the error I get when building"));
+  } else p.editor.append(document.createTextNode("and this is the error I get when building"));
+  p.draft.push({ img: pool[0], n: 3 });
+  sync(p);
+}
+
+const A = makePane("a", { inline: true, tray: false });
+const B = makePane("b", { inline: false, tray: true });
+const C = makePane("c", { inline: true, tray: true });
+seed(A);
+seed(B, "The topic names overflow the sidebar. The second one is how it should clip.");
+seed(C);
+
+for (const btn of document.querySelectorAll("[data-sample]")) {
+  // Keep the cursor where it is in the box.
+  btn.addEventListener("mousedown", (e) => e.preventDefault());
+  btn.addEventListener("click", () => attach(panes.find((p) => p.key === btn.dataset.sample), nextSample()));
+}
+
+// ---------- Static examples ----------
+const bad = document.getElementById("bad-editor");
+const badRef = refEl(pool[0], 1, false);
+badRef.classList.add("bad");
+bad.append(badRef);
+
+const many = document.getElementById("many-editor");
+pool.forEach((img, i) => many.append(refEl(img, i + 1, false), document.createTextNode(" ")));
+
+document.getElementById("big-pop").innerHTML = `<div class="pop static">${popHTML(pool[3], 4, "none")}</div>`;
+
+// ---------- Controls ----------
+function seg(id, apply) {
+  const buttons = document.querySelectorAll(`#${id} button`);
+  for (const b of buttons) b.addEventListener("click", () => {
+    for (const x of buttons) x.setAttribute("aria-pressed", String(x === b));
+    apply(b.dataset.v);
+  });
+}
+seg("theme", (v) => { document.documentElement.dataset.theme = v; });
+seg("look", (v) => document.body.classList.toggle("look-chip", v === "chip"));
+document.documentElement.dataset.theme = "dark";
+</script>
+</body>
+</html>

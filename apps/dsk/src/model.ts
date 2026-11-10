@@ -11,6 +11,7 @@ import type {
   Provider,
   ProviderEffort,
   ProviderModel,
+  PromptImage,
   Session,
   SessionEvent,
   Terminal,
@@ -267,7 +268,8 @@ export interface Activity {
 }
 
 export type TranscriptItem =
-  | { kind: "prompt" | "message"; key: number; text: string }
+  | { kind: "prompt"; key: number; text: string; images: PromptImage[] }
+  | { kind: "message"; key: number; text: string }
   | Activity
   | { kind: "note"; key: number; text: string; failed?: boolean };
 
@@ -319,7 +321,7 @@ export function foldTranscript(events: SessionEvent[]): TranscriptItem[] {
     switch (kind.event) {
       case "user_prompt":
         close(at);
-        items.push({ kind: "prompt", key: seq, text: kind.text });
+        items.push({ kind: "prompt", key: seq, text: kind.text, images: kind.images ?? [] });
         break;
       case "agent_message": {
         close(at);

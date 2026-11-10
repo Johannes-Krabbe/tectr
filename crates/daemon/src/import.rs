@@ -94,8 +94,13 @@ impl Transcript {
             return;
         }
         self.first_prompt.get_or_insert_with(|| text.clone());
-        self.events
-            .push((at, SessionEventKind::UserPrompt { text }));
+        self.events.push((
+            at,
+            SessionEventKind::UserPrompt {
+                text,
+                images: vec![],
+            },
+        ));
         self.in_turn = true;
     }
 
@@ -888,7 +893,7 @@ mod tests {
             .events
             .iter()
             .filter_map(|(_, kind)| match kind {
-                SessionEventKind::UserPrompt { text } => Some(text.as_str()),
+                SessionEventKind::UserPrompt { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect()
@@ -952,7 +957,8 @@ mod tests {
             kinds(&imported),
             [
                 &SessionEventKind::UserPrompt {
-                    text: "Fix the login bug".into()
+                    text: "Fix the login bug".into(),
+                    images: vec![]
                 },
                 &SessionEventKind::AgentThought {
                     text: "Look at auth first.".into()
@@ -972,7 +978,8 @@ mod tests {
                     stop_reason: StopReason::EndTurn
                 },
                 &SessionEventKind::UserPrompt {
-                    text: "/review the diff".into()
+                    text: "/review the diff".into(),
+                    images: vec![]
                 },
                 &SessionEventKind::AgentMessage {
                     text: "Reviewing.".into()
@@ -1016,7 +1023,8 @@ mod tests {
             kinds(&imported),
             [
                 &SessionEventKind::UserPrompt {
-                    text: "check the diff".into()
+                    text: "check the diff".into(),
+                    images: vec![]
                 },
                 &SessionEventKind::AgentMessage {
                     text: "Reading the diff.".into()
@@ -1048,7 +1056,8 @@ mod tests {
                     stop_reason: StopReason::EndTurn
                 },
                 &SessionEventKind::UserPrompt {
-                    text: "and now?".into()
+                    text: "and now?".into(),
+                    images: vec![]
                 },
                 &SessionEventKind::TurnEnded {
                     stop_reason: StopReason::Cancelled
@@ -1069,7 +1078,8 @@ mod tests {
             kinds(&imported),
             [
                 &SessionEventKind::UserPrompt {
-                    text: "hello".into()
+                    text: "hello".into(),
+                    images: vec![]
                 },
                 &SessionEventKind::AgentMessage { text: "hi".into() },
                 // Kept apart, because the app joins consecutive messages.

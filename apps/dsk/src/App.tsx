@@ -7,6 +7,7 @@ import {
   type Approval,
   type Device,
   errorText,
+  type PromptImage,
   forgetDevice,
   request,
   type Session,
@@ -80,6 +81,8 @@ import { Icon } from "./ui/Icon";
 import { ShortcutBar } from "./ui/ShortcutBar";
 import { Keys, StatusIcon } from "./ui/StatusIcon";
 
+/** One for every session without draft images, so a pane's images stay the same object. */
+const NO_IMAGES: PromptImage[] = [];
 // xterm.js is most of the app's code, so it loads when the first terminal is shown rather than
 // with the app.
 const loadTerminalPane = () => import("./TerminalPane");
@@ -1184,6 +1187,7 @@ export function App() {
                   online={isOnline(entry.device)}
                   approvals={approvals}
                   draft={entry.device.state?.drafts?.[session.id] ?? ""}
+                  draftImages={entry.device.state?.draft_images?.[session.id] ?? NO_IMAGES}
                   commands={entry.device.state?.commands?.[session.id]}
                   worktree={topicWorktree(entry.topic)}
                   onInterrupt={isActive(session) ? interrupt : undefined}

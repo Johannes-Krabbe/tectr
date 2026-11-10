@@ -36,6 +36,11 @@ pub const GROUPS: &[Group] = &[
         about: "While typing a message to an agent.",
     },
     Group {
+        id: "image",
+        title: "Image viewer",
+        about: "While an image is open full size.",
+    },
+    Group {
         id: "permission",
         title: "Permission requests",
         about: "While an agent is asking. A key without cmd, ctrl or alt never answers while you're typing.",
@@ -333,9 +338,22 @@ pub const ACTIONS: &[Action] = &[
     once("pane.pick_model", "Choose the model", &["mod+l"]),
     once("pane.pick_effort", "Choose the effort", &["mod+e"]),
     once("pane.pick_mode", "Choose the permission mode", &["mod+u"]),
+    once(
+        "pane.open_images",
+        "Open the images in the conversation",
+        &["v"],
+    ),
     once("composer.send", "Send", &["enter"]),
     once("composer.newline", "New line", &["shift+enter"]),
     follows("composer.blur", "Leave the message box", "nav.back"),
+    once(
+        "composer.open_image",
+        "Open the image next to the cursor",
+        &["mod+y"],
+    ),
+    follows("image.prev", "Previous image", "nav.left"),
+    follows("image.next", "Next image", "nav.right"),
+    follows("image.close", "Close", "nav.back"),
     follows(
         "composer.command_up",
         "Move up the agent's slash commands",
