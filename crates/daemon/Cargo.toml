@@ -29,7 +29,8 @@ image.workspace = true
 # The bindings on crates.io predate libghostty-vt 1.0, so this pins the revision that builds
 # its vt-1.0.0 release.
 libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "768add93c54ccdba3f5c4d8763789ab6416f3151", default-features = false }
-portable-pty = "0.9"
+# Terminals: pseudo terminals, and the session their shells start in.
+rustix = { version = "1.1", features = ["fs", "process", "pty", "std", "termios"] }
 reqwest.workspace = true
 rusqlite.workspace = true
 # Codex compresses older conversations with zstd. Pure Rust, so nothing more to build.

@@ -2244,6 +2244,7 @@ mod tests {
             shell: Shell {
                 program: "/bin/sh".into(),
                 args: vec![],
+                launcher: None,
             },
             config_home: ConfigHome {
                 home: None,

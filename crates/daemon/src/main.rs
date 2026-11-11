@@ -28,8 +28,19 @@ struct Args {
     shell_env: bool,
 }
 
+fn main() -> Result<()> {
+    // A terminal's shell starts through this binary, before anything else runs here.
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|arg| arg == daemon::LAUNCH_SHELL) {
+        let error = daemon::launch_shell(args);
+        eprintln!("tectr couldn't start the shell: {error:#}");
+        std::process::exit(1);
+    }
+    run()
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         // launchd writes this to a log file, where color codes are noise.
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))

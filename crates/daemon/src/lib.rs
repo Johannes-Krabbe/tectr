@@ -34,7 +34,7 @@ pub use mcp::ConfigHome;
 use protocol::MachineId;
 use protocol::liveness::Liveness;
 pub use remote::Network;
-pub use terminal::Shell;
+pub use terminal::{LAUNCH_SHELL, Shell, launch_shell};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
