@@ -37,7 +37,7 @@ use protocol::{
     TerminalColors, TerminalId,
 };
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -54,7 +54,9 @@ const UPDATE_BUFFER: usize = 4096;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Finding a remote daemon can take a lookup and a relay before the first byte.
 const PAIR_TIMEOUT: Duration = Duration::from_secs(30);
-/// A pairing answer is a machine's ID and name, so anything longer isn't one.
+/// Past the 5 minutes the daemon waits for the digits, in case its answer is slow.
+const PAIR_WAIT_TIMEOUT: Duration = Duration::from_secs(6 * 60);
+/// A pairing answer is digits and a machine's ID and name, so anything longer isn't one.
 const MAX_PAIR_RESPONSE: usize = 64 * 1024;
 
 /// What the engine knows about one daemon. The state stays after a disconnect,
@@ -367,9 +369,10 @@ impl Engine {
         self.inner.device_changed(url);
     }
 
-    /// Pairs with a daemon on another machine using the code it showed, then adds it.
-    /// `name` is what the daemon lists this client as. Returns the daemon's URL.
-    pub async fn pair(&self, code: &str, name: &str) -> Result<String, EngineError> {
+    /// Asks a daemon on another machine to pair, using the code it showed. `name` is what
+    /// the daemon lists this client as. The answer is digits to show, which someone at the
+    /// device types before [`Engine::finish_pairing`] returns.
+    pub async fn pair(&self, code: &str, name: &str) -> Result<PendingPairing, EngineError> {
         let pairing = |message: &str| EngineError::Pairing(message.to_owned());
         let code = PairingCode::parse(code).ok_or_else(|| pairing("that isn't a pairing code"))?;
         let daemon: EndpointId = code
@@ -391,31 +394,57 @@ impl Engine {
                 .connect(daemon, PAIRING_ALPN)
                 .await
                 .map_err(|error| format!("couldn't reach the device: {error}"))?;
-            let (mut send, mut recv) = connection.open_bi().await.map_err(describe_closed)?;
+            let (mut send, recv) = connection.open_bi().await.map_err(describe_closed)?;
             let request = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
             send.write_all(&request).await.map_err(describe_write)?;
             send.finish().map_err(|error| error.to_string())?;
-            let answer = recv
-                .read_to_end(MAX_PAIR_RESPONSE)
-                .await
-                .map_err(describe_read)?;
-            connection.close(0u32.into(), b"");
-            serde_json::from_slice::<PairResponse>(&answer)
-                .map_err(|_| "the device sent something odd back".to_owned())
+            let mut answers = BufReader::new(recv.take(MAX_PAIR_RESPONSE as u64));
+            let first = read_answer(&connection, &mut answers).await?;
+            Ok::<_, String>((connection, answers, first))
         };
-        let response = tokio::time::timeout(PAIR_TIMEOUT, exchange)
+        let (connection, answers, first) = tokio::time::timeout(PAIR_TIMEOUT, exchange)
             .await
             .map_err(|_| pairing("the device didn't answer in time"))?
             .map_err(EngineError::Pairing)?;
-        match response {
+        match first {
+            PairResponse::Confirm { digits, machine } => Ok(PendingPairing {
+                digits,
+                machine,
+                daemon,
+                connection,
+                answers,
+            }),
+            PairResponse::Refused { reason } => Err(EngineError::Pairing(reason)),
+            PairResponse::Paired { .. } | PairResponse::Unknown => Err(pairing(
+                "the device answered in a way this client doesn't know",
+            )),
+        }
+    }
+
+    /// Waits for someone at the device to type the pairing's digits, then adds the device.
+    /// Returns its URL.
+    pub async fn finish_pairing(&self, pending: PendingPairing) -> Result<String, EngineError> {
+        let PendingPairing {
+            daemon,
+            connection,
+            mut answers,
+            ..
+        } = pending;
+        let answer =
+            tokio::time::timeout(PAIR_WAIT_TIMEOUT, read_answer(&connection, &mut answers))
+                .await
+                .map_err(|_| EngineError::Pairing("the device didn't answer in time".to_owned()))?
+                .map_err(EngineError::Pairing)?;
+        connection.close(0u32.into(), b"");
+        match answer {
             PairResponse::Paired { .. } => {
                 let url = protocol::remote_daemon_url(&daemon.to_string());
                 self.add_daemon(&url);
                 Ok(url)
             }
             PairResponse::Refused { reason } => Err(EngineError::Pairing(reason)),
-            PairResponse::Unknown => Err(pairing(
-                "the device answered in a way this client doesn't know",
+            PairResponse::Confirm { .. } | PairResponse::Unknown => Err(EngineError::Pairing(
+                "the device answered in a way this client doesn't know".to_owned(),
             )),
         }
     }
@@ -751,6 +780,36 @@ async fn open(
 
 /// A daemon that refuses a client closes the connection with a reason, which says more
 /// than the error around it.
+/// A pairing that waits for someone at the device to type `digits`. Dropping it stops
+/// waiting, and the device takes it off its list.
+#[derive(Debug)]
+pub struct PendingPairing {
+    pub digits: String,
+    /// The device it pairs with.
+    pub machine: Machine,
+    daemon: EndpointId,
+    connection: iroh::endpoint::Connection,
+    answers: BufReader<tokio::io::Take<iroh::endpoint::RecvStream>>,
+}
+
+/// One line of the daemon's answers, or why there wasn't one. The daemon says why it closed
+/// in the connection's close reason, which a read error doesn't carry.
+async fn read_answer(
+    connection: &iroh::endpoint::Connection,
+    answers: &mut BufReader<tokio::io::Take<iroh::endpoint::RecvStream>>,
+) -> Result<PairResponse, String> {
+    let mut line = String::new();
+    let read = answers.read_line(&mut line).await;
+    let closed = || connection.close_reason().map(describe_closed);
+    match read {
+        Ok(0) => Err(closed().unwrap_or_else(|| "the device closed the connection".to_owned())),
+        Ok(_) => {
+            serde_json::from_str(&line).map_err(|_| "the device sent something odd back".to_owned())
+        }
+        Err(error) => Err(closed().unwrap_or_else(|| error.to_string())),
+    }
+}
+
 fn describe_closed(error: iroh::endpoint::ConnectionError) -> String {
     match error {
         iroh::endpoint::ConnectionError::ApplicationClosed(close) => {
@@ -761,14 +820,6 @@ fn describe_closed(error: iroh::endpoint::ConnectionError) -> String {
                 reason
             }
         }
-        other => other.to_string(),
-    }
-}
-
-fn describe_read(error: iroh::endpoint::ReadToEndError) -> String {
-    use iroh::endpoint::{ReadError, ReadToEndError};
-    match error {
-        ReadToEndError::Read(ReadError::ConnectionLost(error)) => describe_closed(error),
         other => other.to_string(),
     }
 }

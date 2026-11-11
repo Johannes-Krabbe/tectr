@@ -3037,6 +3037,31 @@ async fn pairing_code(local: &Engine, machine: &MachineId) -> String {
     }
 }
 
+/// Pairs `remote` the way a person does: it asks with the code, and the digits it shows are
+/// typed on the device.
+async fn pair(
+    local: &Engine,
+    machine: &MachineId,
+    remote: &Engine,
+    code: &str,
+    name: &str,
+) -> String {
+    let pending = remote.pair(code, name).await.unwrap();
+    let confirm = Command::ConfirmPairing {
+        digits: pending.digits.clone(),
+    };
+    local.request(machine, confirm).await.unwrap();
+    remote.finish_pairing(pending).await.unwrap()
+}
+
+fn pairing_requests(local: &Engine) -> Vec<protocol::PairingRequest> {
+    local.devices()[0]
+        .state
+        .as_ref()
+        .map(|state| state.pairing_requests.clone())
+        .unwrap_or_default()
+}
+
 /// A client on "another machine", which finds the daemon only through the lookup.
 fn remote_engine(daemon: &Daemon) -> Engine {
     let lookup = iroh::address_lookup::MemoryLookup::new();
@@ -3071,7 +3096,7 @@ async fn a_paired_client_works_over_iroh_until_it_is_removed() {
     let code = pairing_code(&local, &machine).await;
 
     let remote = remote_engine(&daemon);
-    let url = remote.pair(&code, "Phone").await.unwrap();
+    let url = pair(&local, &machine, &remote, &code, "Phone").await;
     remote.wait_until_settled().await;
     assert!(connection(&remote, &url).is_some_and(|connection| connection.is_online()));
     let client = wait_for("the paired client", || {
@@ -3092,16 +3117,20 @@ async fn a_paired_client_works_over_iroh_until_it_is_removed() {
     })
     .await;
 
-    let refused = remote
-        .request(&machine, Command::StartPairing)
-        .await
-        .unwrap_err();
-    assert!(
-        refused
-            .to_string()
-            .contains("only starts on the device itself"),
-        "{refused}"
-    );
+    for command in [
+        Command::StartPairing,
+        Command::ConfirmPairing {
+            digits: "123456".to_owned(),
+        },
+    ] {
+        let refused = remote.request(&machine, command).await.unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("only happens on the device itself"),
+            "{refused}"
+        );
+    }
 
     local
         .request(&machine, Command::RemovePairedClient { key: client.key })
@@ -3138,7 +3167,7 @@ async fn an_idle_remote_client_stays_connected_by_pinging() {
         stalled_after: Duration::from_millis(400),
         silence_limit: Duration::from_millis(800),
     });
-    let url = remote.pair(&code, "Phone").await.unwrap();
+    let url = pair(&local, &machine, &remote, &code, "Phone").await;
     remote.wait_until_settled().await;
 
     // Nothing happens for several times what either end would wait in silence.
@@ -3179,14 +3208,79 @@ async fn strangers_and_wrong_codes_are_refused() {
     assert!(error.to_string().contains("wrong"), "{error}");
     assert!(stranger.pair("not a code", "x").await.is_err());
 
+    let waiting = stranger.pair(&code, "x").await.unwrap();
+    wait_for("the stranger to wait", || {
+        (pairing_requests(&local).len() == 1).then_some(())
+    })
+    .await;
     local
         .request(&machine, Command::CancelPairing)
         .await
         .unwrap();
+    let error = stranger.finish_pairing(waiting).await.unwrap_err();
+    assert!(error.to_string().contains("stopped pairing"), "{error}");
     let error = stranger.pair(&code, "x").await.unwrap_err();
     assert!(error.to_string().contains("isn't pairing"), "{error}");
     let state = local.devices()[0].state.clone().unwrap();
     assert!(state.paired_clients.is_empty());
+    assert!(state.pairing_requests.is_empty());
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn someone_else_with_the_code_stays_out_unless_their_digits_are_typed() {
+    let fixture = Fixture::new();
+    let daemon = remote_daemon(&fixture, "d").await;
+    let machine = daemon.machine_id().clone();
+    let local = connect(&daemon).await;
+    let code = pairing_code(&local, &machine).await;
+    let phone = remote_engine(&daemon);
+    let stranger = remote_engine(&daemon);
+
+    // Whoever stops waiting comes off the list, and their digits stop working.
+    let gone = stranger.pair(&code, "iPhone").await.unwrap();
+    let digits = gone.digits.clone();
+    wait_for("the first to wait", || {
+        (pairing_requests(&local).len() == 1).then_some(())
+    })
+    .await;
+    drop(gone);
+    wait_for("the first to stop waiting", || {
+        pairing_requests(&local).is_empty().then_some(())
+    })
+    .await;
+    let confirm = |digits: &str| Command::ConfirmPairing {
+        digits: digits.to_owned(),
+    };
+    assert!(local.request(&machine, confirm(&digits)).await.is_err());
+
+    let stranger_pending = stranger.pair(&code, "iPhone").await.unwrap();
+    let phone_pending = phone.pair(&code, "iPhone").await.unwrap();
+    wait_for("both to wait", || {
+        (pairing_requests(&local).len() == 2).then_some(())
+    })
+    .await;
+    assert_ne!(stranger_pending.digits, phone_pending.digits);
+    assert_eq!(phone_pending.machine.id, machine);
+    local
+        .request(&machine, confirm(&phone_pending.digits))
+        .await
+        .unwrap();
+    let url = phone.finish_pairing(phone_pending).await.unwrap();
+    let error = stranger.finish_pairing(stranger_pending).await.unwrap_err();
+    assert!(error.to_string().contains("another"), "{error}");
+
+    phone.wait_until_settled().await;
+    assert!(connection(&phone, &url).is_some_and(|connection| connection.is_online()));
+    stranger.add_daemon(&url);
+    stranger.wait_until_settled().await;
+    match connection(&stranger, &url) {
+        Some(Connection::Offline { reason }) => assert!(reason.contains("not paired"), "{reason}"),
+        other => panic!("the stranger got {other:?}"),
+    }
+    let state = local.devices()[0].state.clone().unwrap();
+    assert_eq!(state.paired_clients.len(), 1);
+    assert!(state.pairing_requests.is_empty());
     daemon.shutdown().await;
 }
 
@@ -3207,7 +3301,7 @@ async fn a_paired_daemon_listens_again_after_a_restart() {
             network: engine::Network::Local(lookup.clone()),
         },
     );
-    let url = remote.pair(&code, "Laptop").await.unwrap();
+    let url = pair(&local, &machine, &remote, &code, "Laptop").await;
     drop(remote);
     drop(local);
     daemon.shutdown().await;

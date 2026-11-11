@@ -37,6 +37,8 @@ mod import;
 mod mcp;
 mod remote;
 
+pub(crate) use remote::PAIRING_WAIT;
+
 /// How often image files nothing names are looked for, besides at startup.
 const COLLECT_IMAGES_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
@@ -149,7 +151,7 @@ pub struct Core {
     client_silence: Duration,
     /// Set once something needs remote clients: a pairing, or a client already paired.
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
-    pairing: Mutex<Vec<remote::Pairing>>,
+    pairing: Mutex<remote::Pairings>,
 }
 
 /// What `Core::open` needs besides the data directory.
@@ -230,7 +232,7 @@ impl Core {
             network,
             client_silence,
             endpoint: tokio::sync::OnceCell::new(),
-            pairing: Mutex::new(Vec::new()),
+            pairing: Mutex::new(remote::Pairings::default()),
         }))
     }
 
@@ -400,6 +402,7 @@ impl Core {
                 after_seq,
             } => self.fork_session(&session_id, after_seq),
             Command::StartPairing => self.start_pairing().await,
+            Command::ConfirmPairing { digits } => self.confirm_pairing(&digits),
             Command::CancelPairing => Ok(self.cancel_pairing()),
             Command::RemovePairedClient { key } => self.remove_paired_client(&key),
             Command::Unknown => Err(invalid("this daemon doesn't know that command")),
@@ -2392,7 +2395,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pairing_code_works_once_and_wrong_secrets_use_it_up() {
+    async fn pairing_takes_the_secret_and_then_the_digits_the_client_shows() {
         let dir = tempfile::tempdir().unwrap();
         let core = Core::open(dir.path(), options("host", None)).unwrap();
         let start = || async {
@@ -2406,57 +2409,128 @@ mod tests {
             secret: secret.to_owned(),
             name: "  Laptop  ".to_owned(),
         };
-        let paired = |response: protocol::PairResponse| {
-            matches!(response, protocol::PairResponse::Paired { .. })
+        let refused = |result: Result<remote::PairingWait, protocol::PairResponse>| {
+            matches!(result, Err(protocol::PairResponse::Refused { .. }))
         };
-        let laptop = iroh::SecretKey::generate().public();
-        let phone = iroh::SecretKey::generate().public();
+        let waiting = || core.snapshot_and_subscribe().0.pairing_requests;
+        let confirm = |digits: &str| {
+            core.handle(Command::ConfirmPairing {
+                digits: digits.to_owned(),
+            })
+        };
+        let key = || iroh::SecretKey::generate().public();
+        let laptop = key();
+        let stranger = key();
+        let phone = key();
 
         let code = start().await;
         assert_eq!(code.daemon_key, core.remote_id().to_string());
         assert!(core.remote_addr().is_some(), "pairing starts listening");
-        assert!(!core.is_paired(&laptop));
-        assert!(paired(core.pair(&laptop, &request(&code.secret))));
+        let laptop_wait = core
+            .request_pairing(&laptop, &request(&code.secret))
+            .unwrap();
+        assert!(!core.is_paired(&laptop), "the secret alone isn't enough");
+        let stranger_wait = core
+            .request_pairing(&stranger, &request(&code.secret))
+            .unwrap();
+        assert_eq!(laptop_wait.digits.len(), 6);
+        assert_ne!(laptop_wait.digits, stranger_wait.digits);
+        let names: Vec<_> = waiting().into_iter().map(|r| r.name).collect();
+        assert_eq!(names, ["Laptop", "Laptop"]);
+        assert!(confirm("no digits").await.is_err());
+        assert!(waiting().len() == 2, "a wrong try changes nothing");
+
+        let (first, second) = laptop_wait.digits.split_at(3);
+        let Ok(CommandOutput::Paired { client }) = confirm(&format!("{first} {second}")).await
+        else {
+            panic!("the digits didn't pair it");
+        };
+        assert_eq!(client.name, "Laptop");
         assert!(core.is_paired(&laptop));
-        let clients = core.snapshot_and_subscribe().0.paired_clients;
-        assert_eq!(clients.len(), 1);
-        assert_eq!(clients[0].name, "Laptop");
         assert!(
-            !paired(core.pair(&phone, &request(&code.secret))),
-            "a code works once"
+            !core.is_paired(&stranger),
+            "someone else with the code stays out"
+        );
+        assert!(matches!(
+            laptop_wait.answer.await,
+            Ok(protocol::PairResponse::Paired { .. })
+        ));
+        assert!(matches!(
+            stranger_wait.answer.await,
+            Ok(protocol::PairResponse::Refused { .. })
+        ));
+        assert!(waiting().is_empty());
+        assert_eq!(core.snapshot_and_subscribe().0.paired_clients, vec![client]);
+        assert!(
+            refused(core.request_pairing(&phone, &request(&code.secret))),
+            "pairing uses up the code"
         );
 
         let code = start().await;
         for _ in 0..5 {
-            assert!(!paired(core.pair(&phone, &request("wrong"))));
+            assert!(refused(core.request_pairing(&phone, &request("wrong"))));
         }
         assert!(
-            !paired(core.pair(&phone, &request(&code.secret))),
+            refused(core.request_pairing(&phone, &request(&code.secret))),
             "too many wrong secrets use the code up"
         );
 
-        let replaced = start().await;
         let code = start().await;
+        let first = core
+            .request_pairing(&phone, &request(&code.secret))
+            .unwrap();
+        let again = core
+            .request_pairing(&phone, &request(&code.secret))
+            .unwrap();
         assert!(
-            paired(core.pair(&phone, &request(&replaced.secret))),
-            "a replaced code keeps working for its grace"
+            matches!(
+                first.answer.await,
+                Ok(protocol::PairResponse::Refused { .. })
+            ),
+            "asking again takes the place of the last try"
         );
+        assert_eq!(waiting().len(), 1);
+        let others: Vec<_> = (0..2)
+            .map(|_| {
+                core.request_pairing(&key(), &request(&code.secret))
+                    .unwrap()
+            })
+            .collect();
         assert!(
-            !paired(core.pair(&phone, &request(&code.secret))),
-            "pairing uses up every code"
+            refused(core.request_pairing(&key(), &request(&code.secret))),
+            "only a few wait at once"
         );
+        core.stop_waiting(again.id);
+        assert_eq!(waiting().len(), 2);
+
+        let replaced = code;
+        let code = start().await;
+        let _phone_wait = core
+            .request_pairing(&phone, &request(&replaced.secret))
+            .expect("a replaced code keeps working for its grace");
+        assert_eq!(waiting().len(), 3, "a new code keeps the clients waiting");
+
+        core.handle(Command::CancelPairing).await.unwrap();
+        assert!(!core.pairing_open());
+        assert!(waiting().is_empty());
+        for other in others {
+            assert!(matches!(
+                other.answer.await,
+                Ok(protocol::PairResponse::Refused { .. })
+            ));
+        }
+        assert!(refused(
+            core.request_pairing(&phone, &request(&code.secret))
+        ));
 
         let code = start().await;
-        for open in core.pairing_lock().iter_mut() {
+        for open in core.pairing_lock().codes.iter_mut() {
             open.expires_at_ms = now_ms() - 10_001;
         }
         assert!(!core.pairing_open(), "the grace runs out");
-        assert!(!paired(core.pair(&phone, &request(&code.secret))));
-
-        let code = start().await;
-        core.handle(Command::CancelPairing).await.unwrap();
-        assert!(!core.pairing_open());
-        assert!(!paired(core.pair(&phone, &request(&code.secret))));
+        assert!(refused(
+            core.request_pairing(&phone, &request(&code.secret))
+        ));
 
         let key = laptop.to_string();
         let remove = || Command::RemovePairedClient { key: key.clone() };

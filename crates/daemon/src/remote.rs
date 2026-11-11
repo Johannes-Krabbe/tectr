@@ -1,5 +1,5 @@
 //! Connections from clients on other machines, over iroh. A paired client gets the same
-//! websocket protocol as loopback, on one QUIC stream. Any other key may only try to pair,
+//! websocket protocol as loopback, on one QUIC stream. Any other key may only ask to pair,
 //! and only while a code is out.
 
 use std::pin::Pin;
@@ -12,7 +12,7 @@ use iroh::{Endpoint, EndpointId, SecretKey};
 use protocol::{PAIRING_ALPN, PairRequest, PairResponse, REMOTE_ALPN};
 use tokio::task::JoinSet;
 
-use crate::core::Core;
+use crate::core::{Core, PAIRING_WAIT};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A pairing request is a secret and a name, so anything longer isn't one.
@@ -124,18 +124,51 @@ async fn pair(core: &Core, connection: &Connection, peer: EndpointId) -> Result<
     let request = tokio::time::timeout(HANDSHAKE_TIMEOUT, recv.read_to_end(MAX_PAIR_REQUEST))
         .await
         .context("no pairing request in time")??;
-    let response = match serde_json::from_slice::<PairRequest>(&request) {
-        Ok(request) => core.pair(&peer, &request),
-        Err(_) => PairResponse::Refused {
+    let wait = match serde_json::from_slice::<PairRequest>(&request) {
+        Ok(request) => core.request_pairing(&peer, &request),
+        Err(_) => Err(PairResponse::Refused {
             reason: "that wasn't a pairing request".to_owned(),
-        },
+        }),
     };
-    if let PairResponse::Paired { .. } = response {
-        tracing::info!(peer = %peer.fmt_short(), "paired a new client");
-    }
-    send.write_all(&serde_json::to_vec(&response)?).await?;
+    let response = match wait {
+        Err(refused) => refused,
+        Ok(wait) => {
+            // However this ends, the client is no longer waiting.
+            let _waiting = StopWaiting(core, wait.id);
+            let confirm = PairResponse::Confirm {
+                digits: wait.digits,
+                machine: wait.machine,
+            };
+            write_line(&mut send, &confirm).await?;
+            tokio::select! {
+                answer = wait.answer => answer.unwrap_or_else(|_| PairResponse::Refused {
+                    reason: "the device stopped pairing".to_owned(),
+                }),
+                _ = connection.closed() => return Ok(()),
+                () = tokio::time::sleep(PAIRING_WAIT) => PairResponse::Refused {
+                    reason: "nobody typed the digits on the device in time".to_owned(),
+                },
+            }
+        }
+    };
+    write_line(&mut send, &response).await?;
     send.finish()?;
     // Closing now could drop the answer, so the client closes once it has read it.
     let _ = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.closed()).await;
+    Ok(())
+}
+
+struct StopWaiting<'a>(&'a Core, u64);
+
+impl Drop for StopWaiting<'_> {
+    fn drop(&mut self) {
+        self.0.stop_waiting(self.1);
+    }
+}
+
+async fn write_line(send: &mut iroh::endpoint::SendStream, response: &PairResponse) -> Result<()> {
+    let mut line = serde_json::to_vec(response)?;
+    line.push(b'\n');
+    send.write_all(&line).await?;
     Ok(())
 }

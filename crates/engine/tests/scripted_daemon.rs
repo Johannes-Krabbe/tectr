@@ -91,6 +91,7 @@ async fn accept(listener: &TcpListener) -> Socket {
                 settings: Default::default(),
                 mcp_servers: vec![],
                 paired_clients: vec![],
+                pairing_requests: vec![],
             },
         },
     )

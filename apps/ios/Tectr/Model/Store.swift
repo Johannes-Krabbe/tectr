@@ -666,10 +666,17 @@ final class Store {
         fire(device(deviceID)?.machineID, .removePairedClient(key: clientID))
     }
 
-    /// Pairs with the daemon a code names, and keeps it. Throws with a message to show.
-    func pair(code: String) async throws {
+    /// Asks the daemon a code names to pair. Throws with a message to show.
+    func pair(code: String) async throws -> PendingPairing? {
+        guard let engine else { return nil }
+        return try await engine.pair(code: code, name: UIDevice.current.name)
+    }
+
+    /// Waits for the digits to be typed on the device, then keeps it. Throws with a message
+    /// to show.
+    func finishPairing(_ pairing: PendingPairing) async throws {
         guard let engine else { return }
-        try await engine.pair(code: code, name: UIDevice.current.name)
+        try await engine.finishPairing(pairing)
         changed(devices: true)
     }
 

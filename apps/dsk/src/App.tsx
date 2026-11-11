@@ -1270,6 +1270,12 @@ export function App() {
               ? devices.find((d) => d.state?.machine.id === sheet.machineId)?.state?.workspaces
               : undefined) ?? []
           }
+          pairingRequests={
+            ("machineId" in sheet
+              ? devices.find((d) => d.state?.machine.id === sheet.machineId)?.state
+                  ?.pairing_requests
+              : undefined) ?? []
+          }
           onClose={() => setSheet(null)}
           onDone={(output) => {
             if (output.output === "workspace" && sheet.kind === "workspace") {

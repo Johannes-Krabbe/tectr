@@ -1454,6 +1454,7 @@ dependencies = [
  "objc2",
  "open",
  "protocol",
+ "serde",
  "settings",
  "tauri",
  "tauri-build",

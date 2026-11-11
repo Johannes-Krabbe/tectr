@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { countdown, qrPath } from "./pairing.ts";
+import { countdown, qrPath, spacedDigits } from "./pairing.ts";
 
 test("draws each run of dark modules as one rectangle", () => {
   assert.equal(
@@ -25,4 +25,8 @@ test("counts down in whole seconds, rounding up", () => {
   assert.equal(countdown(1), "0:01");
   assert.equal(countdown(0), "0:00");
   assert.equal(countdown(-5_000), "0:00");
+});
+
+test("splits pairing digits in the middle", () => {
+  assert.equal(spacedDigits("482913"), "482 913");
 });

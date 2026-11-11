@@ -278,11 +278,16 @@ impl Connection {
             Incoming::Frame(data) => self.frame(&data),
             Incoming::Message(ClientMessage::Request { id, command })
                 if self.peer != Peer::Loopback
-                    && matches!(command, Command::StartPairing | Command::CancelPairing) =>
+                    && matches!(
+                        command,
+                        Command::StartPairing
+                            | Command::ConfirmPairing { .. }
+                            | Command::CancelPairing
+                    ) =>
             {
                 let refusal = CommandError {
                     code: ErrorCode::InvalidInput,
-                    message: "pairing only starts on the device itself".to_owned(),
+                    message: "pairing only happens on the device itself".to_owned(),
                 };
                 self.send_response(id, Err(refusal)).await?;
             }

@@ -1,4 +1,5 @@
 import SwiftUI
+import TectrCore
 import TectrDesign
 
 /// A device's own settings, kept by its daemon, so they're the same on every client.
@@ -419,7 +420,8 @@ struct PairedClientsView: View {
     }
 }
 
-/// Pairs with a device by the code it shows, scanned or pasted.
+/// Pairs with a device by the code it shows, scanned or pasted, then shows the digits to type
+/// there until they are.
 struct AddDeviceView: View {
     @Environment(Store.self) private var store
     @Environment(Toasts.self) private var toasts
@@ -428,35 +430,22 @@ struct AddDeviceView: View {
     @State private var failure: String?
     @State private var pairing = false
     @State private var scanning = false
+    @State private var asked: PendingPairing?
 
     var body: some View {
         Form {
-            if CodeScanner.isAvailable {
+            if let asked {
                 Section {
-                    Button("Scan the code", systemImage: "qrcode.viewfinder") { scanning = true }
+                    Text(Self.spaced(asked.digits))
+                        .font(Tokens.Text.title)
+                        .monospacedDigit()
+                        .frame(maxWidth: .infinity)
+                        .textSelection(.enabled)
                 } footer: {
-                    Text("Point the camera at the code the device shows")
+                    Text("Type these on \(asked.machineName)")
                 }
-            }
-            Section {
-                TextField("tectr-...", text: $code)
-                    .font(Tokens.Text.codeBody)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .onSubmit(pair)
-                .disabled(pairing)
-                // The system's paste button doesn't ask for clipboard access.
-                PasteButton(payloadType: String.self) { strings in
-                    code = strings.first ?? code
-                }
-            } header: {
-                Text("Code")
-            } footer: {
-                if let failure {
-                    Text(failure).foregroundStyle(.statusFailed)
-                } else {
-                    Text("On the device, open Settings, then Pairing")
-                }
+            } else {
+                codeForm
             }
         }
         .navigationTitle("Add a device")
@@ -471,6 +460,8 @@ struct AddDeviceView: View {
                 }
             }
         }
+        // Leaving stops the pairing, so the device stops waiting on this phone.
+        .onDisappear { asked?.stop() }
         .fullScreenCover(isPresented: $scanning) {
             CodeScanner { found in
                 code = found
@@ -488,19 +479,59 @@ struct AddDeviceView: View {
         }
     }
 
+    @ViewBuilder private var codeForm: some View {
+        if CodeScanner.isAvailable {
+            Section {
+                Button("Scan the code", systemImage: "qrcode.viewfinder") { scanning = true }
+            } footer: {
+                Text("Point the camera at the code the device shows")
+            }
+        }
+        Section {
+            TextField("tectr-...", text: $code)
+                .font(Tokens.Text.codeBody)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .onSubmit(pair)
+            .disabled(pairing)
+            // The system's paste button doesn't ask for clipboard access.
+            PasteButton(payloadType: String.self) { strings in
+                code = strings.first ?? code
+            }
+        } header: {
+            Text("Code")
+        } footer: {
+            if let failure {
+                Text(failure).foregroundStyle(.statusFailed)
+            } else {
+                Text("On the device, open Settings, then Pairing")
+            }
+        }
+    }
+
     private func pair() {
         guard !pairing else { return }
         pairing = true
         failure = nil
         Task {
             do {
-                try await store.pair(code: code)
-                toasts.show("Paired")
-                dismiss()
+                if let pending = try await store.pair(code: code) {
+                    asked = pending
+                    try await store.finishPairing(pending)
+                    toasts.show("Paired with \(pending.machineName)")
+                    dismiss()
+                }
             } catch {
                 failure = error.localizedDescription
             }
+            asked = nil
             pairing = false
         }
+    }
+
+    /// `482913` as `482 913`, which is easier to read off one screen and type on another.
+    private static func spaced(_ digits: String) -> String {
+        let middle = digits.index(digits.startIndex, offsetBy: digits.count / 2)
+        return "\(digits[..<middle]) \(digits[middle...])"
     }
 }

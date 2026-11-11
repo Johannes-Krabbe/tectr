@@ -81,9 +81,10 @@ pub fn local_daemon_url() -> String {
 
 /// Over iroh, a paired client speaks this protocol on one bidirectional stream.
 pub const REMOTE_ALPN: &[u8] = b"tectr/1";
-/// Over iroh, a client that isn't paired yet speaks this to become paired: one
-/// [`PairRequest`] line, answered by one [`PairResponse`] line.
-pub const PAIRING_ALPN: &[u8] = b"tectr-pair/1";
+/// Over iroh, a client that isn't paired yet speaks this to become paired: it sends one
+/// [`PairRequest`] and finishes, and the daemon answers with [`PairResponse`] lines, a
+/// [`PairResponse::Confirm`] and then the outcome, or only a refusal.
+pub const PAIRING_ALPN: &[u8] = b"tectr-pair/2";
 const REMOTE_SCHEME: &str = "iroh://";
 
 /// The address of a daemon on another machine, reached over iroh by its public key.
@@ -98,7 +99,8 @@ pub fn remote_daemon_key(url: &str) -> Option<&str> {
 }
 
 /// What a daemon shows to pair a new client: its public key, which is also where to
-/// reach it, and a secret that only works once and only for a few minutes.
+/// reach it, and a secret that only works for a few minutes. The secret only lets a client
+/// ask: someone at the daemon still types the digits that client shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingCode {
     pub daemon_key: String,
@@ -138,6 +140,13 @@ pub struct PairRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum PairResponse {
+    /// The secret was right, and the client waits for someone at the daemon to type
+    /// `digits`, which it shows. They're picked for this client, so seeing the code isn't
+    /// enough to get in.
+    Confirm {
+        digits: String,
+        machine: Machine,
+    },
     /// The client's key is on the allowed list now, so it can connect over [`REMOTE_ALPN`].
     Paired {
         machine: Machine,
@@ -156,6 +165,14 @@ pub struct PairedClient {
     pub key: String,
     pub name: String,
     pub paired_at_ms: i64,
+}
+
+/// A client that brought the secret of an open code and waits for its digits to be typed.
+/// The digits stay out of the state, so only the client's own screen shows them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingRequest {
+    pub key: String,
+    pub name: String,
 }
 
 /// Picks the highest version both sides support, if there is one.
@@ -524,12 +541,20 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_seq: Option<u64>,
     },
-    /// Show a code that pairs one more client from another machine, answered with
+    /// Show a code that lets a client from another machine ask to pair, answered with
     /// [`CommandOutput::Pairing`]. Only a client on the daemon's own machine can ask, so
     /// letting a new machine in needs someone at this one. A new code replaces the last,
     /// which keeps working for a short grace, like every code past its `expires_at_ms`.
+    /// Clients already waiting keep waiting.
     StartPairing,
-    /// Stop a code from [`Command::StartPairing`] from working before it expires.
+    /// Pair the waiting client that shows `digits`, answered with [`CommandOutput::Paired`].
+    /// The others are refused and the code stops working. Only from the daemon's own
+    /// machine, like [`Command::StartPairing`].
+    ConfirmPairing {
+        digits: String,
+    },
+    /// Stop a code from [`Command::StartPairing`] from working, and refuse every client
+    /// waiting on one.
     CancelPairing,
     /// Take a client off the allowed list. If it's connected, it's disconnected.
     RemovePairedClient {
@@ -611,6 +636,9 @@ pub enum CommandOutput {
         /// The [`PairingCode`] as text.
         code: String,
         expires_at_ms: i64,
+    },
+    Paired {
+        client: PairedClient,
     },
     Done,
     #[serde(other)]
@@ -759,6 +787,9 @@ pub struct DaemonState {
     /// The clients on other machines that may connect, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paired_clients: Vec<PairedClient>,
+    /// Clients waiting for their digits to be typed, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pairing_requests: Vec<PairingRequest>,
 }
 
 impl DaemonState {
@@ -905,6 +936,9 @@ impl DaemonState {
             }
             StateChange::PairedClientRemoved { key } => {
                 self.paired_clients.retain(|c| &c.key != key);
+            }
+            StateChange::PairingRequestsChanged { requests } => {
+                self.pairing_requests = requests.clone();
             }
             StateChange::Unknown => {}
         }
@@ -1414,6 +1448,10 @@ pub enum StateChange {
     PairedClientRemoved {
         key: String,
     },
+    /// Replaces the clients waiting for their digits to be typed.
+    PairingRequestsChanged {
+        requests: Vec<PairingRequest>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -1734,6 +1772,7 @@ mod tests {
                 server("theirs", Some("other"), true),
             ],
             paired_clients: vec![],
+            pairing_requests: vec![],
         };
         let names = |topic: &Topic| -> Vec<String> {
             state
@@ -1765,6 +1804,7 @@ mod tests {
             settings: DeviceSettings::default(),
             mcp_servers: vec![],
             paired_clients: vec![],
+            pairing_requests: vec![],
         };
         let change = StateChange::WorkspaceAdded {
             workspace: Workspace {
@@ -1856,6 +1896,7 @@ mod tests {
             settings: DeviceSettings::default(),
             mcp_servers: vec![],
             paired_clients: vec![],
+            pairing_requests: vec![],
         };
         let usage = vec![AgentCommand {
             name: "usage".into(),

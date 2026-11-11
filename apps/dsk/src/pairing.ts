@@ -21,3 +21,9 @@ export function countdown(ms: number): string {
   const seconds = Math.max(Math.ceil(ms / 1000), 0);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
+
+/** `482913` as `482 913`, which is easier to read off one screen and type on another. */
+export function spacedDigits(digits: string): string {
+  const middle = Math.floor(digits.length / 2);
+  return `${digits.slice(0, middle)} ${digits.slice(middle)}`;
+}

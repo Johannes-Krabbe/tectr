@@ -240,8 +240,14 @@ public final class Engine: Sendable {
         core.terminalAck(machineId: machineId, terminalId: terminalId, bytes: bytes)
     }
 
-    public func pair(code: String, name: String) async throws {
-        try await plain { try await core.pair(code: code, name: name) }
+    /// Asks the device that showed `code` to pair. The answer has the digits to type there.
+    public func pair(code: String, name: String) async throws -> PendingPairing {
+        PendingPairing(try await plain { try await core.pair(code: code, name: name) })
+    }
+
+    /// Waits for the pairing's digits to be typed on the device, then keeps the device.
+    public func finishPairing(_ pairing: PendingPairing) async throws {
+        try await plain { try await core.finishPairing(pairing: pairing.inner) }
     }
 
     public func forget(url: String) async throws {
@@ -281,6 +287,25 @@ private func plain<T>(_ body: () async throws -> T) async throws -> T {
         return try await body()
     } catch CoreError.Failed(let message) {
         throw EngineFailure(message)
+    }
+}
+
+/// A pairing whose digits someone types on the device. Stopping it, or letting it go, takes
+/// this phone off the device's waiting list.
+public final class PendingPairing: Sendable {
+    fileprivate let inner: Pairing
+    public let digits: String
+    /// The device's name, where the digits are typed.
+    public let machineName: String
+
+    fileprivate init(_ inner: Pairing) {
+        self.inner = inner
+        digits = inner.digits()
+        machineName = inner.machineName()
+    }
+
+    public func stop() {
+        inner.stop()
     }
 }
 

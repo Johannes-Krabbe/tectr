@@ -14,10 +14,13 @@ import {
   type ArchiveRisk,
   type CommandOutput,
   errorText,
+  finishPairing,
   type Folder,
   pairDevice,
+  type PairingRequest,
   request,
   type Session,
+  stopPairing,
   type Topic,
   type Workspace,
 } from "./engine";
@@ -33,10 +36,11 @@ import {
   type Suggestion,
 } from "./pathInput";
 import { hint as keyHint, type Hint, useHints } from "./shortcuts";
-import { countdown } from "./pairing";
+import { countdown, spacedDigits } from "./pairing";
 import { Icon } from "./ui/Icon";
 import { QrCode } from "./ui/QrCode";
 import { Keys } from "./ui/StatusIcon";
+import { showToast } from "./toast";
 
 export type SheetRequest =
   | { kind: "workspace"; machineId: string; deviceName: string; local: boolean }
@@ -529,31 +533,37 @@ function MoveSheet({
   );
 }
 
-/** Shows the code that lets one more machine in, and a new one each time it runs out. Copying
- * keeps it working until it's used or expires, and cancelling stops it straight away. The
- * daemon still takes a code for a short grace after the clock here reaches zero. */
+/** Shows the code that lets machines ask to pair, and a new one each time it runs out. Once one
+ * asks, it shows digits that are typed here to let it in, so someone who only saw the code
+ * stays out. Closing stops the code and turns away every machine still waiting. The daemon
+ * still takes a code for a short grace after the clock here reaches zero. */
 function PairingSheet({
   sheet,
+  requests,
   onClose,
   onDone,
 }: {
   sheet: Extract<SheetRequest, { kind: "pairing" }>;
+  requests: PairingRequest[];
   onClose: () => void;
   onDone: (output: CommandOutput) => void;
 }) {
   const [pairing, setPairing] = useState({ code: sheet.code, expiresAtMs: sheet.expiresAtMs });
   const [now, setNow] = useState(Date.now);
   const [failure, setFailure] = useState<string | null>(null);
-  const copied = useRef(false);
+  const [digits, setDigits] = useState("");
   const renewing = useRef(false);
   const closed = useRef(false);
   const left = pairing.expiresAtMs - now;
+  const asked = requests.length > 0;
+  const typed = digits.replace(/\s/g, "");
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(timer);
   }, []);
 
+  // Machines already waiting keep waiting while the code renews.
   useEffect(() => {
     if (left > 0 || renewing.current || failure !== null) return;
     renewing.current = true;
@@ -565,7 +575,6 @@ function PairingSheet({
           request(sheet.machineId, { command: "cancel_pairing" }).catch(() => {});
           return;
         }
-        copied.current = false;
         setPairing({ code: output.code, expiresAtMs: output.expires_at_ms });
       })
       .catch((reason) => setFailure(errorText(reason)))
@@ -574,43 +583,75 @@ function PairingSheet({
       });
   }, [left, failure, sheet.machineId]);
 
+  const waiting =
+    requests.length > 1
+      ? `${requests.length} machines are waiting, so someone else has the code`
+      : `Type the digits ${requests[0]?.name ?? ""} shows`;
+
   return (
     <Sheet
       where={`Pair another machine with ${sheet.deviceName}`}
-      action="Copy"
+      action={asked ? "Pair" : "Copy"}
       hint={
-        failure ?? (
+        failure ??
+        (asked ? (
+          waiting
+        ) : (
           <span className="pairing-clock">
             <Icon name="expires" />
             {countdown(left)}
           </span>
-        )
+        ))
       }
-      canSubmit
-      focusAction
+      canSubmit={asked ? /^\d{6}$/.test(typed) : true}
+      focusAction={!asked}
       returnsFocus
+      input={digits}
       run={async () => {
-        await invoke("write_clipboard", { text: pairing.code });
-        copied.current = true;
-        return { output: "done" };
+        if (!asked) {
+          await invoke("write_clipboard", { text: pairing.code });
+          showToast("Copied the code");
+          return null;
+        }
+        const output = await request(sheet.machineId, {
+          command: "confirm_pairing",
+          digits: typed,
+        });
+        if (output.output === "paired") showToast(`Paired ${output.client.name}`);
+        return output;
       }}
       onClose={() => {
         closed.current = true;
-        if (!copied.current) {
-          request(sheet.machineId, { command: "cancel_pairing" }).catch(() => {});
-        }
+        // After a pairing there's nothing left to stop.
+        request(sheet.machineId, { command: "cancel_pairing" }).catch(() => {});
         onClose();
       }}
       onDone={onDone}
     >
-      <QrCode text={pairing.code} label="Pairing code as a QR code" />
-      <input
-        className="sheet-name code pairing-code"
-        readOnly
-        value={pairing.code}
-        aria-label="Pairing code"
-        spellCheck={false}
-      />
+      {asked ? (
+        <input
+          className="sheet-name code pairing-code"
+          autoFocus
+          value={digits}
+          placeholder="000 000"
+          aria-label="Digits the other machine shows"
+          inputMode="numeric"
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(event) => setDigits(event.target.value)}
+        />
+      ) : (
+        <>
+          <QrCode text={pairing.code} label="Pairing code as a QR code" />
+          <input
+            className="sheet-name code pairing-code"
+            readOnly
+            value={pairing.code}
+            aria-label="Pairing code"
+            spellCheck={false}
+          />
+        </>
+      )}
     </Sheet>
   );
 }
@@ -618,6 +659,7 @@ function PairingSheet({
 /** A code looks like `tectr-<key>-<secret>`, which is all this checks before asking. */
 const looksLikeCode = (text: string) => /^tectr-[A-Za-z0-9]+-[A-Za-z0-9]+$/.test(text.trim());
 
+/** Pastes a code, then shows the digits to type on that device until they are. */
 function AddDeviceSheet({
   onClose,
   onDone,
@@ -626,31 +668,67 @@ function AddDeviceSheet({
   onDone: (output: CommandOutput) => void;
 }) {
   const [code, setCode] = useState("");
+  const [asked, setAsked] = useState<{ digits: string; machine: string } | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const closed = useRef(false);
+
   return (
     <Sheet
       where="Add a device"
       action="Pair"
-      hint="Pair another machine shows the code there"
-      canSubmit={looksLikeCode(code)}
+      hint={
+        asked
+          ? `Type these on ${asked.machine}`
+          : (failure ?? "Pair another machine shows the code there")
+      }
+      canSubmit={!asked && looksLikeCode(code)}
       run={async () => {
-        await pairDevice(code.trim());
-        return { output: "done" };
+        setFailure(null);
+        const prompt = await pairDevice(code.trim());
+        setAsked(prompt);
+        finishPairing()
+          .then(() => {
+            if (closed.current) return;
+            showToast(`Paired with ${prompt.machine}`);
+            onDone({ output: "done" });
+            onClose();
+          })
+          .catch((reason) => {
+            if (closed.current) return;
+            setFailure(errorText(reason));
+            setAsked(null);
+          });
+        return null;
       }}
-      onClose={onClose}
+      onClose={() => {
+        closed.current = true;
+        if (asked) stopPairing().catch(() => {});
+        onClose();
+      }}
       onDone={onDone}
       input={code}
     >
-      <input
-        className="sheet-name"
-        autoFocus
-        value={code}
-        placeholder="tectr-..."
-        aria-label="Pairing code"
-        spellCheck={false}
-        autoCorrect="off"
-        autoCapitalize="off"
-        onChange={(event) => setCode(event.target.value)}
-      />
+      {asked ? (
+        <input
+          className="sheet-name code pairing-code"
+          readOnly
+          value={spacedDigits(asked.digits)}
+          aria-label="Digits to type on the other machine"
+          spellCheck={false}
+        />
+      ) : (
+        <input
+          className="sheet-name"
+          autoFocus
+          value={code}
+          placeholder="tectr-..."
+          aria-label="Pairing code"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          onChange={(event) => setCode(event.target.value)}
+        />
+      )}
     </Sheet>
   );
 }
@@ -658,12 +736,15 @@ function AddDeviceSheet({
 export function Sheets({
   sheet,
   workspaces,
+  pairingRequests,
   onClose,
   onDone,
 }: {
   sheet: SheetRequest;
   /** What the sheet's device already has. */
   workspaces: Workspace[];
+  /** The machines waiting on the sheet's device to type their digits. */
+  pairingRequests: PairingRequest[];
   onClose: () => void;
   onDone: (output: CommandOutput) => void;
 }) {
@@ -681,7 +762,14 @@ export function Sheets({
     case "move":
       return <MoveSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
     case "pairing":
-      return <PairingSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
+      return (
+        <PairingSheet
+          sheet={sheet}
+          requests={pairingRequests}
+          onClose={onClose}
+          onDone={onDone}
+        />
+      );
     case "add_device":
       return <AddDeviceSheet onClose={onClose} onDone={onDone} />;
   }

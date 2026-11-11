@@ -734,6 +734,7 @@ mod tests {
             settings: protocol::DeviceSettings::default(),
             mcp_servers: servers,
             paired_clients: vec![],
+            pairing_requests: vec![],
         }
     }
 

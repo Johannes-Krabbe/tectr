@@ -219,16 +219,45 @@ impl Core {
             .terminal_ack(&MachineId(machine_id), &TerminalId(terminal_id), bytes);
     }
 
-    /// Pairs with the device that showed `code`, and keeps it. `name` is what that device
-    /// lists this phone as.
-    pub async fn pair(&self, code: String, name: String) -> Result<(), CoreError> {
+    /// Asks the device that showed `code` to pair. `name` is what that device lists this
+    /// phone as. The answer has the digits to type on the device.
+    pub async fn pair(&self, code: String, name: String) -> Result<Arc<Pairing>, CoreError> {
         let engine = self.engine.clone();
-        let url = self
+        let pending = self
             .runtime
             .spawn(async move { engine.pair(&code, &name).await })
             .await
             .map_err(failed)?
             .map_err(failed)?;
+        Ok(Arc::new(Pairing {
+            digits: pending.digits.clone(),
+            machine_name: pending.machine.name.clone(),
+            pending: Mutex::new(Some(pending)),
+            stop: Mutex::new(None),
+        }))
+    }
+
+    /// Waits for the pairing's digits to be typed on the device, then keeps the device.
+    pub async fn finish_pairing(&self, pairing: Arc<Pairing>) -> Result<(), CoreError> {
+        let pending = pairing
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| failed("this pairing already finished"))?;
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        *pairing.stop.lock().unwrap_or_else(PoisonError::into_inner) = Some(stop);
+        let engine = self.engine.clone();
+        let url = self
+            .runtime
+            .spawn(async move {
+                tokio::select! {
+                    url = engine.finish_pairing(pending) => url.map_err(failed),
+                    _ = stopped => Err(failed("stopped pairing")),
+                }
+            })
+            .await
+            .map_err(failed)??;
         self.store.add_daemon(&url).map_err(failed)
     }
 
@@ -263,6 +292,40 @@ impl Core {
     pub fn client_key(&self) -> Result<String, CoreError> {
         let key = self.store.key().map_err(failed)?;
         Ok(key.public().to_string())
+    }
+}
+
+/// A pairing whose digits someone types on the device. Stopping it, or letting it go, takes
+/// this phone off the device's waiting list.
+#[derive(uniffi::Object)]
+pub struct Pairing {
+    digits: String,
+    machine_name: String,
+    pending: Mutex<Option<engine::PendingPairing>>,
+    /// Dropping it stops `finish_pairing`.
+    stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+#[uniffi::export]
+impl Pairing {
+    pub fn digits(&self) -> String {
+        self.digits.clone()
+    }
+
+    /// The device's name, where the digits are typed.
+    pub fn machine_name(&self) -> String {
+        self.machine_name.clone()
+    }
+
+    pub fn stop(&self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        self.stop
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
     }
 }
 

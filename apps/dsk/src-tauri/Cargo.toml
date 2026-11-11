@@ -19,8 +19,9 @@ arboard = { version = "3", default-features = false }
 dirs.workspace = true
 notify = "8"
 open = "5"
+serde.workspace = true
 tauri = { version = "2", features = [] }
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
