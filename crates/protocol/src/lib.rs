@@ -526,7 +526,8 @@ pub enum Command {
     },
     /// Show a code that pairs one more client from another machine, answered with
     /// [`CommandOutput::Pairing`]. Only a client on the daemon's own machine can ask, so
-    /// letting a new machine in needs someone at this one. A new code replaces the last.
+    /// letting a new machine in needs someone at this one. A new code replaces the last,
+    /// which keeps working for a short grace, like every code past its `expires_at_ms`.
     StartPairing,
     /// Stop a code from [`Command::StartPairing`] from working before it expires.
     CancelPairing,

@@ -149,7 +149,7 @@ pub struct Core {
     client_silence: Duration,
     /// Set once something needs remote clients: a pairing, or a client already paired.
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
-    pairing: Mutex<Option<remote::Pairing>>,
+    pairing: Mutex<Vec<remote::Pairing>>,
 }
 
 /// What `Core::open` needs besides the data directory.
@@ -230,7 +230,7 @@ impl Core {
             network,
             client_silence,
             endpoint: tokio::sync::OnceCell::new(),
-            pairing: Mutex::new(None),
+            pairing: Mutex::new(Vec::new()),
         }))
     }
 
@@ -2434,6 +2434,24 @@ mod tests {
             !paired(core.pair(&phone, &request(&code.secret))),
             "too many wrong secrets use the code up"
         );
+
+        let replaced = start().await;
+        let code = start().await;
+        assert!(
+            paired(core.pair(&phone, &request(&replaced.secret))),
+            "a replaced code keeps working for its grace"
+        );
+        assert!(
+            !paired(core.pair(&phone, &request(&code.secret))),
+            "pairing uses up every code"
+        );
+
+        let code = start().await;
+        for open in core.pairing_lock().iter_mut() {
+            open.expires_at_ms = now_ms() - 10_001;
+        }
+        assert!(!core.pairing_open(), "the grace runs out");
+        assert!(!paired(core.pair(&phone, &request(&code.secret))));
 
         let code = start().await;
         core.handle(Command::CancelPairing).await.unwrap();

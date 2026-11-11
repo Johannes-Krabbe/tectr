@@ -1,5 +1,6 @@
 import {
   Bot,
+  Clock,
   Ellipsis,
   GitBranch,
   GitFork,
@@ -22,6 +23,7 @@ const ICONS = {
   agent: { glyph: Bot },
   branch: { glyph: GitFork },
   diff: { glyph: GitCompare },
+  expires: { glyph: Clock },
   git: { glyph: GitBranch },
   import: { glyph: History },
   lower: { glyph: Minus },

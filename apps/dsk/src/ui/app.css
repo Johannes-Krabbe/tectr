@@ -1603,6 +1603,31 @@ textarea.sheet-name {
   resize: none;
 }
 
+/* Scanners read dark modules on a light ground most reliably, so a dark theme swaps the two
+ * instead of drawing light on dark. The tokens keep it to the user's palette either way. */
+.qr {
+  display: block;
+  width: calc(176 * var(--unit));
+  margin: var(--space-sm) auto 0;
+  border-radius: var(--radius-sm);
+  background: var(--color-text-primary);
+  fill: var(--color-surface-overlay);
+}
+
+[data-theme="light"] .qr {
+  background: var(--color-surface-overlay);
+  fill: var(--color-text-primary);
+}
+
+.pairing-code { text-align: center; }
+
+.pairing-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
 .sheet-error { padding: var(--space-xs) var(--space-lg); }
 
 .sheet-losses {

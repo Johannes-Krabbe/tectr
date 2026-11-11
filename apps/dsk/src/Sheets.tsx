@@ -33,6 +33,9 @@ import {
   type Suggestion,
 } from "./pathInput";
 import { hint as keyHint, type Hint, useHints } from "./shortcuts";
+import { countdown } from "./pairing";
+import { Icon } from "./ui/Icon";
+import { QrCode } from "./ui/QrCode";
 import { Keys } from "./ui/StatusIcon";
 
 export type SheetRequest =
@@ -74,7 +77,7 @@ export function Sheet({
 }: {
   where: string;
   action: string;
-  hint?: string;
+  hint?: ReactNode;
   canSubmit: boolean;
   /** `null` goes on to the sheet's next step, which stays open. */
   run: () => Promise<CommandOutput | null>;
@@ -526,8 +529,9 @@ function MoveSheet({
   );
 }
 
-/** Shows the code that lets one more machine in. Copying keeps it working until it's used or
- * expires, and cancelling stops it straight away. */
+/** Shows the code that lets one more machine in, and a new one each time it runs out. Copying
+ * keeps it working until it's used or expires, and cancelling stops it straight away. The
+ * daemon still takes a code for a short grace after the clock here reaches zero. */
 function PairingSheet({
   sheet,
   onClose,
@@ -537,25 +541,61 @@ function PairingSheet({
   onClose: () => void;
   onDone: (output: CommandOutput) => void;
 }) {
+  const [pairing, setPairing] = useState({ code: sheet.code, expiresAtMs: sheet.expiresAtMs });
+  const [now, setNow] = useState(Date.now);
+  const [failure, setFailure] = useState<string | null>(null);
   const copied = useRef(false);
-  const until = new Date(sheet.expiresAtMs).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const renewing = useRef(false);
+  const closed = useRef(false);
+  const left = pairing.expiresAtMs - now;
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (left > 0 || renewing.current || failure !== null) return;
+    renewing.current = true;
+    request(sheet.machineId, { command: "start_pairing" })
+      .then((output) => {
+        if (output.output !== "pairing") return;
+        // Closed while asking: the new code would sit open with nothing showing it.
+        if (closed.current) {
+          request(sheet.machineId, { command: "cancel_pairing" }).catch(() => {});
+          return;
+        }
+        copied.current = false;
+        setPairing({ code: output.code, expiresAtMs: output.expires_at_ms });
+      })
+      .catch((reason) => setFailure(errorText(reason)))
+      .finally(() => {
+        renewing.current = false;
+      });
+  }, [left, failure, sheet.machineId]);
+
   return (
     <Sheet
       where={`Pair another machine with ${sheet.deviceName}`}
       action="Copy"
-      hint={`Paste it in Add a device on the other machine. It works once, until ${until}.`}
+      hint={
+        failure ?? (
+          <span className="pairing-clock">
+            <Icon name="expires" />
+            {countdown(left)}
+          </span>
+        )
+      }
       canSubmit
       focusAction
       returnsFocus
       run={async () => {
-        await invoke("write_clipboard", { text: sheet.code });
+        await invoke("write_clipboard", { text: pairing.code });
         copied.current = true;
         return { output: "done" };
       }}
       onClose={() => {
+        closed.current = true;
         if (!copied.current) {
           request(sheet.machineId, { command: "cancel_pairing" }).catch(() => {});
         }
@@ -563,10 +603,11 @@ function PairingSheet({
       }}
       onDone={onDone}
     >
+      <QrCode text={pairing.code} label="Pairing code as a QR code" />
       <input
-        className="sheet-name code"
+        className="sheet-name code pairing-code"
         readOnly
-        value={sheet.code}
+        value={pairing.code}
         aria-label="Pairing code"
         spellCheck={false}
       />
