@@ -154,3 +154,13 @@ export function shownTab(
       : (before.slice(index + 1).find(remains) ?? before.slice(0, index).reverse().find(remains));
   return neighbor ?? tabs[tabs.length - 1];
 }
+
+/** Whether the tab just started here is still waiting on the daemon's news of it, which shows
+ * another tab in its place meanwhile. The keyboard is meant for the new tab, so it waits too. */
+export function awaitingStartedTab(
+  startedHere: string | null,
+  chosen: string | undefined,
+  shown: string | undefined,
+): boolean {
+  return startedHere !== null && chosen === startedHere && shown !== startedHere;
+}

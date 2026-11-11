@@ -58,6 +58,7 @@ import {
   withKeepAwakeToggled,
 } from "./model";
 import {
+  awaitingStartedTab,
   chooseTab,
   closeNewTab,
   goTo,
@@ -221,6 +222,7 @@ export function App() {
   const shownKey = JSON.stringify([view, shownTabId]);
 
   useEffect(() => {
+    if (awaitingStartedTab(startedHere, chosenTab, shownTabId)) return;
     const focus = focusWhenShown.current;
     focusWhenShown.current = null;
     focus?.();

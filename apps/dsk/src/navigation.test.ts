@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  awaitingStartedTab,
   chooseTab,
   closeNewTab,
   goTo,
@@ -161,4 +162,13 @@ test("an agent started from the new tab takes its place", () => {
   const tabs = topicTabs(started, "t", ["a", "c"]);
   assert.deepEqual(tabs, ["a", "c"]);
   assert.equal(shownTab(tabs, started.tabs.t, ["a", NEW_TAB]), "c");
+});
+
+test("the keyboard waits for a tab started here until it shows", () => {
+  // The daemon hasn't told of the new terminal yet, so the topic's last tab shows instead.
+  assert.equal(awaitingStartedTab("new", "new", "old"), true);
+  assert.equal(awaitingStartedTab("new", "new", "new"), false);
+  // Choosing some other tab since then means nothing is waiting.
+  assert.equal(awaitingStartedTab("new", "old", "old"), false);
+  assert.equal(awaitingStartedTab(null, "old", "other"), false);
 });
