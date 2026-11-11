@@ -40,13 +40,13 @@ The fixed section header that groups workspaces. It never collapses and isn't in
 
 - **Parts:** online dot, name, last seen when offline.
 - **States:** online (`status.online` dot), not responding (the same dot, "Not responding" in `status.waiting`), offline (hollow dot, name in `text.tertiary`).
-- **iOS:** a `List` section header.
+- **iOS:** a `List` section header, with the device's settings and add buttons at its end.
 
 ## WorkspaceRow
 
 - **Parts:** name, count of waiting sessions when folded.
 - **States:** open, folded, hover (desktop), selected.
-- **iOS:** a row that pushes its topics.
+- **iOS:** a row in the tree, with its topics indented below and a button for a new topic.
 
 ## TopicRow
 
@@ -86,9 +86,9 @@ Desktop only. A short list of actions, opened by an icon button or a right click
 Something an agent needs from you. In auto mode this should be rare, and in yolo mode it's only ever a question. Whether auto mode still asks is an open question in `architecture.md`.
 
 - **Parts:** StatusIcon and kind, position ("1 of 2 waiting"), the command or question in `text.code-body`, the reason in `text.body` and `text.secondary`, actions.
-- **Surface:** `status.waiting-tint` with a `status.waiting-border` border, on desktop. The surrounding sheet on iOS.
-- **Actions:** one primary Button, the rest secondary.
-- **iOS:** a `.sheet` with detents, with glass from the system.
+- **Surface:** `status.waiting-tint` with a `status.waiting-border` border, on desktop. On iOS the glass the message box sits on.
+- **Actions:** one primary Button, the rest secondary. On iOS they're bordered rather than glass, because the card is already on glass, and sit side by side when their names fit.
+- **iOS:** in place of the message box until it's answered, then the next request for that agent, then the box again.
 
 ## ActivityLine
 
@@ -148,7 +148,7 @@ A result that needs nothing from you, for a few seconds.
 - **Surface:** `surface.overlay`, `line.strong` border, `shadow.popover`, centered at the bottom of the window, above the shortcut line when that's showing.
 - **Behavior:** it fades in over `motion.normal` and goes after `general.toast_duration`. It never takes a click or the keyboard. The same text again keeps one toast, and at most three are stacked.
 - **Not for failures:** those stay on screen, where the thing that failed is.
-- **iOS:** not decided.
+- **iOS:** a glass capsule at the top, over sheets too.
 
 ## Kbd
 

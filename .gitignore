@@ -7,3 +7,6 @@ dist/
 /apps/dsk/src-tauri/gen/
 # Generated from apps/ios/project.yml by XcodeGen.
 /apps/ios/*.xcodeproj
+# Built by `mise run ios:core`.
+/apps/ios/TectrCore/TectrFFI.xcframework
+/apps/ios/TectrCore/Sources/TectrCore/Generated/

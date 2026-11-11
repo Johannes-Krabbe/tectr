@@ -11,7 +11,7 @@ We don't care about backwards compatibility, this app is only used by me and i a
 
 A fast desktop and mobile app for running, watching and steering many coding agents in parallel, across your own machines, with no central server. It is a **keyboard-first, highly customizable power user tool**.
 
-Today: daemon, CLI and a first desktop app, with pairing and remote connections over iroh. iOS is a placeholder. The push relay and diffing aren't built.
+Today: daemon, CLI, a first desktop app and a first iOS app, with pairing and remote connections over iroh. The push relay and diffing aren't built.
 
 ## Power user rules
 
@@ -35,6 +35,7 @@ Device -> workspace -> topic -> tabs. A workspace lives on one device. The daemo
 | `crates/settings` | Desktop settings |
 | `crates/highlight` | Syntax highlighting |
 | `crates/fake-agent` | Scripted ACP agent for tests |
+| `crates/ffi` | The engine for the iOS app, through UniFFI |
 | `apps/dsk` | Tauri + React desktop app |
 | `apps/ios` | SwiftUI app |
 | `design/` | Tokens, icons, component specs |
@@ -60,6 +61,7 @@ mise run lint         # fmt check + clippy
 mise run dsk:test     # desktop app tests
 mise run tokens:test  # tokens, contrast, no raw colors
 mise run tokens       # regenerate tokens and icons
+mise run ios:core     # build the engine for the iOS app, after any Rust change
 mise run logo         # regenerate logo files and app icons
 mise run release:build  # build the release app, CLI and daemon locally, publishing nothing
 ```

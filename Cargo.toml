@@ -47,6 +47,8 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["c
 toml_edit = "0.25"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Swift bindings for the iOS app. The bindings generator comes from the same version.
+uniffi = "0.32"
 uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]

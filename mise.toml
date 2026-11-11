@@ -31,6 +31,10 @@ description = "Generate the Xcode project, then open apps/ios/Tectr.xcodeproj"
 dir = "apps/ios"
 run = "xcodegen generate"
 
+[tasks."ios:core"]
+description = "Build the engine for the iOS app: the ffi crate, its Swift bindings and TectrCore's xcframework"
+run = "scripts/ios-core.sh"
+
 [tasks.tokens]
 description = "Regenerate design tokens and icons for both apps"
 run = "node design/tokens/build.mjs"

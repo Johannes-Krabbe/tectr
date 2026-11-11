@@ -12,21 +12,49 @@ settings:
 packages:
   TectrDesign:
     path: TectrDesign
+  TectrCore:
+    path: TectrCore
+  # Draws terminals, as xterm.js does on the desktop. 1.19 added a build plugin that Xcode
+  # asks to trust before every fresh build, so this stays on the last release without one.
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: 1.18.0
 targets:
   Tectr:
     type: application
     platform: iOS
+    scheme:
+      testTargets:
+        - TectrTests
     sources:
       - Tectr
     dependencies:
       - package: TectrDesign
+      - package: TectrCore
+      - package: SwiftTerm
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.tectr.ios
-        TARGETED_DEVICE_FAMILY: "1"
+        # The engine is built for Apple Silicon simulators only, like the rest of tectr.
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+        TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: tectr
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_NSCameraUsageDescription: Scans a pairing code, and takes photos to send to an agent
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Reaches your devices directly when they're on the same network
+  TectrTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - TectrTests
+    dependencies:
+      - target: Tectr
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
