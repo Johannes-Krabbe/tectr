@@ -84,6 +84,5 @@ If a change alters a documented decision, rewrite that text in the same change a
 
 ## Taste
 
-- Work out the smallest change that works and where it might fall short. If it differs from the maintainable long-term change, ask me.
 - Comments explain why, not what.
 - TypeScript: no `as` casts, no `any`.
