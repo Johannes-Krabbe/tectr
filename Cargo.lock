@@ -851,7 +851,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1155,7 +1155,7 @@ dependencies = [
 
 [[package]]
 name = "daemon"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "dsk"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "arboard",
  "dirs 7.0.0",
@@ -1552,7 +1552,7 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "engine"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dirs 7.0.0",
  "futures-util",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "fake-agent"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "agent-client-protocol",
  "base64 0.22.1",
@@ -1694,7 +1694,7 @@ dependencies = [
 
 [[package]]
 name = "ffi"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "engine",
  "libc",
@@ -2392,7 +2392,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "highlight"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "syntect",
@@ -4668,7 +4668,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5444,7 +5444,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "fontdb",
  "serde",
