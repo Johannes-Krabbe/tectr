@@ -144,9 +144,33 @@ export type ActionId =
   | "new_tab.confirm"
   | "new_tab.agent"
   | "new_tab.terminal"
-  | "new_tab.git"
   | "new_tab.diff"
   | "new_tab.import"
+  | "diff.up"
+  | "diff.down"
+  | "diff.first"
+  | "diff.last"
+  | "diff.half_up"
+  | "diff.half_down"
+  | "diff.page_up"
+  | "diff.page_down"
+  | "diff.next_file"
+  | "diff.prev_file"
+  | "diff.next_hunk"
+  | "diff.prev_hunk"
+  | "diff.scope"
+  | "diff.toggle_files"
+  | "diff.toggle_wrap"
+  | "diff.toggle_file"
+  | "diff.toggle_all"
+  | "diff.viewed"
+  | "diff.jump_file"
+  | "diff.copy_path"
+  | "diff.search"
+  | "diff.next_match"
+  | "diff.prev_match"
+  | "diff_search.confirm"
+  | "diff_search.cancel"
   | "new_topic.start"
   | "new_topic.newline"
   | "new_topic.cancel"
@@ -307,6 +331,20 @@ export const showsSteps = () => shownValue("conversation.steps") === "shown";
 export const toggleSteps = () =>
   saveAppearance("conversation.steps", showsSteps() ? "folded" : "shown");
 
+export const diffWraps = () => shownValue("diff.wrap") === true;
+
+/** Rejects with a message written to be shown as is. */
+export const toggleDiffWrap = () => saveAppearance("diff.wrap", !diffWraps());
+
+export const diffShowsFiles = () => shownValue("diff.file_list") !== false;
+
+/** Rejects with a message written to be shown as is. */
+export const toggleDiffFiles = () => saveAppearance("diff.file_list", !diffShowsFiles());
+
+/** What a new diff compares. */
+export const diffDefaultScope = (): "uncommitted" | "branch" =>
+  shownValue("diff.default_scope") === "branch" ? "branch" : "uncommitted";
+
 /** Says what just happened, for as long as the settings keep a toast up. */
 export const notify = (text: string) =>
   showToast(text, Number(shownValue("general.toast_duration") ?? TOAST_SECONDS));
@@ -359,7 +397,14 @@ export function titled(text: string, id: ActionId): string {
 
 // The contexts whose actions run while typing in a text field. Anywhere else, a key
 // without a modifier in a text field is just typing.
-const TEXT_CONTEXTS = new Set(["composer", "new_topic", "sheet", "palette", "mcp_form"]);
+const TEXT_CONTEXTS = new Set([
+  "composer",
+  "new_topic",
+  "sheet",
+  "palette",
+  "mcp_form",
+  "diff_search",
+]);
 
 interface KeyEventLike extends KeyPress {
   repeat: boolean;

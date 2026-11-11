@@ -32,6 +32,7 @@ use crate::store::Store;
 use crate::terminal::{self, Shell, Subscriber};
 use crate::{acp, folders, git};
 
+mod diff;
 mod fork;
 mod import;
 mod mcp;
@@ -113,6 +114,7 @@ struct Inner {
     last_seq: HashMap<SessionId, u64>,
     signals: broadcast::Sender<Signal>,
     awake: KeepAwake,
+    diffs: diff::DiffWatch,
 }
 
 pub struct Core {
@@ -203,8 +205,10 @@ impl Core {
             last_seq,
             signals: signals.clone(),
             awake: KeepAwake::new(keep_awake),
+            diffs: diff::DiffWatch::new(),
         };
         inner.recover()?;
+        inner.sync_diff_watchers();
         Ok(Arc::new(Self {
             inner: Mutex::new(inner),
             signals,
@@ -365,6 +369,10 @@ impl Core {
                 rows,
             } => self.open_terminal(topic_id, cols, rows),
             Command::CloseTerminal { terminal_id } => self.close_terminal(&terminal_id),
+            Command::OpenDiff { topic_id, scope } => self.open_diff(&topic_id, scope),
+            Command::CloseDiff { diff_id } => self.close_diff(&diff_id),
+            Command::SetDiffScope { diff_id, scope } => self.set_diff_scope(&diff_id, scope),
+            Command::ReadDiff { diff_id } => self.read_diff(&diff_id).await,
             Command::SaveMcpServer {
                 id,
                 name,
@@ -497,6 +505,7 @@ impl Core {
             worktrees: vec![worktree],
             sessions: vec![],
             terminals: vec![],
+            diffs: vec![],
             mcp: BTreeMap::new(),
         };
         let mut inner = self.lock();
@@ -2042,6 +2051,7 @@ impl Inner {
         self.state.apply(&change);
         let _ = self.signals.send(Signal::State(Arc::new(change)));
         self.sync_awake();
+        self.sync_diff_watchers();
     }
 
     /// Every status, setting, and removed tab arrives through `emit`, so checking here keeps
@@ -2230,6 +2240,7 @@ fn internal(error: anyhow::Error) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol::DiffScope;
 
     fn options(hostname: &str, keep_awake: Option<KeepAwakeCommand>) -> CoreOptions {
         CoreOptions {
@@ -2392,6 +2403,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_diff_tab_follows_its_folder_and_outlives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
+
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        let core = Core::open(&data, options("host", None)).unwrap();
+        tokio::spawn(core.clone().refresh_diffs());
+        let Ok(CommandOutput::Workspace { workspace }) = core
+            .handle(Command::AddWorkspace {
+                path: repo.display().to_string(),
+            })
+            .await
+        else {
+            panic!("no workspace");
+        };
+        let Ok(CommandOutput::Topic { topic, .. }) = core
+            .handle(Command::CreateTopic {
+                workspace_id: workspace.id,
+                name: None,
+                at_root: true,
+            })
+            .await
+        else {
+            panic!("no topic");
+        };
+        let Ok(CommandOutput::Diff { diff, .. }) = core
+            .handle(Command::OpenDiff {
+                topic_id: topic.id.clone(),
+                scope: DiffScope::Uncommitted,
+            })
+            .await
+        else {
+            panic!("no diff");
+        };
+        let read = || async {
+            match core
+                .handle(Command::ReadDiff {
+                    diff_id: diff.id.clone(),
+                })
+                .await
+            {
+                Ok(CommandOutput::DiffContent { content }) => content,
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        let revision = || {
+            core.snapshot_and_subscribe()
+                .0
+                .diff(&diff.id)
+                .map(|(_, d)| d.revision)
+                .unwrap()
+        };
+        let first = read().await;
+        assert!(first.files.is_empty());
+        assert_eq!(revision(), first.revision);
+
+        std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while revision() == first.revision {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the change never showed"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let second = read().await;
+        assert_eq!(second.revision, revision());
+        assert_eq!(second.files.len(), 1);
+        assert_eq!(second.files[0].path, "a.txt");
+
+        core.handle(Command::SetDiffScope {
+            diff_id: diff.id.clone(),
+            scope: DiffScope::Branch,
+        })
+        .await
+        .unwrap();
+        assert_eq!(read().await.base.as_deref(), Some("main"));
+
+        drop(core);
+        let core = Core::open(&data, options("host", None)).unwrap();
+        let state = core.snapshot_and_subscribe().0;
+        let (_, kept) = state.diff(&diff.id).unwrap();
+        assert_eq!(kept.scope, DiffScope::Branch);
+        core.handle(Command::CloseDiff {
+            diff_id: diff.id.clone(),
+        })
+        .await
+        .unwrap();
+        assert!(core.snapshot_and_subscribe().0.diff(&diff.id).is_none());
+    }
+
+    #[tokio::test]
     async fn a_pairing_code_works_once_and_wrong_secrets_use_it_up() {
         let dir = tempfile::tempdir().unwrap();
         let core = Core::open(dir.path(), options("host", None)).unwrap();
@@ -2479,6 +2598,7 @@ mod tests {
                 }],
                 sessions: vec![],
                 terminals: vec![],
+                diffs: vec![],
                 mcp: BTreeMap::new(),
             };
             store.insert_topic(&"w".into(), &topic, false).unwrap();
@@ -2585,6 +2705,7 @@ mod tests {
                         }],
                         sessions: vec![],
                         terminals: vec![],
+                        diffs: vec![],
                         mcp: BTreeMap::new(),
                     },
                     false,

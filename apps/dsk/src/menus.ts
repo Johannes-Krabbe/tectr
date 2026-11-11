@@ -164,3 +164,54 @@ export function withRuns<Id extends string>(
     .filter((group) => group.length > 0)
     .map((group) => group.map((item) => ({ ...item, run: runs[item.id] })));
 }
+
+export type DiffItemId =
+  | "diff-scope"
+  | "diff-search"
+  | "diff-jump"
+  | "diff-fold"
+  | "diff-viewed"
+  | "diff-copy"
+  | "diff-fold-all"
+  | "diff-files"
+  | "diff-wrap";
+
+/** What a diff tab offers, in its menu and the palette. A file's items act on the file at the
+ * top of the view. */
+export function diffItems(diff: {
+  /** What switching scope would show. */
+  switchTo: "uncommitted" | "branch";
+  filesShown: boolean;
+  wraps: boolean;
+  /** Whether any file is unfolded, which folding every file would fold. */
+  anyOpen: boolean;
+  file?: { path: string; folded: boolean; viewed: boolean };
+}): ActionItem<DiffItemId>[][] {
+  const scope = diff.switchTo === "branch" ? "the whole branch" : "uncommitted changes";
+  const files = diff.filesShown ? "Hide the list of files" : "Show the list of files";
+  const wrap = diff.wraps ? "Stop wrapping long lines" : "Wrap long lines";
+  const all = diff.anyOpen ? "Fold every file" : "Unfold every file";
+  const groups: ActionItem<DiffItemId>[][] = [
+    [
+      { id: "diff-scope", label: `Show ${scope}`, inPalette: `Show ${scope}`, detail: "Diff", key: "diff.scope" },
+      { id: "diff-search", label: "Search", inPalette: "Search the diff", detail: "Diff", key: "diff.search" },
+      { id: "diff-jump", label: "Go to a file", inPalette: "Go to a file in the diff", detail: "Diff", key: "diff.jump_file" },
+    ],
+  ];
+  const { file } = diff;
+  if (file) {
+    const fold = file.folded ? "Unfold" : "Fold";
+    const viewed = file.viewed ? "Mark not viewed" : "Mark viewed";
+    groups.push([
+      { id: "diff-fold", label: `${fold} this file`, inPalette: `${fold} ${file.path}`, detail: "Diff", key: "diff.toggle_file" },
+      { id: "diff-viewed", label: viewed, inPalette: `${viewed}: ${file.path}`, detail: "Diff", key: "diff.viewed" },
+      { id: "diff-copy", label: "Copy its path", inPalette: `Copy the path of ${file.path}`, detail: "Diff", key: "diff.copy_path" },
+    ]);
+  }
+  groups.push([
+    { id: "diff-fold-all", label: all, inPalette: all, detail: "Diff", key: "diff.toggle_all" },
+    { id: "diff-files", label: files, inPalette: files, detail: "Diff", key: "diff.toggle_files" },
+    { id: "diff-wrap", label: wrap, inPalette: wrap, detail: "Diff", key: "diff.toggle_wrap" },
+  ]);
+  return groups;
+}

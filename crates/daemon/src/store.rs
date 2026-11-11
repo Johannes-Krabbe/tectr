@@ -6,11 +6,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use protocol::{
-    AgentCommand, Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, ImageId,
-    Machine, MachineId, McpServer, McpServerId, PairedClient, PermissionMode, PromptImage,
-    Provider, Session, SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus,
-    Terminal, TerminalId, TerminalStatus, Topic, TopicId, Workspace, WorkspaceId, Worktree,
-    WorktreeId,
+    AgentCommand, Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, Diff, DiffId,
+    DiffScope, ImageId, Machine, MachineId, McpServer, McpServerId, PairedClient, PermissionMode,
+    PromptImage, Provider, Session, SessionEvent, SessionEventKind, SessionId, SessionRef,
+    SessionStatus, Terminal, TerminalId, TerminalStatus, Topic, TopicId, Workspace, WorkspaceId,
+    Worktree, WorktreeId,
 };
 
 use crate::acp::ForkPoint;
@@ -134,6 +134,15 @@ const MIGRATIONS: &[&str] = &[
     // failed copy is tried again instead of starting over empty.
     "
     ALTER TABLE sessions ADD COLUMN fork_from TEXT;
+",
+    "
+    CREATE TABLE diffs (
+        id TEXT PRIMARY KEY,
+        topic_id TEXT NOT NULL REFERENCES topics(id),
+        scope TEXT NOT NULL,
+        opened_at_ms INTEGER NOT NULL,
+        closed_at_ms INTEGER
+    );
 ",
 ];
 
@@ -383,6 +392,22 @@ impl Store {
                 })
             },
         )?;
+        // What a diff shows is read again once the daemon is asked.
+        topic.diffs = self.collect(
+            "SELECT id, scope, opened_at_ms
+             FROM diffs WHERE topic_id = ?1 AND closed_at_ms IS NULL ORDER BY rowid",
+            [&topic.id.0],
+            |row| {
+                let scope: String = row.get(1)?;
+                Ok(Diff {
+                    id: DiffId(row.get(0)?),
+                    // Like drafts, a scope a newer version wrote that doesn't parse is lost.
+                    scope: serde_json::from_str(&scope).unwrap_or(DiffScope::Unknown),
+                    opened_at_ms: row.get(2)?,
+                    revision: 0,
+                })
+            },
+        )?;
         Ok(())
     }
 
@@ -568,6 +593,35 @@ impl Store {
     pub fn close_terminal(&self, id: &TerminalId, at_ms: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE terminals SET closed_at_ms = ?2 WHERE id = ?1",
+            params![id.0, at_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_diff(&self, topic_id: &TopicId, diff: &Diff) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO diffs (id, topic_id, scope, opened_at_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                diff.id.0,
+                topic_id.0,
+                serde_json::to_string(&diff.scope)?,
+                diff.opened_at_ms
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_diff_scope(&self, id: &DiffId, scope: &DiffScope) -> Result<()> {
+        self.conn.execute(
+            "UPDATE diffs SET scope = ?2 WHERE id = ?1",
+            params![id.0, serde_json::to_string(scope)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn close_diff(&self, id: &DiffId, at_ms: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE diffs SET closed_at_ms = ?2 WHERE id = ?1",
             params![id.0, at_ms],
         )?;
         Ok(())
@@ -1040,6 +1094,7 @@ fn topic_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Topic> {
         worktrees: vec![],
         sessions: vec![],
         terminals: vec![],
+        diffs: vec![],
         // Like drafts, a value a newer version wrote that doesn't parse is lost.
         mcp: mcp
             .and_then(|text| serde_json::from_str(&text).ok())
@@ -1150,6 +1205,7 @@ mod tests {
             }],
             sessions: vec![],
             terminals: vec![],
+            diffs: vec![],
             mcp: BTreeMap::new(),
         };
         let workspace = Workspace {
@@ -1187,6 +1243,7 @@ mod tests {
             }],
             sessions: vec![],
             terminals: vec![],
+            diffs: vec![],
             mcp: BTreeMap::new(),
         };
         store.insert_workspace(&workspace).unwrap();
@@ -1261,6 +1318,7 @@ mod tests {
             worktrees: vec![worktree],
             sessions: vec![],
             terminals: vec![],
+            diffs: vec![],
             mcp: BTreeMap::new(),
         };
         store.insert_topic(&"w".into(), &topic, auto_named).unwrap();
@@ -1448,6 +1506,7 @@ mod tests {
             }],
             sessions: vec![],
             terminals: vec![],
+            diffs: vec![],
             mcp: BTreeMap::new(),
         };
         store.insert_topic(&workspace.id, &topic, false).unwrap();

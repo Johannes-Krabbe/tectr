@@ -51,6 +51,16 @@ pub const GROUPS: &[Group] = &[
         about: "While a new tab asks what to open.",
     },
     Group {
+        id: "diff",
+        title: "Diff",
+        about: "While a diff has the keyboard. A file's keys act on the one at the top.",
+    },
+    Group {
+        id: "diff_search",
+        title: "Searching a diff",
+        about: "While typing what to find in a diff.",
+    },
+    Group {
         id: "new_topic",
         title: "Starting an agent",
         about: "On the new topic screen, and in a new tab once you've chosen an agent.",
@@ -392,9 +402,61 @@ pub const ACTIONS: &[Action] = &[
     follows("new_tab.confirm", "Open the chosen kind", "nav.confirm"),
     once("new_tab.agent", "Start an agent", &["1", "a"]),
     once("new_tab.terminal", "Open a terminal", &["2", "t"]),
-    once("new_tab.git", "Open git", &["3"]),
-    once("new_tab.diff", "Open a diff", &["4", "d"]),
-    once("new_tab.import", "Import a conversation", &["5", "i"]),
+    once("new_tab.diff", "Open a diff", &["3", "d"]),
+    once("new_tab.import", "Import a conversation", &["4", "i"]),
+    follows("diff.up", "Scroll up", "nav.up"),
+    follows("diff.down", "Scroll down", "nav.down"),
+    follows("diff.first", "Scroll to the top", "nav.first"),
+    follows("diff.last", "Scroll to the bottom", "nav.last"),
+    follows("diff.half_up", "Scroll up half a screen", "nav.half_up"),
+    follows(
+        "diff.half_down",
+        "Scroll down half a screen",
+        "nav.half_down",
+    ),
+    follows("diff.page_up", "Scroll up a screen", "nav.page_up"),
+    follows("diff.page_down", "Scroll down a screen", "nav.page_down"),
+    once("diff.next_file", "Next file", &["]"]),
+    once("diff.prev_file", "Previous file", &["["]),
+    once("diff.next_hunk", "Next hunk", &["}"]),
+    once("diff.prev_hunk", "Previous hunk", &["{"]),
+    once("diff.toggle_file", "Fold or unfold the file", &["o"]),
+    once("diff.toggle_all", "Fold or unfold every file", &["shift+o"]),
+    once(
+        "diff.viewed",
+        "Mark the file viewed, fold it and go to the next",
+        &["v"],
+    ),
+    once("diff.jump_file", "Go to a file by name", &["p"]),
+    once("diff.copy_path", "Copy the file's path", &["y"]),
+    once("diff.search", "Search", &["/"]),
+    once(
+        "diff.next_match",
+        "Next match, or the next hunk without a search",
+        &["n"],
+    ),
+    once(
+        "diff.prev_match",
+        "Previous match, or the previous hunk without a search",
+        &["shift+n"],
+    ),
+    once(
+        "diff_search.confirm",
+        "Go to the match and stop typing",
+        &["enter"],
+    ),
+    once("diff_search.cancel", "Stop searching", &["escape"]),
+    once(
+        "diff.scope",
+        "Switch between uncommitted changes and the whole branch",
+        &["s"],
+    ),
+    once(
+        "diff.toggle_files",
+        "Show or hide the list of files",
+        &["f"],
+    ),
+    once("diff.toggle_wrap", "Wrap long lines or not", &["w"]),
     once("new_topic.start", "Start", &["enter"]),
     once("new_topic.newline", "New line", &["shift+enter"]),
     follows("new_topic.cancel", "Cancel", "nav.back"),
@@ -573,6 +635,8 @@ const SHARED_WITH_GLOBAL: &[&str] = &[
     "composer",
     "permission",
     "new_tab",
+    "diff",
+    "diff_search",
     "new_topic",
     "device",
     "mcp",
@@ -623,7 +687,14 @@ pub const DEFAULT_SEQUENCE_TIMEOUT_MS: u32 = 1_000;
 const SEQUENCE_TIMEOUT_KEY: &str = "sequence_timeout_ms";
 
 /// The groups whose actions run while typing, as long as the keys don't type anything.
-const TEXT_GROUPS: &[&str] = &["composer", "new_topic", "sheet", "palette", "mcp_form"];
+const TEXT_GROUPS: &[&str] = &[
+    "composer",
+    "new_topic",
+    "sheet",
+    "palette",
+    "mcp_form",
+    "diff_search",
+];
 
 /// The longest a key can be required to be held. Long enough for anyone, and short
 /// enough that a typo can't leave an action unreachable.

@@ -36,3 +36,37 @@ body {
 #root {
   isolation: isolate;
 }
+
+/* Scroll bars show only while their area scrolls, near the pointer, or while dragged
+   (appearance.layout.scrollbars). The web view doesn't redraw a styled native bar when its
+   class changes, so native bars are hidden and apps/dsk/src/scrollbars.ts floats its own
+   over the content, which also means one appearing never moves anything. */
+:root[data-scrollbars="auto"] * { scrollbar-width: none; }
+:root[data-scrollbars="auto"] ::-webkit-scrollbar { display: none; }
+
+.scroll-thumb {
+  position: fixed;
+  z-index: 1000;
+  border-radius: 3px;
+  background: var(--color-line-strong);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-fade);
+}
+
+.scroll-thumb.shown {
+  opacity: 1;
+  pointer-events: auto;
+  transition-duration: var(--motion-fast);
+}
+
+.scroll-thumb.shown:hover,
+.scroll-thumb.held {
+  background: var(--color-text-tertiary);
+}
+
+:root[data-scrollbars="system"] .scroll-thumb { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .scroll-thumb { transition: none; }
+}

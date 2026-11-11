@@ -1,7 +1,10 @@
 import {
   Bot,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
   Ellipsis,
-  GitBranch,
   GitFork,
   GitCompare,
   History,
@@ -21,8 +24,10 @@ const ICONS = {
   add: { glyph: Plus },
   agent: { glyph: Bot },
   branch: { glyph: GitFork },
+  copy: { glyph: Copy },
   diff: { glyph: GitCompare },
-  git: { glyph: GitBranch },
+  fold: { glyph: ChevronDown },
+  unfold: { glyph: ChevronRight },
   import: { glyph: History },
   lower: { glyph: Minus },
   more: { glyph: Ellipsis },
@@ -32,6 +37,7 @@ const ICONS = {
   settings: { glyph: Settings },
   stop: { glyph: Square, filled: true },
   terminal: { glyph: SquareTerminal },
+  viewed: { glyph: Check },
 } satisfies Record<string, { glyph: LucideIcon; filled?: boolean }>;
 
 export type IconName = keyof typeof ICONS;

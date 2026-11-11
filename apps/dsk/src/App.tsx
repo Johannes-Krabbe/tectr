@@ -20,6 +20,7 @@ import {
 import {
   act,
   type ActionId,
+  diffDefaultScope,
   keysLabel,
   showsSteps,
   titled,
@@ -73,6 +74,7 @@ import {
   type View,
 } from "./navigation";
 import { appItems, type Runnable, topicItems, withRuns } from "./menus";
+import { DiffPane, forgetDiffView } from "./DiffPane";
 import { NEW_TAB_STATE, NewTab, type NewTabState } from "./NewTab";
 import { NewTopic, type NewTopicForm } from "./NewTopic";
 import { Palette, type PaletteItem, screenPaletteItems } from "./Palette";
@@ -216,6 +218,7 @@ export function App() {
   );
   const session = sessions.find((s) => s.id === shownTabId);
   const shownTerminal = entry?.topic.terminals?.find((t) => t.id === shownTabId);
+  const shownDiff = entry?.topic.diffs?.find((d) => d.id === shownTabId);
   const shownLabel = tabs.find((tab) => tab.id === shownTabId);
   const onNewTab = entry !== undefined && shownTabId === NEW_TAB;
   const shownKey = JSON.stringify([view, shownTabId]);
@@ -485,6 +488,25 @@ export function App() {
       .catch(reportFailure);
   };
 
+  /** Opens a diff of the topic's folder, which from the new tab takes the new tab's place. */
+  const openDiff = () => {
+    if (!entry || !isOnline(entry.device)) return;
+    const { machineId, topic } = entry;
+    const fromNewTab = onNewTab;
+    setError(null);
+    request(machineId, { command: "open_diff", topic_id: topic.id, scope: { kind: diffDefaultScope() } })
+      .then((output) => {
+        if (output.output !== "diff") return;
+        if (fromNewTab) {
+          onTabStarted(topic.id, output.diff.id);
+        } else {
+          setStartedHere(output.diff.id);
+          selectTab(topic.id, output.diff.id);
+        }
+      })
+      .catch(reportFailure);
+  };
+
   /** Conversations are in each agent's own files on the topic's device, so it's asked when this
    * opens. The imported one opens as a tab, which from the new tab takes the new tab's place. */
   const findConversations = async (target: TopicEntry) => {
@@ -591,12 +613,16 @@ export function App() {
     }
     setError(null);
     if (shown) focusWhenShown.current = focusPane;
+    const isDiff = topic.diffs?.some((d) => d.id === id);
+    if (isDiff) forgetDiffView(id);
     request(
       machineId,
       closing
         ? { command: "close_session", session_id: id }
-        : // Its shell ends with it, as closing a terminal window does.
-          { command: "close_terminal", terminal_id: id },
+        : isDiff
+          ? { command: "close_diff", diff_id: id }
+          : // Its shell ends with it, as closing a terminal window does.
+            { command: "close_terminal", terminal_id: id },
     ).catch(reportFailure);
   };
 
@@ -826,6 +852,12 @@ export function App() {
         label: `New terminal in ${entry.topic.name}`,
         keys: onNewTab ? keysLabel("new_tab.terminal") : undefined,
         run: openTerminal,
+      });
+      items.push({
+        id: "new-diff",
+        label: `New diff in ${entry.topic.name}`,
+        keys: onNewTab ? keysLabel("new_tab.diff") : undefined,
+        run: openDiff,
       });
       items.push(...asPalette(topicActions(entry)));
     }
@@ -1172,6 +1204,7 @@ export function App() {
                         >
                           {s && <StatusIcon state={sessionState(s, isOnline(entry.device))} />}
                           {tab?.kind === "terminal" && <Icon name="terminal" />}
+                          {tab?.kind === "diff" && <Icon name="diff" />}
                           <span className="tab-label">{label}</span>
                         </button>
                         {canCloseTab(id) && (
@@ -1240,6 +1273,15 @@ export function App() {
                     online={isOnline(entry.device)}
                   />
                 </Suspense>
+              ) : shownDiff ? (
+                <DiffPane
+                  key={shownDiff.id}
+                  machineId={entry.machineId}
+                  topic={entry.topic}
+                  diff={shownDiff}
+                  online={isOnline(entry.device)}
+                  onPicker={setPicker}
+                />
               ) : (
                 <NewTab
                   key={entry.topic.id}
@@ -1249,6 +1291,7 @@ export function App() {
                   onState={(state) => setNewTabState(entry.topic.id, state)}
                   onSettings={openSettings}
                   onTerminal={openTerminal}
+                  onDiff={openDiff}
                   onImport={() => void findConversations(entry).catch(reportFailure)}
                   onStarted={(sessionId) => onTabStarted(entry.topic.id, sessionId)}
                   onStalled={(sessionId, reason) =>

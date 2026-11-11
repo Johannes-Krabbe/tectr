@@ -1,5 +1,7 @@
-//! Plain `git` calls for worktrees. Whether the daemon should use twig instead
+//! Plain `git` calls for worktrees and diffs. Whether the daemon should use twig instead
 //! is still an open question, and keeping this small leaves that open.
+
+pub mod diff;
 
 use std::path::{Path, PathBuf};
 
@@ -126,7 +128,7 @@ pub async fn discard_worktree(repo: &Path, path: &Path, branch: &str) -> Result<
     Ok(())
 }
 
-async fn branch_exists(repo: &Path, branch: &str) -> bool {
+pub(crate) async fn branch_exists(repo: &Path, branch: &str) -> bool {
     let reference = format!("refs/heads/{branch}");
     git(
         repo,

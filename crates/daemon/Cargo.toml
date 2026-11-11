@@ -28,6 +28,8 @@ image.workspace = true
 # behind gets the screen as it is instead of a replay. Building it needs Zig (see mise.toml).
 # The bindings on crates.io predate libghostty-vt 1.0, so this pins the revision that builds
 # its vt-1.0.0 release.
+# Diff tabs follow their folder as it changes on disk.
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "768add93c54ccdba3f5c4d8763789ab6416f3151", default-features = false }
 portable-pty = "0.9"
 reqwest.workspace = true

@@ -1091,6 +1091,7 @@ dependencies = [
  "iroh",
  "jiff",
  "libghostty-vt",
+ "notify",
  "portable-pty",
  "protocol",
  "reqwest",

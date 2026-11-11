@@ -745,6 +745,7 @@ mod tests {
             worktrees: vec![],
             sessions: vec![],
             terminals: vec![],
+            diffs: vec![],
             mcp: mcp
                 .iter()
                 .map(|(id, on)| (McpServerId::from(*id), *on))

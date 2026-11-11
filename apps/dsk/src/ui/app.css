@@ -517,6 +517,308 @@ button.side-search:hover {
   overflow: hidden;
 }
 
+.diff-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  height: calc(34 * var(--unit));
+  padding: 0 var(--space-sm) 0 var(--space-md);
+  border-bottom: 1px solid var(--color-line-subtle);
+}
+
+.diff-scopes {
+  display: flex;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-control);
+}
+
+.diff-scope {
+  height: calc(20 * var(--unit));
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-xs);
+  color: var(--color-text-secondary);
+  font: var(--text-label);
+}
+
+.diff-scope:hover:not(:disabled) { color: var(--color-text-primary); }
+
+.diff-scope.chosen {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-primary);
+}
+
+.diff-sum {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+}
+
+.diff-added,
+.diff-removed {
+  flex: none;
+  font: var(--text-code-small);
+}
+
+.diff-added { color: var(--color-diff-add-text); }
+.diff-removed { color: var(--color-diff-del-text); }
+
+.diff-view {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.diff-files {
+  flex: none;
+  width: calc(240 * var(--unit));
+  padding: var(--space-xs) 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--color-line-subtle);
+}
+
+.diff-group-title {
+  padding: var(--space-sm) var(--space-md) var(--space-xs);
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.diff-group-title.wide {
+  padding: var(--space-md) var(--space-md) var(--space-sm);
+  border-bottom: 1px solid var(--color-line-subtle);
+}
+
+.diff-file-link {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2xs) var(--space-md);
+  color: var(--color-text-secondary);
+  font: var(--text-body);
+  text-align: left;
+}
+
+.diff-file-link:hover { background: var(--color-surface-control); }
+
+.diff-file-link.current {
+  background: var(--color-surface-control);
+  color: var(--color-text-primary);
+}
+
+.diff-file-link .diff-file-name { flex: none; }
+
+.diff-file-link .diff-file-folder {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-file-folder { color: var(--color-text-tertiary); }
+
+.diff-status {
+  flex: none;
+  width: 1ch;
+  color: var(--color-text-tertiary);
+  font: var(--text-code-small);
+}
+
+.diff-status:is(.added, .untracked) { color: var(--color-diff-add-text); }
+.diff-status.deleted { color: var(--color-diff-del-text); }
+
+.diff-body {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+/* It takes focus so keys scroll it. */
+.diff-body:focus-visible { outline: 0; }
+
+/* Files off screen skip layout and paint, which keeps a long branch as fast as a short one. */
+.diff-file {
+  content-visibility: auto;
+  border-bottom: 1px solid var(--color-line-subtle);
+}
+
+.diff-file-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-line-subtle);
+  background: var(--color-surface-panel);
+  font: var(--text-body);
+}
+
+.diff-file-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-file-head .diff-file-name { color: var(--color-text-primary); }
+
+.diff-file-head {
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.diff-fold {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  color: var(--color-text-tertiary);
+}
+
+/* Next to the path it copies, shown while the pointer is on its header so the header stays
+   calm. Hidden, it still holds its place, so the path doesn't shift under the pointer. */
+.diff-file-action {
+  align-self: center;
+  margin-left: calc(-1 * var(--space-xs));
+  visibility: hidden;
+}
+
+.diff-file-head:hover .diff-file-action { visibility: visible; }
+
+.diff-file-counts { margin-left: auto; }
+
+.diff-viewed {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.diff-viewed:hover { color: var(--color-text-primary); }
+.diff-viewed.on { color: var(--color-accent-text); }
+
+.diff-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(14 * var(--unit));
+  height: calc(14 * var(--unit));
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-xs);
+}
+
+.diff-viewed:hover .diff-check { border-color: var(--color-text-tertiary); }
+
+.diff-viewed.on .diff-check {
+  border-color: var(--color-accent-solid);
+  background: var(--color-accent-solid);
+  color: var(--color-text-on-accent);
+}
+
+.diff-check .icon {
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+}
+
+.diff-file.viewed .diff-file-path { opacity: 0.6; }
+.diff-file-link.viewed { color: var(--color-text-tertiary); }
+.diff-file-link .icon { flex: none; margin-left: auto; align-self: center; color: var(--color-accent-text); }
+
+.diff-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  border-bottom: 1px solid var(--color-line-subtle);
+  color: var(--color-text-tertiary);
+}
+
+.diff-search input {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-primary);
+  font: var(--text-code-body);
+}
+
+.diff-match {
+  border-radius: var(--radius-xs);
+  background: var(--color-accent-tint);
+}
+
+.diff-match.current { outline: 1px solid var(--color-accent-ring); }
+
+.diff-note {
+  padding: var(--space-sm) var(--space-md);
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.diff-lines { overflow-x: auto; }
+
+.diff-table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font: var(--text-code-small);
+  font-variant-ligatures: var(--font-code-ligatures);
+}
+
+.diff-table td {
+  padding: 0;
+  vertical-align: top;
+}
+
+.diff-table .diff-num {
+  width: 1px;
+  padding: 0 var(--space-sm);
+  color: var(--color-text-tertiary);
+  text-align: right;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.diff-table .diff-code {
+  padding: 0 var(--space-md) 0 var(--space-xs);
+  white-space: pre;
+}
+
+.wrap .diff-table { width: 100%; }
+
+.wrap .diff-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-line.added { background: var(--color-diff-add-bg); }
+.diff-line.removed { background: var(--color-diff-del-bg); }
+
+/* Until its spans arrive, a line takes its side's color. */
+.diff-line.added .diff-code { color: var(--color-diff-add-text); }
+.diff-line.removed .diff-code { color: var(--color-diff-del-text); }
+
+.diff-table .diff-hunk td {
+  padding: var(--space-xs) var(--space-md);
+  background: var(--color-surface-raised);
+  color: var(--color-text-tertiary);
+  white-space: pre;
+}
+
+.diff-meta td {
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
 .terminal-host:focus { outline: 0; }
 
 /* Its device is away, so this is what it last showed, and typing goes nowhere. Dimmed like a

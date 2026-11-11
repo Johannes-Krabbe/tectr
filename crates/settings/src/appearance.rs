@@ -122,6 +122,10 @@ pub const PAGES: &[Page] = &[
         title: "Conversation",
     },
     Page {
+        id: "diff",
+        title: "Diff",
+    },
+    Page {
         id: "terminal",
         title: "Terminal",
     },
@@ -182,6 +186,11 @@ pub const GROUPS: &[FieldGroup] = &[
         page: "conversation",
     },
     FieldGroup {
+        id: "diff",
+        title: "Diff",
+        page: "diff",
+    },
+    FieldGroup {
         id: "terminal_display",
         title: "Display",
         page: "terminal",
@@ -235,6 +244,28 @@ const STEPS: &[Choice] = &[
     Choice {
         value: "shown",
         label: "All shown",
+    },
+];
+
+const SCROLLBARS: &[Choice] = &[
+    Choice {
+        value: "while_scrolling",
+        label: "Only while scrolling",
+    },
+    Choice {
+        value: "system",
+        label: "As the system shows them",
+    },
+];
+
+const DIFF_SCOPES: &[Choice] = &[
+    Choice {
+        value: "uncommitted",
+        label: "Uncommitted changes",
+    },
+    Choice {
+        value: "branch",
+        label: "The whole branch",
     },
 ];
 
@@ -473,6 +504,15 @@ const FIELDS: &[Field] = &[
         },
     },
     Field {
+        id: "appearance.layout.scrollbars",
+        group: "layout",
+        label: "Scroll bars",
+        default: DefaultValue::Text("while_scrolling"),
+        kind: Kind::Choice {
+            options: SCROLLBARS,
+        },
+    },
+    Field {
         id: "appearance.motion.status_icons",
         group: "motion",
         label: "Status icons",
@@ -505,6 +545,29 @@ const FIELDS: &[Field] = &[
         group: "images",
         label: "Thumbnails above your messages",
         default: DefaultValue::Flag(true),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "diff.default_scope",
+        group: "diff",
+        label: "A new diff shows",
+        default: DefaultValue::Text("uncommitted"),
+        kind: Kind::Choice {
+            options: DIFF_SCOPES,
+        },
+    },
+    Field {
+        id: "diff.file_list",
+        group: "diff",
+        label: "List of files",
+        default: DefaultValue::Flag(true),
+        kind: Kind::Toggle,
+    },
+    Field {
+        id: "diff.wrap",
+        group: "diff",
+        label: "Wrap long lines",
+        default: DefaultValue::Flag(false),
         kind: Kind::Toggle,
     },
     Field {

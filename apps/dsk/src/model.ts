@@ -6,6 +6,7 @@ import type {
   DaemonState,
   Device,
   DeviceSettings,
+  Diff,
   MoveTarget,
   PermissionMode,
   Provider,
@@ -193,10 +194,11 @@ export function terminalLabel(terminal: Terminal): string {
 /** One of a topic's tabs. */
 export type Tab =
   | { kind: "session"; id: string; session: Session }
-  | { kind: "terminal"; id: string; terminal: Terminal };
+  | { kind: "terminal"; id: string; terminal: Terminal }
+  | { kind: "diff"; id: string; diff: Diff };
 
-/** A topic's tabs in the order they were opened, agents and terminals together. Tabs opened
- * at the same moment keep the order the daemon lists them in. */
+/** A topic's tabs in the order they were opened, whatever their kind. Tabs opened at the same
+ * moment keep the order the daemon lists them in. */
 export function tabsOf(topic: Topic): Tab[] {
   const tabs = [
     ...topic.sessions.map((session): { tab: Tab; at: number } => ({
@@ -207,12 +209,23 @@ export function tabsOf(topic: Topic): Tab[] {
       tab: { kind: "terminal", id: terminal.id, terminal },
       at: terminal.opened_at_ms,
     })),
+    ...(topic.diffs ?? []).map((diff): { tab: Tab; at: number } => ({
+      tab: { kind: "diff", id: diff.id, diff },
+      at: diff.opened_at_ms,
+    })),
   ];
   return tabs.sort((a, b) => a.at - b.at).map(({ tab }) => tab);
 }
 
 export function tabLabel(tab: Tab): string {
-  return tab.kind === "session" ? sessionLabel(tab.session) : terminalLabel(tab.terminal);
+  switch (tab.kind) {
+    case "session":
+      return sessionLabel(tab.session);
+    case "terminal":
+      return terminalLabel(tab.terminal);
+    case "diff":
+      return "Diff";
+  }
 }
 
 /** The folder a topic's tabs work in. */

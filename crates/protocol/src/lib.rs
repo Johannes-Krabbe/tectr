@@ -200,6 +200,8 @@ id_type!(
     ImageId,
     /// Unique within a machine, like [`SessionId`].
     TerminalId,
+    /// Unique within a machine, like [`SessionId`].
+    DiffId,
 );
 
 /// Identifies a session across all daemons.
@@ -449,6 +451,24 @@ pub enum Command {
     CloseTerminal {
         terminal_id: TerminalId,
     },
+    /// Open a tab showing what changed in the topic's folder.
+    OpenDiff {
+        topic_id: TopicId,
+        scope: DiffScope,
+    },
+    CloseDiff {
+        diff_id: DiffId,
+    },
+    /// Change what a diff tab compares, for every client showing it.
+    SetDiffScope {
+        diff_id: DiffId,
+        scope: DiffScope,
+    },
+    /// Answered with [`CommandOutput::DiffContent`], what the tab shows now. Its revision is
+    /// the tab's [`Diff::revision`] by the time the answer arrives.
+    ReadDiff {
+        diff_id: DiffId,
+    },
     /// Stop the agent and remove its tab. Fails with [`ErrorCode::Busy`] while the agent
     /// is starting, working or waiting, unless `force` says the person has confirmed.
     CloseSession {
@@ -555,6 +575,13 @@ pub enum CommandOutput {
     Terminal {
         topic_id: TopicId,
         terminal: Terminal,
+    },
+    Diff {
+        topic_id: TopicId,
+        diff: Diff,
+    },
+    DiffContent {
+        content: DiffContent,
     },
     ProviderCandidates {
         candidates: Vec<ProviderCandidate>,
@@ -853,6 +880,21 @@ impl DaemonState {
                     topic.terminals.retain(|t| &t.id != terminal_id);
                 }
             }
+            StateChange::DiffAdded { topic_id, diff } => {
+                if let Some(topic) = self.topic_mut(topic_id) {
+                    upsert(&mut topic.diffs, diff.clone(), |d| &d.id);
+                }
+            }
+            StateChange::DiffChanged { diff } => {
+                if let Some(existing) = self.diff_mut(&diff.id) {
+                    *existing = diff.clone();
+                }
+            }
+            StateChange::DiffRemoved { diff_id } => {
+                for topic in self.workspaces.iter_mut().flat_map(|w| &mut w.topics) {
+                    topic.diffs.retain(|d| &d.id != diff_id);
+                }
+            }
             StateChange::SessionRemoved { session_id } => {
                 self.commands.remove(session_id);
                 for topic in self.workspaces.iter_mut().flat_map(|w| &mut w.topics) {
@@ -935,6 +977,20 @@ impl DaemonState {
             .find(|t| &t.id == id)
     }
 
+    /// A diff tab and the topic it's in.
+    pub fn diff(&self, id: &DiffId) -> Option<(&Topic, &Diff)> {
+        self.topics()
+            .find_map(|t| t.diffs.iter().find(|d| &d.id == id).map(|d| (t, d)))
+    }
+
+    pub fn diff_mut(&mut self, id: &DiffId) -> Option<&mut Diff> {
+        self.workspaces
+            .iter_mut()
+            .flat_map(|w| &mut w.topics)
+            .flat_map(|t| &mut t.diffs)
+            .find(|d| &d.id == id)
+    }
+
     pub fn mcp_server(&self, id: &McpServerId) -> Option<&McpServer> {
         self.mcp_servers.iter().find(|s| &s.id == id)
     }
@@ -998,9 +1054,11 @@ pub struct Topic {
     /// Every folder it has worked in and still has. One at the repo's own path is the repo.
     pub worktrees: Vec<Worktree>,
     pub sessions: Vec<Session>,
-    /// Its shells. Tabs go in the order they were opened, agents and terminals together.
+    /// Its shells. Tabs go in the order they were opened, agents, terminals and diffs together.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminals: Vec<Terminal>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diffs: Vec<Diff>,
     /// The device's MCP servers this topic turns on or off, against their own `enabled`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp: BTreeMap<McpServerId, bool>,
@@ -1051,6 +1109,101 @@ pub struct Terminal {
     pub status: TerminalStatus,
     /// Milliseconds since the Unix epoch, which puts its tab in order.
     pub opened_at_ms: i64,
+}
+
+/// A tab showing what changed in its topic's folder. It follows the topic when it moves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diff {
+    pub id: DiffId,
+    pub scope: DiffScope,
+    /// Milliseconds since the Unix epoch, which puts its tab in order.
+    pub opened_at_ms: i64,
+    /// Changes whenever what it shows does. Read that with [`Command::ReadDiff`]. Zero until
+    /// the daemon has looked since it started.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+/// What a diff compares.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiffScope {
+    /// The folder against its last commit, with what's staged apart from what isn't.
+    Uncommitted,
+    /// Everything since the branch left its base, committed or not.
+    Branch,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a diff tab shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffContent {
+    pub revision: u64,
+    /// What the branch scope compares with, like `main`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// In the uncommitted scope, the staged files come before the rest. A file can be in both.
+    pub files: Vec<FileDiff>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDiff {
+    /// Where it is now, or was for a deleted file.
+    pub path: String,
+    /// Where a renamed or copied file came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+    pub status: FileStatus,
+    /// In the uncommitted scope, this is what's staged rather than what isn't.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub staged: bool,
+    pub added: u32,
+    pub removed: u32,
+    pub body: FileBody,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileStatus {
+    Added,
+    Deleted,
+    Modified,
+    Renamed,
+    Copied,
+    /// New and not yet known to git.
+    Untracked,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FileBody {
+    /// No hunks means only its mode changed, or it's empty.
+    Text {
+        hunks: Vec<Hunk>,
+    },
+    Binary,
+    /// Too big to send. Its counts are still right, except for an untracked file, which has
+    /// none.
+    TooLarge,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hunk {
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    /// What git says the hunk is in, such as the function around it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub context: String,
+    /// As in a unified diff: each starts with ` `, `+` or `-`. One starting with `\` says the
+    /// line before it ends its file without a newline.
+    pub lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1376,6 +1529,17 @@ pub enum StateChange {
     /// Its tab was closed, or its shell exited cleanly.
     TerminalRemoved {
         terminal_id: TerminalId,
+    },
+    DiffAdded {
+        topic_id: TopicId,
+        diff: Diff,
+    },
+    /// Its scope changed, or what it shows did.
+    DiffChanged {
+        diff: Diff,
+    },
+    DiffRemoved {
+        diff_id: DiffId,
     },
     /// Its tab was closed and its agent stopped.
     SessionRemoved {
@@ -1708,6 +1872,7 @@ mod tests {
             worktrees: vec![],
             sessions: vec![],
             terminals: vec![],
+            diffs: vec![],
             mcp: mcp
                 .iter()
                 .map(|(id, on)| (McpServerId::from(*id), *on))
@@ -1844,6 +2009,7 @@ mod tests {
                     worktrees: vec![],
                     sessions: vec![session("a"), session("b"), session("c")],
                     terminals: vec![],
+                    diffs: vec![],
                     mcp: BTreeMap::new(),
                 }],
             }],

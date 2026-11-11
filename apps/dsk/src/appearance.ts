@@ -242,6 +242,8 @@ function paint() {
   // Reduce Motion is handled in CSS, so it applies even before the settings arrive.
   root.dataset.statusMotion =
     reader(shown, preview)("appearance.motion.status_icons") === false ? "off" : "on";
+  root.dataset.scrollbars =
+    reader(shown, preview)("appearance.layout.scrollbars") === "system" ? "system" : "auto";
   for (const [name, value] of Object.entries(cssVariables(shown, scheme, preview))) {
     root.style.setProperty(name, value);
   }

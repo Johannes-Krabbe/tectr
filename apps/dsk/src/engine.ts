@@ -29,7 +29,7 @@ export interface Session {
   title: string | null;
   /** A turn finished and nobody has looked at it yet, on any client. */
   unread?: boolean;
-  /** Puts its tab in order among the topic's agents and terminals. */
+  /** Puts its tab in order among the topic's other tabs. */
   opened_at_ms?: number;
 }
 
@@ -44,6 +44,68 @@ export interface Terminal {
    * failed, and typing starts another. */
   status: TerminalStatus;
   opened_at_ms: number;
+}
+
+/** What a diff compares: the folder against its last commit, or everything since its branch
+ * left its base. */
+export type DiffScope = { kind: "uncommitted" } | { kind: "branch" } | { kind: "unknown" };
+
+/** A tab showing what changed in its topic's folder. */
+export interface Diff {
+  id: string;
+  scope: DiffScope;
+  opened_at_ms: number;
+  /** Changes whenever what it shows does. Read that with `read_diff`. */
+  revision?: number;
+}
+
+export interface DiffContent {
+  revision: number;
+  /** What the branch scope compares with, like `main`. */
+  base?: string | null;
+  /** In the uncommitted scope, the staged files come before the rest. A file can be in both. */
+  files: FileDiff[];
+}
+
+export type FileStatus =
+  | "added"
+  | "deleted"
+  | "modified"
+  | "renamed"
+  | "copied"
+  | "untracked"
+  | "unknown";
+
+export interface FileDiff {
+  /** Where it is now, or was for a deleted file. */
+  path: string;
+  /** Where a renamed or copied file came from. */
+  old_path?: string | null;
+  status: FileStatus;
+  /** In the uncommitted scope, this is what's staged rather than what isn't. */
+  staged?: boolean;
+  added: number;
+  removed: number;
+  body: FileBody;
+}
+
+/** Too large: its counts are right, but its lines weren't sent. */
+export type FileBody =
+  | { kind: "text"; hunks: Hunk[] }
+  | { kind: "binary" }
+  | { kind: "too_large" }
+  | { kind: "unknown" };
+
+export interface Hunk {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  /** What git says the hunk is in, such as the function around it. */
+  context?: string;
+  /** As in a unified diff: each starts with a space, `+` or `-`. One starting with `\` says
+   * the line before it ends its file without a newline. */
+  lines: string[];
 }
 
 /** A client's colors as `#rrggbb`, which programs ask a terminal for. */
@@ -81,6 +143,8 @@ export interface Topic {
   sessions: Session[];
   /** Left out while it has none. */
   terminals?: Terminal[];
+  /** Left out while it has none. */
+  diffs?: Diff[];
   /** The device's MCP servers this topic turns on or off, against their own `enabled`. By
    * server ID. */
   mcp?: Record<string, boolean>;
@@ -355,6 +419,11 @@ export type Command =
   | { command: "close_session"; session_id: string; force?: boolean }
   | { command: "open_terminal"; topic_id: string; cols: number; rows: number }
   | { command: "close_terminal"; terminal_id: string }
+  | { command: "open_diff"; topic_id: string; scope: DiffScope }
+  | { command: "close_diff"; diff_id: string }
+  | { command: "set_diff_scope"; diff_id: string; scope: DiffScope }
+  /** Answered with `diff_content`. */
+  | { command: "read_diff"; diff_id: string }
   | {
       command: "save_mcp_server";
       /** Changes the server it names, or else adds one. */
@@ -386,6 +455,8 @@ export type CommandOutput =
   | { output: "topic"; workspace_id: string; topic: Topic }
   | { output: "session"; topic_id: string; session: Session }
   | { output: "terminal"; topic_id: string; terminal: Terminal }
+  | { output: "diff"; topic_id: string; diff: Diff }
+  | { output: "diff_content"; content: DiffContent }
   | { output: "provider_candidates"; candidates: ProviderCandidate[] }
   | { output: "provider"; provider: Provider }
   | { output: "folders"; folders: Folder[] }
