@@ -5,14 +5,79 @@ import Testing
 @testable import Tectr
 
 /// Session events as the daemon sends them, one JSON object each, a second apart.
-private func fold(_ kinds: [String], status: SessionStatus = .done) throws -> [TranscriptItem] {
+private func events(_ kinds: [String]) throws -> [Wire.SessionEvent] {
     let events = kinds.enumerated().map { index, kind in
         #"{"session":{"machine_id":"m","session_id":"s"},"seq":\#(index + 1),"at_ms":\#(index * 1000),"kind":\#(kind)}"#
     }
-    let decoded = try JSONDecoder().decode([Wire.SessionEvent].self, from: Data("[\(events.joined(separator: ","))]".utf8))
+    return try JSONDecoder().decode([Wire.SessionEvent].self, from: Data("[\(events.joined(separator: ","))]".utf8))
+}
+
+private func fold(_ kinds: [String], status: SessionStatus = .done) throws -> [TranscriptItem] {
     var fold = TranscriptFold()
-    fold.append(decoded)
+    fold.append(try events(kinds))
     return fold.items(status: status)
+}
+
+@Test func foldingAsEventsComeMatchesFoldingThemAllAtOnce() throws {
+    let kinds = [
+        #"{"event":"user_prompt","text":"Fix it"}"#,
+        #"{"event":"agent_thought","text":"Look"}"#,
+        #"{"event":"agent_thought","text":"ing"}"#,
+        #"{"event":"tool_call","id":"t1","tool":{"title":"cargo test","kind":"execute","status":"in_progress"}}"#,
+        #"{"event":"permission_requested","approval":{"id":"r","session_id":"s","tool_call":{"title":"rm"},"options":[{"id":"y","name":"Allow","kind":"allow_once"}]}}"#,
+        #"{"event":"permission_resolved","approval_id":"r","outcome":{"outcome":"selected","option_id":"y"}}"#,
+        #"{"event":"agent_message","text":"Half"}"#,
+        #"{"event":"tool_call_update","id":"t1","tool":{"status":"failed"}}"#,
+        #"{"event":"agent_message","text":" way"}"#,
+        #"{"event":"turn_ended","stop_reason":"end_turn","last_message":"msg-1"}"#,
+        #"{"event":"user_prompt","text":"Again"}"#,
+        #"{"event":"tool_call","id":"t2","tool":{"title":"Edit lib.rs","kind":"edit","status":"in_progress"}}"#,
+        #"{"event":"tool_call_update","id":"t2","tool":{"status":"completed","content":[{"type":"diff","path":"lib.rs","old_text":"a","new_text":"b"}]}}"#,
+        #"{"event":"agent_message","text":"Done"}"#,
+    ]
+    let all = try events(kinds)
+    var incremental = TranscriptFold()
+    for (index, event) in all.enumerated() {
+        incremental.append([event])
+        for status in [SessionStatus.working, .waiting, .done] {
+            var whole = TranscriptFold()
+            whole.append(Array(all[...index]))
+            let shown = incremental.items(status: status)
+            let expected = whole.items(status: status)
+            #expect(shown == expected, "after event \(index + 1), \(status)")
+        }
+    }
+}
+
+@Test func followingStopsWhenThePersonScrollsAndResumesAtTheEnd() {
+    var follow = Follow()
+    #expect(follow.isOn)
+
+    // A drag takes over straight away, even before it has left the end.
+    follow.dragStarted()
+    #expect(!follow.isOn)
+    var catchUp = follow.cameToRest(atEnd: false)
+    #expect(!catchUp && !follow.isOn)
+
+    // Content arriving while it's away doesn't bring it back.
+    catchUp = follow.cameToRest(atEnd: false)
+    #expect(!catchUp && !follow.isOn)
+
+    // Coming to rest at the end by hand follows again, with nothing to make up.
+    follow.dragStarted()
+    catchUp = follow.cameToRest(atEnd: true)
+    #expect(!catchUp && follow.isOn)
+
+    // A jump that lands short is finished off.
+    follow.resume()
+    catchUp = follow.cameToRest(atEnd: false)
+    #expect(catchUp)
+
+    // Unfolding something above the end stops following, at the end it doesn't.
+    follow.unfolded(last: true)
+    #expect(follow.isOn)
+    follow.unfolded(last: false)
+    #expect(!follow.isOn)
 }
 
 @Test func streamedChunksAreOneMessageAndWorkBetweenIsOneActivity() throws {

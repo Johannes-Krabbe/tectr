@@ -1306,6 +1306,10 @@ async fn subscribing_after_n_sends_only_later_events() {
         };
         assert_eq!(event.seq, expected);
     }
+    let ServerMessage::SessionReplayed { session_id, seq } = raw_next(&mut socket).await else {
+        panic!("the replay should end by saying so");
+    };
+    assert_eq!((session_id, seq), (session.session_id.clone(), total));
     daemon.shutdown().await;
 }
 

@@ -185,6 +185,36 @@ async fn repeated_and_out_of_order_events_are_ignored() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_session_is_replayed_once_its_history_has_all_arrived() {
+    let (listener, engine) = listener_and_engine().await;
+    let mut socket = accept(&listener).await;
+    engine.wait_until_settled().await;
+    engine.open_session(&session());
+    receive(&mut socket).await;
+    let replayed = |seq| ServerMessage::SessionReplayed {
+        session_id: "s".into(),
+        seq,
+    };
+
+    // One left over from an earlier subscription, which had more events than this one has yet.
+    send(&mut socket, &replayed(5)).await;
+    send(&mut socket, &event(1, "one")).await;
+    wait_for_events(&engine, 1).await;
+    assert!(!engine.is_replayed(&session()));
+
+    send(&mut socket, &event(2, "two")).await;
+    send(&mut socket, &replayed(2)).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !engine.is_replayed(&session()) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the session should be replayed");
+    assert_eq!(engine.events_after(&session(), 0).len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_daemon_without_a_common_version_is_reported() {
     let (listener, engine) = listener_and_engine().await;
     let (stream, _) = listener.accept().await.unwrap();

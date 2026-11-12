@@ -456,14 +456,14 @@ fn watch_settings(app: AppHandle, store: SharedSettings) -> notify::Result<Recom
 async fn forward_updates(app: AppHandle, mut updates: broadcast::Receiver<Update>) {
     loop {
         let mut devices = match updates.recv().await {
-            Ok(Update::SessionEvent { .. }) => false,
+            Ok(Update::SessionEvent { .. } | Update::SessionReplayed { .. }) => false,
             Ok(Update::DeviceChanged { .. }) | Err(RecvError::Lagged(_)) => true,
             Err(RecvError::Closed) => return,
         };
         tokio::time::sleep(FRAME).await;
         loop {
             match updates.try_recv() {
-                Ok(Update::SessionEvent { .. }) => {}
+                Ok(Update::SessionEvent { .. } | Update::SessionReplayed { .. }) => {}
                 Ok(Update::DeviceChanged { .. }) | Err(TryRecvError::Lagged(_)) => devices = true,
                 Err(TryRecvError::Empty | TryRecvError::Closed) => break,
             }

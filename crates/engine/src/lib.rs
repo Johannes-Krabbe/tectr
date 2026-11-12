@@ -101,8 +101,17 @@ impl Connection {
 /// [`Engine::events_after`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Update {
-    DeviceChanged { url: String },
-    SessionEvent { session: SessionRef, seq: u64 },
+    DeviceChanged {
+        url: String,
+    },
+    SessionEvent {
+        session: SessionRef,
+        seq: u64,
+    },
+    /// The session's history has all arrived. See [`Engine::is_replayed`].
+    SessionReplayed {
+        session: SessionRef,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -199,9 +208,18 @@ struct DaemonEntry {
 
 struct Shared {
     daemons: BTreeMap<String, DaemonEntry>,
-    /// Sessions the UI is following, with all their events so far.
-    open: HashMap<SessionRef, Vec<SessionEvent>>,
+    /// Sessions the UI is following.
+    open: HashMap<SessionRef, OpenSession>,
     terminals: HashMap<(MachineId, TerminalId), AttachedTerminal>,
+}
+
+#[derive(Default)]
+struct OpenSession {
+    /// Every event so far, in order.
+    events: Vec<SessionEvent>,
+    /// Whether the history it had when opened has all arrived. It stays set across
+    /// reconnects, which only bring what was missed.
+    replayed: bool,
 }
 
 impl Shared {
@@ -538,7 +556,7 @@ impl Engine {
         if shared.open.contains_key(session) {
             return;
         }
-        shared.open.insert(session.clone(), vec![]);
+        shared.open.insert(session.clone(), OpenSession::default());
         for daemon in shared.daemons.values() {
             let on_this_daemon = daemon.device.state.as_ref().map(|state| &state.machine.id)
                 == Some(&session.machine_id);
@@ -660,11 +678,21 @@ impl Engine {
     /// The open session's events after `after_seq`, in order.
     pub fn events_after(&self, session: &SessionRef, after_seq: u64) -> Vec<SessionEvent> {
         let shared = self.inner.lock();
-        let Some(events) = shared.open.get(session) else {
+        let Some(open) = shared.open.get(session) else {
             return vec![];
         };
-        let start = events.partition_point(|event| event.seq <= after_seq);
-        events[start..].to_vec()
+        let start = open.events.partition_point(|event| event.seq <= after_seq);
+        open.events[start..].to_vec()
+    }
+
+    /// Whether the open session's history has all arrived, so a UI can show it in one
+    /// piece instead of growing as it's replayed.
+    pub fn is_replayed(&self, session: &SessionRef) -> bool {
+        self.inner
+            .lock()
+            .open
+            .get(session)
+            .is_some_and(|open| open.replayed)
     }
 }
 
@@ -1034,7 +1062,7 @@ fn handle_message(
         }
         ServerMessage::SessionEvent { event } => {
             let mut shared = inner.lock();
-            let Some(events) = shared.open.get_mut(&event.session) else {
+            let Some(OpenSession { events, .. }) = shared.open.get_mut(&event.session) else {
                 return; // Closed while this event was on its way.
             };
             // Only the next event in order counts. Anything else is a stale
@@ -1052,6 +1080,31 @@ fn handle_message(
             events.push(event);
             drop(shared);
             let _ = inner.updates.send(update);
+        }
+        ServerMessage::SessionReplayed { session_id, seq } => {
+            let mut shared = inner.lock();
+            let Some(machine_id) = shared
+                .daemons
+                .get(url)
+                .and_then(|daemon| daemon.device.state.as_ref())
+                .map(|state| state.machine.id.clone())
+            else {
+                return;
+            };
+            let session = SessionRef {
+                machine_id,
+                session_id,
+            };
+            let Some(open) = shared.open.get_mut(&session) else {
+                return;
+            };
+            let last_seq = open.events.last().map_or(0, |event| event.seq);
+            if open.replayed || last_seq < seq {
+                return;
+            }
+            open.replayed = true;
+            drop(shared);
+            let _ = inner.updates.send(Update::SessionReplayed { session });
         }
         ServerMessage::Response { id, result } => {
             let mut shared = inner.lock();
@@ -1071,16 +1124,16 @@ fn handle_message(
 /// After connecting, picks up every open session on this machine where it left off, and shows
 /// its terminals again.
 fn resubscribe(
-    open: &HashMap<SessionRef, Vec<SessionEvent>>,
+    open: &HashMap<SessionRef, OpenSession>,
     terminals: &HashMap<(MachineId, TerminalId), AttachedTerminal>,
     machine: &Machine,
     outgoing: &mpsc::UnboundedSender<Outgoing>,
 ) {
-    for (session, events) in open {
+    for (session, open) in open {
         if session.machine_id == machine.id {
             let _ = outgoing.send(Outgoing::Message(ClientMessage::Subscribe {
                 session_id: session.session_id.clone(),
-                after_seq: events.last().map_or(0, |event| event.seq),
+                after_seq: open.events.last().map_or(0, |event| event.seq),
             }));
         }
     }

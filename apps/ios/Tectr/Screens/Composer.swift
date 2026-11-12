@@ -19,6 +19,8 @@ struct Composer: View {
     /// this box to add.
     @Binding var attaching: Attaching?
     @Binding var picked: [PreparedImage]
+    /// After a message is sent.
+    let onSend: () -> Void
     @FocusState private var focused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -28,11 +30,15 @@ struct Composer: View {
     /// opening only changes its size.
     private static let radius = (Tokens.Size.control + 2 * inset) / 2
 
-    init(session: Session, topicID: Topic.ID, attaching: Binding<Attaching?>, picked: Binding<[PreparedImage]>) {
+    init(
+        session: Session, topicID: Topic.ID, attaching: Binding<Attaching?>, picked: Binding<[PreparedImage]>,
+        onSend: @escaping () -> Void = {}
+    ) {
         self.session = session
         self.topicID = topicID
         _attaching = attaching
         _picked = picked
+        self.onSend = onSend
         // The draft is there from the first frame. Filling it in on appear grows the box after
         // the push, which moves the transcript above it.
         _text = State(initialValue: session.draft)
@@ -170,6 +176,7 @@ struct Composer: View {
                     text = ""
                     attachments = Attachments()
                     sent += 1
+                    onSend()
                 }
                 .keyboardShortcut(.return, modifiers: .command)
             }

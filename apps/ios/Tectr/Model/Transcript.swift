@@ -5,25 +5,31 @@ import TectrDesign
 /// Folds a session's events into what a person reads, as the desktop's `foldTranscript` does:
 /// streamed chunks become one message, and everything an agent does between two things it
 /// says becomes one activity.
+///
+/// It folds as events come and keeps each item as it last showed it, rebuilding only what a
+/// new event touched. Folding the whole history again for every streamed chunk reparsed every
+/// message and diffed every edit each frame, which stalled scrolling in long sessions.
 struct TranscriptFold {
-    private(set) var events: [Wire.SessionEvent] = []
-
-    var lastSeq: UInt64 { events.last?.seq ?? 0 }
+    private(set) var lastSeq: UInt64 = 0
+    private var builder = Builder()
 
     mutating func append(_ more: [Wire.SessionEvent]) {
-        events.append(contentsOf: more.filter { $0.seq > lastSeq })
+        for event in more where event.seq > lastSeq {
+            builder.add(event)
+            lastSeq = event.seq
+        }
     }
 
-    func items(status: SessionStatus) -> [TranscriptItem] {
-        var builder = Builder()
-        for event in events { builder.add(event) }
-        return builder.finish(status: status)
+    mutating func items(status: SessionStatus) -> [TranscriptItem] {
+        builder.finish(status: status)
     }
 }
 
 private struct Builder {
     private struct OpenActivity {
         let key: UInt64
+        /// Its place in `items`.
+        let item: Int
         var steps: [StepDraft] = []
         var startedMs: Int64
         var endedMs: Int64
@@ -51,6 +57,22 @@ private struct Builder {
     private var requests: [String: (title: String, options: [String: String])] = [:]
     private var requestsOpen = 0
     private var waitingSince: Int64 = 0
+    /// Where each tool call is, as an activity and a step in it.
+    private var tools: [String: (activity: Int, step: Int)] = [:]
+
+    /// What `finish` made last time, by item and by activity and step. Only what changed
+    /// since is made again.
+    private var built: [TranscriptItem] = []
+    private var builtSteps: [[Step]] = []
+    private var changedItems: Set<Int> = []
+    private var changedSteps: Set<StepRef> = []
+    /// The activity shown as live last time, which may not be any more.
+    private var lastLive: Int?
+
+    private struct StepRef: Hashable {
+        let activity: Int
+        let step: Int
+    }
 
     private static let stopNotes = [
         "cancelled": "Interrupted",
@@ -59,21 +81,45 @@ private struct Builder {
         "refusal": "The agent refused",
     ]
 
+    private mutating func append(_ item: Item) {
+        items.append(item)
+        changedItems.insert(items.count - 1)
+    }
+
+    private mutating func replace(_ index: Int, with item: Item) {
+        items[index] = item
+        changedItems.insert(index)
+    }
+
+    private mutating func appendStep(_ step: StepDraft, to activity: Int) {
+        activities[activity].steps.append(step)
+        changedSteps.insert(StepRef(activity: activity, step: activities[activity].steps.count - 1))
+        changedItems.insert(activities[activity].item)
+    }
+
+    private mutating func replaceStep(_ step: Int, in activity: Int, with draft: StepDraft) {
+        activities[activity].steps[step] = draft
+        changedSteps.insert(StepRef(activity: activity, step: step))
+        changedItems.insert(activities[activity].item)
+    }
+
     /// The activity in progress, started if there's none. It began when the agent went
     /// quiet, not when its first step showed up.
     private mutating func activity(_ seq: UInt64, _ at: Int64) -> Int {
         if let open {
-            activities[open].endedMs = at
+            touch(at)
             return open
         }
-        activities.append(OpenActivity(key: seq, startedMs: previousAt ?? at, endedMs: at))
-        items.append(.activity(activities.count - 1))
+        activities.append(OpenActivity(key: seq, item: items.count, startedMs: previousAt ?? at, endedMs: at))
+        append(.activity(activities.count - 1))
         open = activities.count - 1
         return activities.count - 1
     }
 
     private mutating func touch(_ at: Int64) {
-        if let open { activities[open].endedMs = at }
+        guard let open else { return }
+        activities[open].endedMs = at
+        changedItems.insert(activities[open].item)
     }
 
     private mutating func close(_ at: Int64) {
@@ -87,31 +133,32 @@ private struct Builder {
         switch event.kind {
         case .userPrompt(let text, let images):
             close(at)
-            items.append(.prompt(key: seq, text: text, images: images))
+            append(.prompt(key: seq, text: text, images: images))
         case .agentMessage(let text):
             close(at)
             if case .message(let key, let previous, let fork) = items.last {
-                items[items.count - 1] = .message(key: key, text: previous + text, forkAfter: fork)
+                replace(items.count - 1, with: .message(key: key, text: previous + text, forkAfter: fork))
             } else {
-                items.append(.message(key: seq, text: text, forkAfter: nil))
+                append(.message(key: seq, text: text, forkAfter: nil))
             }
         case .agentThought(let text):
             let index = activity(seq, at)
             if case .thought(let key, let previous) = activities[index].steps.last {
-                activities[index].steps[activities[index].steps.count - 1] = .thought(key: key, text: previous + text)
+                replaceStep(activities[index].steps.count - 1, in: index, with: .thought(key: key, text: previous + text))
             } else {
-                activities[index].steps.append(.thought(key: seq, text: text))
+                appendStep(.thought(key: seq, text: text), to: index)
             }
         case .toolCall(let id, let tool), .toolCallUpdate(let id, let tool):
-            if let (index, step) = findTool(id) {
+            if let (index, step) = tools[id] {
                 if case .tool(let key, _, let older) = activities[index].steps[step] {
-                    activities[index].steps[step] = .tool(key: key, id: id, tool: tool.applied(over: older))
+                    replaceStep(step, in: index, with: .tool(key: key, id: id, tool: tool.applied(over: older)))
                 }
                 // Tools can finish after a message, and that doesn't reopen their activity.
                 touch(at)
             } else {
                 let index = activity(seq, at)
-                activities[index].steps.append(.tool(key: seq, id: id, tool: tool))
+                appendStep(.tool(key: seq, id: id, tool: tool), to: index)
+                tools[id] = (index, activities[index].steps.count - 1)
             }
         case .permissionRequested(let approval):
             requests[approval.id] = (
@@ -127,64 +174,84 @@ private struct Builder {
             let index = activity(seq, at)
             requestsOpen -= 1
             if requestsOpen == 0 { activities[index].waitedMs += at - waitingSince }
-            activities[index].steps.append(.note(key: seq, text: "Request: \(request?.title ?? "tool call"). \(answer)"))
+            appendStep(.note(key: seq, text: "Request: \(request?.title ?? "tool call"). \(answer)"), to: index)
         case .agentReady:
             close(at)
         case .turnEnded(let reason, let lastMessage):
             close(at)
             if lastMessage != nil, let index = items.lastIndex(where: { if case .message = $0 { true } else { false } }),
                case .message(let key, let text, _) = items[index] {
-                items[index] = .message(key: key, text: text, forkAfter: seq)
+                replace(index, with: .message(key: key, text: text, forkAfter: seq))
             }
             if let note = Self.stopNotes[reason] {
-                items.append(.note(key: seq, text: note, failed: false))
+                append(.note(key: seq, text: note, failed: false))
             }
         case .error(let message):
             close(at)
-            items.append(.note(key: seq, text: message, failed: true))
+            append(.note(key: seq, text: message, failed: true))
         case .statusChanged, .unknown:
             break
         }
         previousAt = at
     }
 
-    private func findTool(_ id: String) -> (Int, Int)? {
-        for (index, activity) in activities.enumerated().reversed() {
-            if let step = activity.steps.firstIndex(where: { if case .tool(_, id, _) = $0 { true } else { false } }) {
-                return (index, step)
-            }
-        }
-        return nil
-    }
-
-    func finish(status: SessionStatus) -> [TranscriptItem] {
+    mutating func finish(status: SessionStatus) -> [TranscriptItem] {
         let running = status == .working || status == .starting || status == .waiting
         let lastActivity = items.lastIndex { if case .activity = $0 { true } else { false } }
-        var result: [TranscriptItem] = items.enumerated().map { offset, item in
-            switch item {
-            case .prompt(let key, let text, let images):
-                return .prompt(id: "\(key)", text: text, images: images)
-            case .message(let key, let text, let fork):
-                return .message(id: "\(key)", blocks: MessageBlock.parse(text), forkAfter: fork)
-            case .note(let key, let text, let failed):
-                return .note(id: "\(key)", text: text, failed: failed)
-            case .activity(let index):
-                let activity = activities[index]
-                // Only the last activity of a running turn is still going.
-                let live = running && offset == lastActivity && offset == items.count - 1
-                return .activity(Activity(
-                    id: "\(activity.key)",
-                    state: live ? Self.liveState(activity, status: status) : Self.summary(activity),
-                    steps: activity.steps.map(Self.step)
-                ))
+        // Only the last activity of a running turn is still going.
+        let live = running && lastActivity != nil && lastActivity == items.count - 1 ? lastActivity : nil
+
+        for (activity, refs) in Dictionary(grouping: changedSteps, by: \.activity) {
+            while builtSteps.count <= activity { builtSteps.append([]) }
+            let drafts = activities[activity].steps
+            let had = builtSteps[activity].count
+            builtSteps[activity] += drafts[had...].map(Self.step)
+            for ref in refs where ref.step < had {
+                builtSteps[activity][ref.step] = Self.step(drafts[ref.step])
             }
         }
+        changedSteps = []
+
+        // Whether an activity is live depends on the status and what came after it, so the
+        // last one and the one that was live are made again every time. Their steps aren't.
+        var stale = changedItems
+        if let lastActivity { stale.insert(lastActivity) }
+        if let lastLive { stale.insert(lastLive) }
+        changedItems = []
+        lastLive = live
+        for offset in stale.sorted() {
+            let item = build(offset, live: offset == live, status: status)
+            if offset < built.count {
+                built[offset] = item
+            } else {
+                built.append(item)
+            }
+        }
+
         // A turn that has said nothing yet still shows that it's under way.
         if running, lastActivity != items.count - 1 || items.isEmpty {
             let state: ActivityState = status == .waiting ? .waiting : .running(status == .starting ? "Starting" : "Working")
-            result.append(.activity(Activity(id: "live", state: state, steps: [])))
+            return built + [.activity(Activity(id: "live", state: state, steps: []))]
         }
-        return result
+        return built
+    }
+
+    private func build(_ offset: Int, live: Bool, status: SessionStatus) -> TranscriptItem {
+        switch items[offset] {
+        case .prompt(let key, let text, let images):
+            return .prompt(id: "\(key)", text: text, images: images)
+        case .message(let key, let text, let fork):
+            return .message(id: "\(key)", blocks: MessageBlock.parse(text), forkAfter: fork)
+        case .note(let key, let text, let failed):
+            return .note(id: "\(key)", text: text, failed: failed)
+        case .activity(let index):
+            let activity = activities[index]
+            return .activity(Activity(
+                id: "\(activity.key)",
+                state: live ? Self.liveState(activity, status: status) : Self.summary(activity),
+                steps: index < builtSteps.count ? builtSteps[index] : []
+            ))
+        }
     }
 
     /// What a running session is on right now. Parallel tools show the newest one still running,
@@ -366,5 +433,40 @@ extension DiffLine {
             for near in max(0, index - context)...min(lines.count - 1, index + context) { keep[near] = true }
         }
         return lines.indices.filter { keep[$0] }.map { lines[$0].0 }
+    }
+}
+
+/// Whether a transcript keeps its newest line in view as it grows. Only the person turns it
+/// off, by scrolling: a drag takes over at once, so a streaming turn never pulls against a
+/// finger, and coming to rest at the end hands it back.
+struct Follow: Equatable {
+    private(set) var isOn = true
+    /// While a drag, or the flick it ended with, is moving the transcript.
+    private(set) var byHand = false
+
+    mutating func dragStarted() {
+        byHand = true
+        isOn = false
+    }
+
+    /// The transcript stopped moving. Returns whether it should be taken to its end, for a
+    /// jump that landed short of an end it only knew from estimated row heights.
+    mutating func cameToRest(atEnd: Bool) -> Bool {
+        if byHand {
+            byHand = false
+            isOn = atEnd
+            return false
+        }
+        return isOn && !atEnd
+    }
+
+    /// Unfolding something follows only if it's at the end, and otherwise stays where it is
+    /// rather than push what's above it up from under the finger.
+    mutating func unfolded(last: Bool) {
+        if !last { isOn = false }
+    }
+
+    mutating func resume() {
+        isOn = true
     }
 }

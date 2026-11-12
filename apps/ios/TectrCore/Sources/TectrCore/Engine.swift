@@ -214,6 +214,11 @@ public final class Engine: Sendable {
         decode([Wire.SessionEvent].self, core.eventsAfter(machineId: machineId, sessionId: sessionId, afterSeq: seq)) ?? []
     }
 
+    /// Whether an open session's history has all arrived, so it can be shown in one piece.
+    public func isReplayed(_ machineId: String, _ sessionId: String) -> Bool {
+        core.isReplayed(machineId: machineId, sessionId: sessionId)
+    }
+
     /// Starts showing a terminal. `frame` gets its frames off the main thread: kind 1 is output
     /// and kind 2 a reset, whose payload starts with the size. See `crates/protocol/src/frame.rs`.
     public func attachTerminal(

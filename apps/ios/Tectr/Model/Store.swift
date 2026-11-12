@@ -82,45 +82,36 @@ final class Store {
             raw = engine.devices()
             rebuild()
         }
-        for (sessionID, open) in following {
+        // By key, and changed in place: holding a copy of a fold while appending to it would
+        // copy everything it keeps.
+        for sessionID in Array(following.keys) {
+            guard let machine = following[sessionID]?.machine else { continue }
             guard session(sessionID) != nil else {
                 // A closed tab's session, which nothing can show again.
                 if watchers[sessionID] == nil { forget(sessionID) }
                 continue
             }
-            let fresh = engine.events(open.machine, sessionID, after: open.fold.lastSeq)
-            // Without new events only a status change, which comes with the devices, changes it.
-            guard !fresh.isEmpty || changed else { continue }
-            following[sessionID]?.fold.append(fresh)
-            if open.shown {
-                publish(sessionID)
-            } else if !fresh.isEmpty {
-                settle(sessionID)
+            let lastSeq = following[sessionID]?.fold.lastSeq ?? 0
+            let fresh = engine.events(machine, sessionID, after: lastSeq)
+            if !fresh.isEmpty { following[sessionID]?.fold.append(fresh) }
+            if following[sessionID]?.shown == true {
+                // Without new events only a status change, which comes with the devices, changes it.
+                guard !fresh.isEmpty || changed else { continue }
+            } else {
+                // The daemon replays history an event at a time, over many updates. It's shown
+                // once all of it is here, so it opens in one piece at its end instead of
+                // growing and scrolling as it arrives.
+                guard engine.isReplayed(machine, sessionID) else { continue }
+                following[sessionID]?.shown = true
             }
+            publish(sessionID)
         }
     }
 
     private func publish(_ sessionID: Session.ID) {
-        guard let open = following[sessionID], let session = session(sessionID) else { return }
-        let items = open.fold.items(status: session.status)
+        guard let session = session(sessionID),
+              let items = following[sessionID]?.fold.items(status: session.status) else { return }
         if transcripts[sessionID] != items { transcripts[sessionID] = items }
-    }
-
-    /// The daemon replays a session's history an event at a time, over several updates. It's
-    /// shown once it stops arriving, so it lands in one piece instead of scrolling past as it
-    /// comes in, and a running session doesn't show its Working line alone first. A busy
-    /// session might never stop, so this waits half a second at most.
-    private func settle(_ sessionID: Session.ID) {
-        guard let open = following[sessionID] else { return }
-        open.settling?.cancel()
-        let left = open.opened + .milliseconds(500) - ContinuousClock.now
-        let wait = min(.milliseconds(80), max(.zero, left))
-        following[sessionID]?.settling = Task { [weak self] in
-            try? await Task.sleep(for: wait)
-            guard !Task.isCancelled, let self else { return }
-            following[sessionID]?.shown = true
-            publish(sessionID)
-        }
     }
 
     private func rebuild() {
@@ -337,7 +328,6 @@ final class Store {
     private func forget(_ sessionID: Session.ID) {
         recent.removeAll { $0 == sessionID }
         guard let engine, let open = following.removeValue(forKey: sessionID) else { return }
-        open.settling?.cancel()
         transcripts[sessionID] = nil
         engine.closeSession(open.machine, sessionID)
     }
@@ -720,10 +710,8 @@ private struct Following {
     /// Kept here because the session, and so the way to its machine, can go first.
     let machine: String
     var fold = TranscriptFold()
-    let opened = ContinuousClock.now
     /// Whether its transcript is published, which waits for its history to arrive.
     var shown = false
-    var settling: Task<Void, Never>?
 }
 
 /// What a new agent starts with.

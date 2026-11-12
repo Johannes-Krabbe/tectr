@@ -13,7 +13,7 @@
 //!    [`ServerMessage::StateChanged`] for every later change.
 //! 4. The client sends [`ClientMessage::Subscribe`] for each session it wants
 //!    to follow, and receives every [`SessionEvent`] after the given sequence
-//!    number, followed by live events.
+//!    number, then [`ServerMessage::SessionReplayed`], then live events.
 //! 5. The client sends [`ClientMessage::AttachTerminal`] for each terminal it shows. What
 //!    the terminal prints and what's typed into it travel as binary [`frame`]s.
 //!
@@ -298,6 +298,15 @@ pub enum ServerMessage {
     },
     SessionEvent {
         event: SessionEvent,
+    },
+    /// Every stored event a [`ClientMessage::Subscribe`] asked for has been sent, so what
+    /// follows is live. A client can show a session's history in one piece once this comes,
+    /// rather than guess from how events arrive.
+    SessionReplayed {
+        session_id: SessionId,
+        /// The last event sent, or the `after_seq` asked for when there was nothing to send.
+        /// A client that has fewer events is hearing about an earlier subscription.
+        seq: u64,
     },
     Response {
         id: u64,
