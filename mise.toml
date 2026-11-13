@@ -14,8 +14,8 @@ run = "cargo test"
 run = ["cargo fmt --all --check", "cargo clippy --all-targets -- -D warnings"]
 
 [tasks.daemon]
-description = "Run the daemon on loopback"
-run = "cargo run -p daemon --"
+description = "Run the daemon on loopback, with the CLI its agents get built beside it"
+run = "cargo build -q -p cli && cargo run -p daemon --"
 
 [tasks.dsk]
 description = "Run the desktop app in development"
@@ -30,6 +30,10 @@ run = "node --experimental-strip-types --test apps/dsk/src/*.test.ts"
 description = "Generate the Xcode project, then open apps/ios/Tectr.xcodeproj"
 dir = "apps/ios"
 run = "xcodegen generate"
+
+[tasks."ios:core"]
+description = "Build the engine for the iOS app: the ffi crate, its Swift bindings and TectrCore's xcframework"
+run = "scripts/ios-core.sh"
 
 [tasks.tokens]
 description = "Regenerate design tokens and icons for both apps"

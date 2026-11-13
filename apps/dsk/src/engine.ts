@@ -283,10 +283,20 @@ export interface DaemonState {
   commands?: Record<string, AgentCommand[]>;
   /** Left out while every value is its default. */
   settings?: DeviceSettings;
+  /** Until when someone asked the machine to stay awake, on the daemon's clock. Left out when
+   * nobody did, and cleared once it has passed. */
+  awake_until_ms?: number;
   /** The MCP servers agents on this device get, device-wide and per topic. */
   mcp_servers?: McpServer[];
   /** The clients on other machines that may connect, oldest first. */
   paired_clients?: PairedClient[];
+  /** Clients waiting for the digits they show to be typed here, oldest first. */
+  pairing_requests?: PairingRequest[];
+}
+
+export interface PairingRequest {
+  key: string;
+  name: string;
 }
 
 /** A client on another machine that may connect to a daemon, by the key it proves. */
@@ -339,6 +349,8 @@ export type Connection =
    * the connection drops and they fail. */
   | { state: "online"; stalled: boolean }
   | { state: "offline"; reason: string }
+  /** It refused during one of the brief wakes a sleeping Mac has, and hasn't answered since. */
+  | { state: "asleep" }
   | { state: "incompatible"; daemon_min: number; daemon_max: number };
 
 export interface Device {
@@ -400,6 +412,8 @@ export type Command =
   | { command: "answer_approval"; approval_id: string; option_id: string }
   | { command: "rename_machine"; name: string }
   | { command: "set_device_settings"; settings: DeviceSettings }
+  /** Keeps the machine awake for this long from now, whatever its agents do. Null stops early. */
+  | { command: "keep_awake_for"; seconds: number | null }
   | { command: "detect_providers" }
   | { command: "add_provider"; agent: string }
   | { command: "remove_provider"; agent: string }
@@ -458,6 +472,8 @@ export type Command =
   /** `after_seq` is the answer's `turn_ended`. Answered with `session`. */
   | { command: "fork_session"; session_id: string; after_seq?: number }
   | { command: "start_pairing" }
+  /** Answered with `paired`. */
+  | { command: "confirm_pairing"; digits: string }
   | { command: "cancel_pairing" }
   | { command: "remove_paired_client"; key: string };
 
@@ -485,8 +501,9 @@ export type CommandOutput =
   | { output: "image_added"; id: string }
   /** Base64. A thumbnail can be a different type from its image. */
   | { output: "image"; data: string; mime: string }
-  /** A code that pairs one more machine, once, until it expires. */
+  /** A code that lets machines ask to pair until it expires. */
   | { output: "pairing"; code: string; expires_at_ms: number }
+  | { output: "paired"; client: PairedClient }
   | { output: "done" }
   | { output: "unknown" };
 
@@ -524,9 +541,20 @@ export function reconnect(): Promise<void> {
   return invoke("reconnect");
 }
 
-/** Pairs with a device on another machine using the code it showed, and keeps it. */
-export function pairDevice(code: string): Promise<void> {
+/** Asks a device on another machine to pair, using the code it showed. The answer is the
+ * digits to type on it, and `finishPairing` waits for that. */
+export function pairDevice(code: string): Promise<{ digits: string; machine: string }> {
   return invoke("pair_device", { code });
+}
+
+/** Resolves once the digits are typed on the device, which is then kept. */
+export function finishPairing(): Promise<void> {
+  return invoke("finish_pairing");
+}
+
+/** Stops the pairing under way, which takes this app off the device's waiting list. */
+export function stopPairing(): Promise<void> {
+  return invoke("stop_pairing");
 }
 
 /** Stops reaching a paired device, taking this app off its allowed list if it's online. */

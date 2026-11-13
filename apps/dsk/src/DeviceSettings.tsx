@@ -13,7 +13,17 @@ import {
 import { act, type ActionId } from "./keybinds";
 import { inPane } from "./keys";
 import { McpSettings } from "./McpServers";
-import { defaultEffort, isOnline, keepsAwake, modelLabel, withKeepAwakeToggled } from "./model";
+import {
+  awakeUntil,
+  defaultEffort,
+  isOnline,
+  KEEP_AWAKE_SUGGESTIONS,
+  keepsAwake,
+  modelLabel,
+  parseDuration,
+  timeLeft,
+  withKeepAwakeToggled,
+} from "./model";
 import { isLoopback } from "./pathInput";
 import { DEVICE_SECTIONS, sectionOf } from "./settingsNav";
 import { hint, type Hint, SETTINGS_MOVES, useHints } from "./shortcuts";
@@ -26,6 +36,7 @@ import {
   SettingsPage,
 } from "./ui/SettingsPage";
 import { Keys } from "./ui/StatusIcon";
+import { useNow } from "./ui/useNow";
 
 /** A candidate, or a provider this daemon no longer knows how to run. */
 function rowsOf(candidates: ProviderCandidate[], providers: Provider[]): ProviderCandidate[] {
@@ -82,6 +93,9 @@ export function Row({
 // Focus stays off controls in a row, so Enter does what the settings say rather than pressing them.
 export const keepFocus = (event: React.MouseEvent) => event.preventDefault();
 
+/** A value of the device's general settings that's typed right in its row. */
+export type DeviceField = "name" | "awake";
+
 /** The settings of one device. They live on its daemon, so every client sees the same ones.
  * Its sections are in the same list as the app's. */
 export function DeviceSettings({
@@ -89,9 +103,9 @@ export function DeviceSettings({
   machineId,
   section: shown,
   nav,
-  renaming,
-  onRename,
-  onRenameEnd,
+  editing,
+  onEdit,
+  onEditEnd,
   onPair,
   onForget,
 }: {
@@ -99,10 +113,10 @@ export function DeviceSettings({
   machineId: string;
   section: string | undefined;
   nav: SettingsNav;
-  /** The name is being edited in place, which the palette can start from anywhere. */
-  renaming: boolean;
-  onRename: () => void;
-  onRenameEnd: () => void;
+  /** What's being typed in place, which the palette can start from anywhere. */
+  editing: DeviceField | null;
+  onEdit: (field: DeviceField) => void;
+  onEditEnd: () => void;
   /** Shows a code that lets another machine in. */
   onPair: () => void;
   /** Stops this app reaching the device. */
@@ -113,8 +127,8 @@ export function DeviceSettings({
   const [inside, setInside] = useState(false);
 
   useEffect(() => {
-    if (renaming) setInside(true);
-  }, [renaming]);
+    if (editing) setInside(true);
+  }, [editing]);
 
   const props = {
     device,
@@ -122,8 +136,8 @@ export function DeviceSettings({
     onActivate: () => setInside(true),
     onLeave: () => {
       setInside(false);
-      // Going back to the list of sections drops an unsaved name.
-      if (renaming) onRenameEnd();
+      // Going back to the list of sections drops what was typed.
+      if (editing) onEditEnd();
     },
   };
 
@@ -135,7 +149,7 @@ export function DeviceSettings({
       onInside={(next) => (next ? setInside(true) : props.onLeave())}
     >
       {section === "general" && (
-        <General {...props} renaming={renaming} onRename={onRename} onRenameEnd={onRenameEnd} />
+        <General {...props} editing={editing} onEdit={onEdit} onEditEnd={onEditEnd} />
       )}
       {section === "providers" && <Providers {...props} />}
       {section === "mcp" && <McpSettings {...props} />}
@@ -159,44 +173,66 @@ interface GeneralRow {
   action: string;
   role?: "switch";
   run: () => void;
+  /** Typed right in the row while this is being edited. */
+  field?: DeviceField;
 }
 
-/** The device's own name and power settings. The name is edited right in its row. */
+/** The device's own name and power settings. The name and how long to keep it awake are
+ * typed right in their rows. */
 function General({
   device,
   active,
   onActivate,
   onLeave,
-  renaming,
-  onRename,
-  onRenameEnd,
-}: SectionProps & { renaming: boolean; onRename: () => void; onRenameEnd: () => void }) {
+  editing: editingField,
+  onEdit,
+  onEditEnd,
+}: SectionProps & {
+  editing: DeviceField | null;
+  onEdit: (field: DeviceField) => void;
+  onEditEnd: () => void;
+}) {
   const state = device.state;
   const online = isOnline(device);
   const [cursor, setCursor] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  // What's typed, once something is. Until then the box shows the name, so focusing selects it.
+  // What's typed, once something is. Until then the name's box shows the name, so focusing
+  // selects it.
   const [draft, setDraft] = useState<string | null>(null);
   // Saving unmounts the input, whose blur would otherwise save a second time.
   const finished = useRef(false);
   const keepAwake = state ? keepsAwake(state) : true;
-  const editing = renaming && online && state !== undefined;
+  const editing = online && state ? editingField : null;
+  const now = useNow(state?.awake_until_ms !== undefined);
+  const awakeTill = awakeUntil(state, now);
 
   useEffect(() => {
-    if (!renaming) return;
+    if (!editingField) return;
     finished.current = false;
     setDraft(null);
-    setCursor(0);
-  }, [renaming]);
-
-  const endRename = (save: boolean) => {
-    if (finished.current) return;
-    finished.current = true;
-    onRenameEnd();
-    // Leaving the hostname it shows as it is isn't choosing it, so it can go on following it.
-    if (!save || !state || draft === null || draft.trim() === state.machine.name) return;
     setError(null);
-    request(state.machine.id, { command: "rename_machine", name: draft }).catch((reason) =>
+    setCursor(editingField === "awake" ? 2 : 0);
+  }, [editingField]);
+
+  const endEdit = (save: boolean, typed = draft) => {
+    if (finished.current || !editing) return;
+    finished.current = true;
+    onEditEnd();
+    if (!save || !state || typed === null) return;
+    const machineId = state.machine.id;
+    if (editing === "awake") {
+      const seconds = parseDuration(typed);
+      if (seconds === null) {
+        setError("Type a time such as 2h, 90m or 1h30m, up to 7 days");
+        return;
+      }
+      keepAwakeFor(seconds);
+      return;
+    }
+    // Leaving the hostname it shows as it is isn't choosing it, so it can go on following it.
+    if (typed.trim() === state.machine.name) return;
+    setError(null);
+    request(machineId, { command: "rename_machine", name: typed }).catch((reason) =>
       setError(errorText(reason)),
     );
   };
@@ -210,6 +246,17 @@ function General({
     }).catch((reason) => setError(errorText(reason)));
   };
 
+  const keepAwakeFor = (seconds: number | null) => {
+    if (!state || !online) return;
+    setError(null);
+    request(state.machine.id, { command: "keep_awake_for", seconds }).catch((reason) =>
+      setError(errorText(reason)),
+    );
+  };
+  const stopKeepingAwake = () => {
+    if (awakeTill !== null) keepAwakeFor(null);
+  };
+
   const rows: GeneralRow[] = state
     ? [
         {
@@ -217,7 +264,8 @@ function General({
           label: "Name",
           value: state.machine.name,
           action: "Rename",
-          run: onRename,
+          run: () => onEdit("name"),
+          field: "name",
         },
         {
           id: "keep_awake",
@@ -226,6 +274,14 @@ function General({
           action: "Switch",
           role: "switch",
           run: toggleKeepAwake,
+        },
+        {
+          id: "awake_for",
+          label: "Keep awake for a while",
+          value: awakeTill === null ? "Off" : `${timeLeft(awakeTill - now)} left`,
+          action: awakeTill === null ? "Set" : "Change",
+          run: () => onEdit("awake"),
+          field: "awake",
         },
       ]
     : [];
@@ -250,7 +306,12 @@ function General({
       if (online) {
         if (row) commands.push(["settings.edit", row.run]);
         // The palette shows these keys for this device, so they work wherever the row is.
-        commands.push(["device.rename", onRename], ["device.toggle_keep_awake", toggleKeepAwake]);
+        commands.push(
+          ["device.rename", () => onEdit("name")],
+          ["device.toggle_keep_awake", toggleKeepAwake],
+          ["device.keep_awake_for", () => onEdit("awake")],
+          ["device.stop_keep_awake", stopKeepingAwake],
+        );
       }
       commands.some(([id, run]) => act(event, id, run));
     };
@@ -261,26 +322,56 @@ function General({
   const footer = editing ? (
     <>
       <span className="settings-actions-what" />
-      <button className="button primary" onMouseDown={keepFocus} onClick={() => endRename(true)}>
+      <button className="button primary" onMouseDown={keepFocus} onClick={() => endEdit(true)}>
         Save
         <Keys action="sheet.submit" />
       </button>
-      <button className="button" onMouseDown={keepFocus} onClick={() => endRename(false)}>
+      <button className="button" onMouseDown={keepFocus} onClick={() => endEdit(false)}>
         Cancel
         <Keys action="sheet.cancel" />
       </button>
     </>
   ) : active && row ? (
-      <>
-        <span className="settings-actions-what" />
-        <button className="button" disabled={!online} onClick={row.run}>
-          {row.action}
-          <Keys action="settings.edit" />
+    <>
+      <span className="settings-actions-what" />
+      {row.id === "awake_for" && awakeTill !== null && (
+        <button className="button" disabled={!online} onClick={stopKeepingAwake}>
+          Stop
+          <Keys action="device.stop_keep_awake" />
         </button>
-      </>
-    ) : (
-      <GoInHint />
-    );
+      )}
+      <button className="button" disabled={!online} onClick={row.run}>
+        {row.action}
+        <Keys action="settings.edit" />
+      </button>
+    </>
+  ) : (
+    <GoInHint />
+  );
+
+  const input = (field: DeviceField) => (
+    <input
+      className={`settings-input ${field === "awake" ? "short" : ""}`}
+      autoFocus
+      value={draft ?? (field === "name" ? (state?.machine.name ?? "") : "")}
+      aria-label={field === "name" ? "Device name" : "How long to keep it awake"}
+      placeholder={field === "name" ? "hostname" : "2h, 90m, 1d"}
+      spellCheck={false}
+      autoCorrect="off"
+      autoCapitalize="off"
+      onFocus={(event) => event.target.select()}
+      onChange={(event) => setDraft(event.target.value)}
+      // Switching to another app blurs it too, and that isn't being done with it. A time
+      // only counts once it's confirmed, so wandering off doesn't keep a laptop awake.
+      onBlur={() => {
+        if (document.hasFocus()) endEdit(field === "name");
+      }}
+      onKeyDown={(event) => {
+        if (act(event, "sheet.submit", () => endEdit(true))) return;
+        if (act(event, "sheet.cancel", () => endEdit(false))) return;
+      }}
+    />
+  );
 
   return (
     <SettingsPage error={error} footer={footer}>
@@ -300,41 +391,36 @@ function General({
                 }}
               >
                 <span className="name">{r.label}</span>
-                {editing && r.id === "name" ? (
-                  <input
-                    className="settings-input"
-                    autoFocus
-                    value={draft ?? state?.machine.name ?? ""}
-                    aria-label="Device name"
-                    placeholder="hostname"
-                    spellCheck={false}
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    onFocus={(event) => event.target.select()}
-                    onChange={(event) => setDraft(event.target.value)}
-                    // Switching to another app blurs it too, and that isn't being done with it.
-                    onBlur={() => {
-                      if (document.hasFocus()) endRename(true);
-                    }}
-                    onKeyDown={(event) => {
-                      if (act(event, "sheet.submit", () => endRename(true))) return;
-                      if (act(event, "sheet.cancel", () => endRename(false))) return;
-                    }}
-                  />
+                {editing && r.field === editing ? (
+                  <>
+                    {editing === "awake" &&
+                      KEEP_AWAKE_SUGGESTIONS.map((suggestion) => (
+                        <button
+                          key={suggestion}
+                          className="picker"
+                          tabIndex={-1}
+                          onMouseDown={keepFocus}
+                          onClick={() => endEdit(true, suggestion)}
+                        >
+                          {suggestion}
+                        </button>
+                      ))}
+                    {input(editing)}
+                  </>
                 ) : (
-                <button
-                  className="picker"
-                  tabIndex={-1}
-                  disabled={!online}
-                  role={r.role}
-                  aria-checked={r.role ? r.value === "On" : undefined}
-                  aria-label={r.label}
-                  onMouseDown={keepFocus}
-                  onClick={r.run}
-                >
-                  {r.value}
-                  {current && online && <Keys action="settings.edit" />}
-                </button>
+                  <button
+                    className="picker"
+                    tabIndex={-1}
+                    disabled={!online}
+                    role={r.role}
+                    aria-checked={r.role ? r.value === "On" : undefined}
+                    aria-label={r.label}
+                    onMouseDown={keepFocus}
+                    onClick={r.run}
+                  >
+                    {r.value}
+                    {current && online && <Keys action="settings.edit" />}
+                  </button>
                 )}
               </Row>
             );

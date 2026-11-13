@@ -2,10 +2,20 @@ import type { KeyboardEvent } from "react";
 import type { Device, Workspace } from "./engine";
 import type { View } from "./navigation";
 import { act } from "./keybinds";
-import { ago, connectionProblem, deviceName, isOnline, STATE_LABEL, topicState } from "./model";
+import {
+  ago,
+  awakeUntil,
+  connectionProblem,
+  deviceName,
+  isOnline,
+  STATE_LABEL,
+  timeLeft,
+  topicState,
+} from "./model";
 import { Icon } from "./ui/Icon";
 import { MenuButton, type MenuGroups, RightClickMenu } from "./ui/Menu";
 import { Keys, StatusIcon } from "./ui/StatusIcon";
+import { useNow } from "./ui/useNow";
 
 interface Props {
   devices: Device[];
@@ -23,16 +33,22 @@ interface Props {
   onNewTopic: (device: Device, workspace: Workspace) => void;
 }
 
-function deviceMeta(device: Device): string | null {
+/** What a device row says beside the name, and whether it's something wrong. */
+function deviceMeta(device: Device, now: number): { text: string; alert?: boolean } | null {
   switch (device.connection.state) {
-    case "online":
-      return device.connection.stalled ? "Not responding" : null;
+    case "online": {
+      if (device.connection.stalled) return { text: "Not responding", alert: true };
+      const until = awakeUntil(device.state, now);
+      return until === null ? null : { text: `Awake, ${timeLeft(until - now)}` };
+    }
     case "connecting":
-      return "Connecting";
+      return { text: "Connecting" };
     case "incompatible":
-      return "Needs an update";
+      return { text: "Needs an update" };
     case "offline":
-      return device.last_seen_ms ? `Offline, ${ago(device.last_seen_ms)}` : "Offline";
+      return { text: device.last_seen_ms ? `Offline, ${ago(device.last_seen_ms)}` : "Offline" };
+    case "asleep":
+      return { text: device.last_seen_ms ? `Asleep, ${ago(device.last_seen_ms)}` : "Asleep" };
   }
 }
 
@@ -104,6 +120,7 @@ export function Sidebar({
   onAddWorkspace,
   onNewTopic,
 }: Props) {
+  const now = useNow(devices.some((device) => device.state?.awake_until_ms !== undefined));
   const menuAt = (target: Element): MenuGroups => {
     const { machine, topic } = target.closest<HTMLElement>(".row.topic")?.dataset ?? {};
     return machine && topic ? topicMenu(machine, topic) : [];
@@ -128,6 +145,7 @@ export function Sidebar({
           const machineId = device.state?.machine.id;
           const name = deviceName(device);
           const refusal = `${name} is offline, so nothing can be created there`;
+          const meta = deviceMeta(device, now);
           return (
             <section key={device.url}>
               <div
@@ -138,9 +156,7 @@ export function Sidebar({
               >
                 <span className={`dot ${online ? "" : "off"}`} />
                 <span className="name">{name}</span>
-                {deviceMeta(device) && (
-                  <span className={online ? "meta alert" : "meta"}>{deviceMeta(device)}</span>
-                )}
+                {meta && <span className={meta.alert ? "meta alert" : "meta"}>{meta.text}</span>}
                 <button
                   className="gear"
                   disabled={!online}

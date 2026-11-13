@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Clock,
   Copy,
   Ellipsis,
   GitFork,
@@ -26,8 +27,8 @@ const ICONS = {
   branch: { glyph: GitFork },
   copy: { glyph: Copy },
   diff: { glyph: GitCompare },
+  expires: { glyph: Clock },
   fold: { glyph: ChevronDown },
-  unfold: { glyph: ChevronRight },
   import: { glyph: History },
   lower: { glyph: Minus },
   more: { glyph: Ellipsis },
@@ -37,6 +38,7 @@ const ICONS = {
   settings: { glyph: Settings },
   stop: { glyph: Square, filled: true },
   terminal: { glyph: SquareTerminal },
+  unfold: { glyph: ChevronRight },
   viewed: { glyph: Check },
 } satisfies Record<string, { glyph: LucideIcon; filled?: boolean }>;
 

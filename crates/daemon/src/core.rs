@@ -14,15 +14,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use protocol::{
     AgentCommand, Approval, ApprovalId, ArchiveRisk, Command, CommandError, CommandOutput,
-    DaemonState, DeviceSettings, ErrorCode, Machine, MachineId, MoveTarget, PermissionMode,
-    PermissionOption, PermissionOutcome, PromptImage, Provider, ProviderCandidate, Session,
-    SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, StateChange, StopReason,
-    Terminal, TerminalColors, TerminalId, TerminalStatus, ToolCallPatch, Topic, TopicId, Workspace,
-    WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
+    DaemonState, DeviceSettings, ErrorCode, MAX_KEEP_AWAKE_SECS, Machine, MachineId, MoveTarget,
+    PermissionMode, PermissionOption, PermissionOutcome, PromptImage, Provider, ProviderCandidate,
+    Session, SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, StateChange,
+    StopReason, Terminal, TerminalColors, TerminalId, TerminalStatus, ToolCallPatch, Topic,
+    TopicId, Workspace, WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::agent_context::{AgentCli, AgentContext};
 use crate::agents::AgentLauncher;
 use crate::awake::{KeepAwake, KeepAwakeCommand};
 use crate::images::{self, Images};
@@ -41,6 +42,11 @@ mod import;
 mod mcp;
 mod remote;
 
+pub(crate) use remote::PAIRING_WAIT;
+
+/// The size of a terminal no client shows yet, such as one an agent opened. The first client
+/// to show it gives it its own.
+const UNSHOWN_TERMINAL_SIZE: (u16, u16) = (120, 40);
 /// How often image files nothing names are looked for, besides at startup.
 const COLLECT_IMAGES_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
@@ -145,6 +151,8 @@ pub struct Core {
     token_refresh: tokio::sync::Mutex<()>,
     /// What starts in a new terminal.
     shell: Shell,
+    /// The CLI agents get on their PATH, if there is one.
+    agent_cli: Option<AgentCli>,
     /// Tells apart the clients showing a terminal.
     next_subscriber: AtomicU64,
     /// What this daemon proves to remote clients, and what they dial.
@@ -154,7 +162,9 @@ pub struct Core {
     client_silence: Duration,
     /// Set once something needs remote clients: a pairing, or a client already paired.
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
-    pairing: Mutex<Option<remote::Pairing>>,
+    pairing: Mutex<remote::Pairings>,
+    /// Wakes [`Core::expire_keep_awake`] when the keep-awake timer changes.
+    awake_timer: tokio::sync::Notify,
 }
 
 /// What `Core::open` needs besides the data directory.
@@ -166,6 +176,7 @@ pub struct CoreOptions {
     pub port: u16,
     pub config_home: ConfigHome,
     pub shell: Shell,
+    pub agent_cli: Option<AgentCli>,
     pub network: Network,
     pub client_silence: Duration,
 }
@@ -180,6 +191,7 @@ impl Core {
             port,
             config_home,
             shell,
+            agent_cli,
             network,
             client_silence,
         } = options;
@@ -211,6 +223,8 @@ impl Core {
             diffs: diff::DiffWatch::new(),
         };
         inner.recover()?;
+        // A timer from before a restart keeps going, which nothing else would start.
+        inner.sync_awake();
         inner.sync_diff_watchers();
         Ok(Arc::new(Self {
             inner: Mutex::new(inner),
@@ -232,12 +246,14 @@ impl Core {
             logins: Mutex::new(HashMap::new()),
             token_refresh: tokio::sync::Mutex::new(()),
             shell,
+            agent_cli,
             next_subscriber: AtomicU64::new(1),
             remote_key,
             network,
             client_silence,
             endpoint: tokio::sync::OnceCell::new(),
-            pairing: Mutex::new(None),
+            pairing: Mutex::new(remote::Pairings::default()),
+            awake_timer: tokio::sync::Notify::new(),
         }))
     }
 
@@ -346,6 +362,7 @@ impl Core {
                 effort,
             } => self.set_provider_defaults(&agent, model, effort),
             Command::SetDeviceSettings { settings } => self.set_device_settings(settings),
+            Command::KeepAwakeFor { seconds } => self.keep_awake_for(seconds),
             Command::SetSessionSettings {
                 session_id,
                 mode,
@@ -419,6 +436,12 @@ impl Core {
                 self.diff_action(&diff_id, DiffAction::Commit { message, amend })
                     .await
             }
+            Command::ReadTerminal { terminal_id, lines } => {
+                self.read_terminal(&terminal_id, lines).await
+            }
+            Command::WriteTerminal { terminal_id, text } => {
+                self.write_terminal(&terminal_id, text.into_bytes())
+            }
             Command::SaveMcpServer {
                 id,
                 name,
@@ -454,6 +477,7 @@ impl Core {
                 after_seq,
             } => self.fork_session(&session_id, after_seq),
             Command::StartPairing => self.start_pairing().await,
+            Command::ConfirmPairing { digits } => self.confirm_pairing(&digits),
             Command::CancelPairing => Ok(self.cancel_pairing()),
             Command::RemovePairedClient { key } => self.remove_paired_client(&key),
             Command::Unknown => Err(invalid("this daemon doesn't know that command")),
@@ -587,6 +611,49 @@ impl Core {
             .map_err(internal)?;
         inner.emit(StateChange::DeviceSettingsChanged { settings });
         Ok(CommandOutput::Done)
+    }
+
+    fn keep_awake_for(&self, seconds: Option<u64>) -> Result<CommandOutput, CommandError> {
+        let until_ms = match seconds {
+            None => None,
+            Some(0) => return Err(invalid("keeping awake takes a time longer than nothing")),
+            Some(seconds) if seconds > MAX_KEEP_AWAKE_SECS => {
+                return Err(invalid("keeping awake takes at most a week"));
+            }
+            Some(seconds) => Some(now_ms() + seconds as i64 * 1000),
+        };
+        self.lock().set_awake_until(until_ms).map_err(internal)?;
+        self.awake_timer.notify_one();
+        Ok(CommandOutput::Done)
+    }
+
+    /// Ends the keep-awake timer once its time has passed, for as long as the daemon runs. It
+    /// reads the wall clock at least once a minute, because tokio's timers stand still while
+    /// the machine sleeps, as it does when a lid closes, and would end it late by that long.
+    pub async fn expire_keep_awake(self: Arc<Self>) {
+        const LOOK_EVERY: Duration = Duration::from_secs(60);
+        loop {
+            let wait = {
+                let mut inner = self.lock();
+                match inner.state.awake_until_ms {
+                    None => None,
+                    Some(until) => {
+                        let left = until - now_ms();
+                        if left <= 0 {
+                            if let Err(error) = inner.set_awake_until(None) {
+                                tracing::warn!("couldn't end keeping awake: {error:#}");
+                            }
+                            continue;
+                        }
+                        Some(Duration::from_millis(left as u64).min(LOOK_EVERY))
+                    }
+                }
+            };
+            tokio::select! {
+                () = tokio::time::sleep(wait.unwrap_or(LOOK_EVERY)), if wait.is_some() => {}
+                () = self.awake_timer.notified() => {}
+            }
+        }
     }
 
     fn rename_topic(
@@ -1147,6 +1214,7 @@ impl Core {
         let mcp_ids = topic_mcp.ids;
         let mcp_fingerprint = mcp::fingerprint(&inner.state, topic);
         let spawn = acp::AgentSpawn {
+            context: AgentContext::new(self.agent_cli.as_ref(), &session.id, &topic.id),
             run: proxy_secret.clone(),
             mcp: topic_mcp.servers,
             connectors: topic_mcp.connectors,
@@ -1664,26 +1732,73 @@ impl Core {
         colors: Option<TerminalColors>,
     ) -> Result<()> {
         let mut inner = self.lock();
-        if inner.state.terminal(id).is_none() {
-            anyhow::bail!("no terminal with ID {id}");
-        }
-        if !inner.terminals.contains_key(id) {
-            let folder = inner
-                .state
-                .topics()
-                .find(|topic| topic.terminals.iter().any(|t| &t.id == id))
-                .and_then(Topic::worktree)
-                .map(|worktree| PathBuf::from(&worktree.path))
-                .context("the terminal's topic has no folder")?;
-            let cwd = inner
-                .store
-                .terminal_cwd(id)?
-                .map_or_else(|| folder.clone(), PathBuf::from);
-            self.start_terminal(&mut inner, id, cwd, folder, (cols, rows))?;
-        }
+        self.ensure_terminal(&mut inner, id, (cols, rows))?;
         let live = inner.terminals.get(id).expect("started just above");
         live.handle.attach(subscriber, cols, rows, colors);
         Ok(())
+    }
+
+    /// Starts a terminal's shell where the last one was, unless it's running. A new thread
+    /// takes `size` until a client says otherwise.
+    fn ensure_terminal(
+        self: &Arc<Self>,
+        inner: &mut Inner,
+        id: &TerminalId,
+        size: (u16, u16),
+    ) -> Result<()> {
+        if inner.state.terminal(id).is_none() {
+            anyhow::bail!("no terminal with ID {id}");
+        }
+        if inner.terminals.contains_key(id) {
+            return Ok(());
+        }
+        let folder = inner
+            .state
+            .topics()
+            .find(|topic| topic.terminals.iter().any(|t| &t.id == id))
+            .and_then(Topic::worktree)
+            .map(|worktree| PathBuf::from(&worktree.path))
+            .context("the terminal's topic has no folder")?;
+        let cwd = inner
+            .store
+            .terminal_cwd(id)?
+            .map_or_else(|| folder.clone(), PathBuf::from);
+        self.start_terminal(inner, id, cwd, folder, size)
+    }
+
+    async fn read_terminal(
+        self: &Arc<Self>,
+        id: &TerminalId,
+        lines: Option<u32>,
+    ) -> Result<CommandOutput, CommandError> {
+        let read = {
+            let mut inner = self.lock();
+            if inner.state.terminal(id).is_none() {
+                return Err(not_found("terminal", id));
+            }
+            self.ensure_terminal(&mut inner, id, UNSHOWN_TERMINAL_SIZE)
+                .map_err(internal)?;
+            let live = inner.terminals.get(id).expect("started just above");
+            live.handle.read(lines)
+        };
+        let text = read.await.map_err(internal)?;
+        Ok(CommandOutput::TerminalText { text })
+    }
+
+    fn write_terminal(
+        self: &Arc<Self>,
+        id: &TerminalId,
+        data: Vec<u8>,
+    ) -> Result<CommandOutput, CommandError> {
+        let mut inner = self.lock();
+        if inner.state.terminal(id).is_none() {
+            return Err(not_found("terminal", id));
+        }
+        self.ensure_terminal(&mut inner, id, UNSHOWN_TERMINAL_SIZE)
+            .map_err(internal)?;
+        let live = inner.terminals.get(id).expect("started just above");
+        live.handle.input(data);
+        Ok(CommandOutput::Done)
     }
 
     pub fn detach_terminal(&self, id: &TerminalId, subscriber: u64) {
@@ -2093,6 +2208,15 @@ impl Inner {
         self.set_draft(session_id, String::new(), vec![])
     }
 
+    fn set_awake_until(&mut self, until_ms: Option<i64>) -> Result<()> {
+        if self.state.awake_until_ms == until_ms {
+            return Ok(());
+        }
+        self.store.set_awake_until(until_ms)?;
+        self.emit(StateChange::AwakeUntilChanged { until_ms });
+        Ok(())
+    }
+
     fn emit(&mut self, change: StateChange) {
         self.state.apply(&change);
         let _ = self.signals.send(Signal::State(Arc::new(change)));
@@ -2100,9 +2224,10 @@ impl Inner {
         self.sync_diff_watchers();
     }
 
-    /// Every status, setting, and removed tab arrives through `emit`, so checking here keeps
-    /// the machine awake exactly while some agent is starting or working. Waiting for an
-    /// answer doesn't count: nothing moves until someone is back anyway.
+    /// Every status, setting, timer and removed tab arrives through `emit`, so checking here
+    /// keeps the machine awake exactly while some agent is starting or working, or someone
+    /// asked for it. Waiting for an answer doesn't count: nothing moves until someone is back
+    /// anyway.
     fn sync_awake(&mut self) {
         let busy = self.state.sessions().any(|session| {
             matches!(
@@ -2110,7 +2235,12 @@ impl Inner {
                 SessionStatus::Starting | SessionStatus::Working
             )
         });
-        self.awake.set(busy && self.state.settings.keep_awake);
+        let asked = self
+            .state
+            .awake_until_ms
+            .is_some_and(|until| now_ms() < until);
+        self.awake
+            .set(busy && self.state.settings.keep_awake || asked);
     }
 
     fn append(&mut self, id: &SessionId, kind: SessionEventKind) {
@@ -2298,7 +2428,9 @@ mod tests {
             shell: Shell {
                 program: "/bin/sh".into(),
                 args: vec![],
+                launcher: None,
             },
+            agent_cli: None,
             config_home: ConfigHome {
                 home: None,
                 codex_home: None,
@@ -2583,7 +2715,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pairing_code_works_once_and_wrong_secrets_use_it_up() {
+    async fn pairing_takes_the_secret_and_then_the_digits_the_client_shows() {
         let dir = tempfile::tempdir().unwrap();
         let core = Core::open(dir.path(), options("host", None)).unwrap();
         let start = || async {
@@ -2597,39 +2729,128 @@ mod tests {
             secret: secret.to_owned(),
             name: "  Laptop  ".to_owned(),
         };
-        let paired = |response: protocol::PairResponse| {
-            matches!(response, protocol::PairResponse::Paired { .. })
+        let refused = |result: Result<remote::PairingWait, protocol::PairResponse>| {
+            matches!(result, Err(protocol::PairResponse::Refused { .. }))
         };
-        let laptop = iroh::SecretKey::generate().public();
-        let phone = iroh::SecretKey::generate().public();
+        let waiting = || core.snapshot_and_subscribe().0.pairing_requests;
+        let confirm = |digits: &str| {
+            core.handle(Command::ConfirmPairing {
+                digits: digits.to_owned(),
+            })
+        };
+        let key = || iroh::SecretKey::generate().public();
+        let laptop = key();
+        let stranger = key();
+        let phone = key();
 
         let code = start().await;
         assert_eq!(code.daemon_key, core.remote_id().to_string());
         assert!(core.remote_addr().is_some(), "pairing starts listening");
-        assert!(!core.is_paired(&laptop));
-        assert!(paired(core.pair(&laptop, &request(&code.secret))));
+        let laptop_wait = core
+            .request_pairing(&laptop, &request(&code.secret))
+            .unwrap();
+        assert!(!core.is_paired(&laptop), "the secret alone isn't enough");
+        let stranger_wait = core
+            .request_pairing(&stranger, &request(&code.secret))
+            .unwrap();
+        assert_eq!(laptop_wait.digits.len(), 6);
+        assert_ne!(laptop_wait.digits, stranger_wait.digits);
+        let names: Vec<_> = waiting().into_iter().map(|r| r.name).collect();
+        assert_eq!(names, ["Laptop", "Laptop"]);
+        assert!(confirm("no digits").await.is_err());
+        assert!(waiting().len() == 2, "a wrong try changes nothing");
+
+        let (first, second) = laptop_wait.digits.split_at(3);
+        let Ok(CommandOutput::Paired { client }) = confirm(&format!("{first} {second}")).await
+        else {
+            panic!("the digits didn't pair it");
+        };
+        assert_eq!(client.name, "Laptop");
         assert!(core.is_paired(&laptop));
-        let clients = core.snapshot_and_subscribe().0.paired_clients;
-        assert_eq!(clients.len(), 1);
-        assert_eq!(clients[0].name, "Laptop");
         assert!(
-            !paired(core.pair(&phone, &request(&code.secret))),
-            "a code works once"
+            !core.is_paired(&stranger),
+            "someone else with the code stays out"
+        );
+        assert!(matches!(
+            laptop_wait.answer.await,
+            Ok(protocol::PairResponse::Paired { .. })
+        ));
+        assert!(matches!(
+            stranger_wait.answer.await,
+            Ok(protocol::PairResponse::Refused { .. })
+        ));
+        assert!(waiting().is_empty());
+        assert_eq!(core.snapshot_and_subscribe().0.paired_clients, vec![client]);
+        assert!(
+            refused(core.request_pairing(&phone, &request(&code.secret))),
+            "pairing uses up the code"
         );
 
         let code = start().await;
         for _ in 0..5 {
-            assert!(!paired(core.pair(&phone, &request("wrong"))));
+            assert!(refused(core.request_pairing(&phone, &request("wrong"))));
         }
         assert!(
-            !paired(core.pair(&phone, &request(&code.secret))),
+            refused(core.request_pairing(&phone, &request(&code.secret))),
             "too many wrong secrets use the code up"
         );
 
         let code = start().await;
+        let first = core
+            .request_pairing(&phone, &request(&code.secret))
+            .unwrap();
+        let again = core
+            .request_pairing(&phone, &request(&code.secret))
+            .unwrap();
+        assert!(
+            matches!(
+                first.answer.await,
+                Ok(protocol::PairResponse::Refused { .. })
+            ),
+            "asking again takes the place of the last try"
+        );
+        assert_eq!(waiting().len(), 1);
+        let others: Vec<_> = (0..2)
+            .map(|_| {
+                core.request_pairing(&key(), &request(&code.secret))
+                    .unwrap()
+            })
+            .collect();
+        assert!(
+            refused(core.request_pairing(&key(), &request(&code.secret))),
+            "only a few wait at once"
+        );
+        core.stop_waiting(again.id);
+        assert_eq!(waiting().len(), 2);
+
+        let replaced = code;
+        let code = start().await;
+        let _phone_wait = core
+            .request_pairing(&phone, &request(&replaced.secret))
+            .expect("a replaced code keeps working for its grace");
+        assert_eq!(waiting().len(), 3, "a new code keeps the clients waiting");
+
         core.handle(Command::CancelPairing).await.unwrap();
         assert!(!core.pairing_open());
-        assert!(!paired(core.pair(&phone, &request(&code.secret))));
+        assert!(waiting().is_empty());
+        for other in others {
+            assert!(matches!(
+                other.answer.await,
+                Ok(protocol::PairResponse::Refused { .. })
+            ));
+        }
+        assert!(refused(
+            core.request_pairing(&phone, &request(&code.secret))
+        ));
+
+        let code = start().await;
+        for open in core.pairing_lock().codes.iter_mut() {
+            open.expires_at_ms = now_ms() - 10_001;
+        }
+        assert!(!core.pairing_open(), "the grace runs out");
+        assert!(refused(
+            core.request_pairing(&phone, &request(&code.secret))
+        ));
 
         let key = laptop.to_string();
         let remove = || Command::RemovePairedClient { key: key.clone() };
@@ -2727,6 +2948,64 @@ mod tests {
         );
 
         set_status(&core, SessionStatus::Done);
+        assert!(!awake(&core));
+    }
+
+    #[tokio::test]
+    async fn keeping_awake_for_a_while_holds_without_agents_and_ends_by_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let stand_in = KeepAwakeCommand {
+            program: "sleep".into(),
+            args: vec!["60".into()],
+        };
+        let open = || Core::open(dir.path(), options("m", Some(stand_in.clone()))).unwrap();
+        let core = open();
+        let awake = |core: &Core| core.lock().awake.is_on();
+        let until = |core: &Core| core.snapshot_and_subscribe().0.awake_until_ms;
+        let keep_awake_for = |seconds| Command::KeepAwakeFor { seconds };
+
+        core.handle(Command::SetDeviceSettings {
+            settings: DeviceSettings { keep_awake: false },
+        })
+        .await
+        .unwrap();
+        let before = now_ms();
+        core.handle(keep_awake_for(Some(3600))).await.unwrap();
+        assert!(awake(&core), "it holds with no agent and the setting off");
+        let asked = until(&core).unwrap();
+        assert!((before + 3_600_000..=now_ms() + 3_600_000).contains(&asked));
+
+        // The rest of the time outlives a restart.
+        drop(core);
+        let core = open();
+        assert_eq!(until(&core), Some(asked));
+        assert!(awake(&core));
+
+        core.handle(keep_awake_for(None)).await.unwrap();
+        assert_eq!(until(&core), None);
+        assert!(!awake(&core), "stopping early lets it sleep");
+
+        for refused in [0, MAX_KEEP_AWAKE_SECS + 1] {
+            let error = core
+                .handle(keep_awake_for(Some(refused)))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidInput);
+        }
+        assert_eq!(until(&core), None);
+
+        // A time that has passed ends, as it would after a lid was closed past it.
+        core.lock().set_awake_until(Some(now_ms() - 1)).unwrap();
+        let mut changes = core.snapshot_and_subscribe().1;
+        tokio::spawn(core.clone().expire_keep_awake());
+        let ended = tokio::time::timeout(Duration::from_secs(5), changes.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ended,
+            Signal::State(change) if *change == StateChange::AwakeUntilChanged { until_ms: None }
+        ));
         assert!(!awake(&core));
     }
 

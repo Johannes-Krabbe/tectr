@@ -55,6 +55,7 @@ export function deviceName(device: Device): string {
 export function connectionProblem(device: Device): string | undefined {
   const { connection } = device;
   if (connection.state === "offline") return connection.reason;
+  if (connection.state === "asleep") return "It's asleep, and shows up again once it wakes";
   if (connection.state === "incompatible") {
     return `The daemon speaks protocol ${connection.daemon_min} to ${connection.daemon_max}, which this app doesn't`;
   }
@@ -80,12 +81,57 @@ export function deviceNotice(device: Device, waiting: boolean): DeviceNotice | n
       return { text: `Connecting to ${name}`, reconnect: false };
     case "offline":
       return { text: `${name} is offline`, detail, reconnect: true };
+    case "asleep":
+      return { text: `${name} is asleep`, detail, reconnect: true };
     case "incompatible":
       return { text: `${name} needs an update`, detail, reconnect: true };
     case "online":
       if (device.connection.stalled) return { text: `${name} isn't responding`, reconnect: false };
       return waiting ? { text: `Waiting for ${name}`, reconnect: false } : null;
   }
+}
+
+/** What the keep-awake box offers before anything is typed. */
+export const KEEP_AWAKE_SUGGESTIONS = ["1h", "2h", "4h", "8h"];
+
+/** The daemon's limit, so a typo is caught before it's sent. */
+const MAX_KEEP_AWAKE_SECS = 7 * 24 * 60 * 60;
+
+const UNIT_SECS: Record<string, number> = { d: 86_400, h: 3_600, m: 60 };
+
+/** Seconds in a duration like "2h", "90m", "1h30m", "1.5h" or "1d", or a bare number of
+ * hours, since that's what the suggestions are in. Null for anything else, nothing, or more
+ * than the daemon takes. */
+export function parseDuration(text: string): number | null {
+  const typed = text.trim().toLowerCase().replace(/\s+/g, "");
+  if (/^\d+(\.\d+)?$/.test(typed)) return withinLimit(Number(typed) * 3_600);
+  if (!/^(\d+(\.\d+)?[dhm])+$/.test(typed)) return null;
+  let seconds = 0;
+  for (const [, amount, unit] of typed.matchAll(/(\d+(?:\.\d+)?)([dhm])/g)) {
+    seconds += Number(amount) * UNIT_SECS[unit];
+  }
+  return withinLimit(seconds);
+}
+
+function withinLimit(seconds: number): number | null {
+  const whole = Math.round(seconds);
+  return whole > 0 && whole <= MAX_KEEP_AWAKE_SECS ? whole : null;
+}
+
+/** Until when the device stays awake because someone asked, or null when it doesn't. */
+export function awakeUntil(state: DaemonState | null, now: number): number | null {
+  const until = state?.awake_until_ms;
+  return until !== undefined && until > now ? until : null;
+}
+
+/** "1h 40m" for what's left, rounded up so it never says nothing while time is left. */
+export function timeLeft(ms: number): string {
+  const minutes = Math.max(Math.ceil(ms / 60_000), 1);
+  const days = Math.floor(minutes / 1_440);
+  const hours = Math.floor((minutes % 1_440) / 60);
+  const rest = minutes % 60;
+  const parts = [days && `${days}d`, hours && `${hours}h`, rest && `${rest}m`];
+  return parts.filter(Boolean).join(" ");
 }
 
 /** On unless someone turned it off, because the daemon leaves defaults out. */

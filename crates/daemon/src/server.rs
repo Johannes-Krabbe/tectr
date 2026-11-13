@@ -278,11 +278,16 @@ impl Connection {
             Incoming::Frame(data) => self.frame(&data),
             Incoming::Message(ClientMessage::Request { id, command })
                 if self.peer != Peer::Loopback
-                    && matches!(command, Command::StartPairing | Command::CancelPairing) =>
+                    && matches!(
+                        command,
+                        Command::StartPairing
+                            | Command::ConfirmPairing { .. }
+                            | Command::CancelPairing
+                    ) =>
             {
                 let refusal = CommandError {
                     code: ErrorCode::InvalidInput,
-                    message: "pairing only starts on the device itself".to_owned(),
+                    message: "pairing only happens on the device itself".to_owned(),
                 };
                 self.send_response(id, Err(refusal)).await?;
             }
@@ -447,7 +452,7 @@ impl Connection {
         send(&mut self.socket, &ServerMessage::Response { id, result }).await
     }
 
-    /// Sends everything stored after the last event sent, a page at a time.
+    /// Sends everything stored after the last event sent, a page at a time, then says it has.
     async fn catch_up(&mut self, session_id: &SessionId) -> Result<()> {
         let Some(mut last_sent) = self.subscriptions.get(session_id).copied() else {
             return Ok(());
@@ -457,7 +462,11 @@ impl Connection {
                 .core
                 .events_after(session_id, last_sent, REPLAY_PAGE_SIZE)?;
             if page.is_empty() {
-                return Ok(());
+                let replayed = ServerMessage::SessionReplayed {
+                    session_id: session_id.clone(),
+                    seq: last_sent,
+                };
+                return send(&mut self.socket, &replayed).await;
             }
             for event in page {
                 last_sent = event.seq;

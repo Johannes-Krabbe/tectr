@@ -5,13 +5,27 @@ import UIKit
 @testable import TectrDesign
 
 @Suite struct TectrDesignTests {
-    @Test func colorsFollowTheAppearance() {
-        let color = UIColor(Color(light: 0x112233ff, dark: 0x44556680))
-        let light = color.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
-        let dark = color.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
+    @Test func hexColorsRead() {
+        #expect(channels(of: UIColor(Color(hex: "#112233")!)) == [0x11, 0x22, 0x33, 0xff])
+        #expect(channels(of: UIColor(Color(hex: "#44556680")!)) == [0x44, 0x55, 0x66, 0x80])
+        #expect(Color(hex: "112233") == nil)
+        #expect(Color(hex: "#12345") == nil)
+    }
 
-        #expect(channels(of: light) == [0x11, 0x22, 0x33, 0xff])
-        #expect(channels(of: dark) == [0x44, 0x55, 0x66, 0x80])
+    @Test func aThemeNeedsEveryColor() {
+        var colors = Dictionary(uniqueKeysWithValues: ColorRole.allCases.map { ("\($0)", "#000000") })
+        #expect(Palette(colors: colors) == nil, "keys are token names, not Swift names")
+
+        colors = ["surface.base": "#09080c"]
+        #expect(Theme(id: "partial", name: "Partial", scheme: .dark, colors: colors) == nil)
+    }
+
+    @Test func colorsComeFromTheThemeInEffect() {
+        var environment = EnvironmentValues()
+        environment.palette = .tectrLight
+        #expect(ThemeColor.surfaceBase.resolve(in: environment) == Palette.tectrLight.surfaceBase)
+        environment.palette = .tectrDark
+        #expect(ThemeColor.surfaceBase.resolve(in: environment) == Palette.tectrDark.surfaceBase)
     }
 
     @Test func codeFontLoads() {

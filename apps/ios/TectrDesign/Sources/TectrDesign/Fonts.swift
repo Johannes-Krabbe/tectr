@@ -10,9 +10,18 @@ private let fontsRegistered: Void = {
     }
 }()
 
-extension Font {
+public extension Font {
+    /// Geist Mono, scaling with the text style like the code roles do.
     static func code(size: CGFloat, relativeTo style: Font.TextStyle) -> Font {
         _ = fontsRegistered
         return .custom(Tokens.codeFontName, size: size, relativeTo: style)
+    }
+}
+
+public extension UIFont {
+    /// Geist Mono at a fixed size, for views drawn by UIKit such as the terminal.
+    static func code(size: CGFloat) -> UIFont {
+        _ = fontsRegistered
+        return UIFont(name: Tokens.codeFontName, size: size) ?? .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 }

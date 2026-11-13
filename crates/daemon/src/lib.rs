@@ -4,6 +4,7 @@
 //! event schema.
 
 mod acp;
+mod agent_context;
 mod agents;
 mod awake;
 mod core;
@@ -34,7 +35,7 @@ pub use mcp::ConfigHome;
 use protocol::MachineId;
 use protocol::liveness::Liveness;
 pub use remote::Network;
-pub use terminal::Shell;
+pub use terminal::{LAUNCH_SHELL, Shell, launch_shell};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -59,6 +60,9 @@ pub struct Config {
     pub mcp_home: ConfigHome,
     /// What starts in a new terminal.
     pub shell: Shell,
+    /// The CLI for this daemon, which agents get on their PATH under the channel's name.
+    /// Without it they're told only which session and topic they are.
+    pub cli: Option<PathBuf>,
     pub network: Network,
     /// How long a client may send nothing before its connection ends. Clients ping more
     /// often than this, so one that's this quiet has gone, or gave up on this daemon while
@@ -76,6 +80,7 @@ impl Config {
             keep_awake: KeepAwakeCommand::system(),
             mcp_home: ConfigHome::from_env(),
             shell: Shell::login(),
+            cli: None,
             network: Network::default(),
             client_silence: Liveness::default().daemon_limit(),
         }
@@ -112,6 +117,12 @@ impl Daemon {
             tracing::error!("{error:#}");
         }
 
+        // Agents can do without it, so a failure only means they aren't told about it.
+        let agent_cli = config.cli.as_deref().and_then(|cli| {
+            agent_context::AgentCli::install(&config.data_dir, cli)
+                .inspect_err(|error| tracing::warn!("agents won't get the CLI: {error:#}"))
+                .ok()
+        });
         let core = Core::open(
             &config.data_dir,
             CoreOptions {
@@ -122,6 +133,7 @@ impl Daemon {
                 port: addr.port(),
                 config_home: config.mcp_home,
                 shell: config.shell,
+                agent_cli,
                 network: config.network,
                 client_silence: config.client_silence,
             },
@@ -137,6 +149,7 @@ impl Daemon {
         tokio::spawn(core.clone().refresh_branches(None));
         tokio::spawn(core.clone().collect_images());
         tokio::spawn(core.clone().refresh_diffs());
+        tokio::spawn(core.clone().expire_keep_awake());
         let (shutdown, shutdown_rx) = watch::channel(false);
         let accept_task = tokio::spawn(server::accept_loop(core.clone(), listener, shutdown_rx));
 

@@ -78,8 +78,9 @@ Topics can be named by their exact name or an ID prefix. Single-quote `${VAR}` v
 To reach a daemon on another machine, pair with it. No VPN or port forwarding is needed: connections go over [iroh](https://iroh.computer), directly when the network allows and otherwise through n0's public relays, end-to-end encrypted either way.
 
 ```sh
-tectr pair                             # on the machine to reach: prints a code that works once, for 5 minutes
-tectr add-device <code>                # on the machine that wants in
+tectr pair                             # on the machine to reach: prints a code that works for 5 minutes,
+                                       # then asks for the digits the other machine shows
+tectr add-device <code>                # on the machine that wants in: shows the digits to type there
 tectr unpair <client> [--on <device>]  # take a machine off a device's allowed list
 tectr remove-device <device>           # stop reaching a paired device
 ```

@@ -28,8 +28,19 @@ struct Args {
     shell_env: bool,
 }
 
+fn main() -> Result<()> {
+    // A terminal's shell starts through this binary, before anything else runs here.
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|arg| arg == daemon::LAUNCH_SHELL) {
+        let error = daemon::launch_shell(args);
+        eprintln!("tectr couldn't start the shell: {error:#}");
+        std::process::exit(1);
+    }
+    run()
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         // launchd writes this to a log file, where color codes are noise.
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
@@ -51,6 +62,7 @@ async fn main() -> Result<()> {
     };
 
     let mut config = Config::new(data_dir, args.port);
+    config.cli = cli_beside_daemon();
     for agent in &args.agents {
         let (name, launcher) = parse_agent(agent)?;
         config.agents.insert(name, launcher);
@@ -67,6 +79,21 @@ async fn main() -> Result<()> {
     tracing::info!("shutting down");
     daemon.shutdown().await;
     Ok(())
+}
+
+/// The CLI built or installed with this daemon, so it's the same channel and version. Releases
+/// ship the two together, and `mise run daemon` builds both.
+fn cli_beside_daemon() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let cli = exe.with_file_name("tectr");
+    if cli.is_file() {
+        return Some(cli);
+    }
+    tracing::warn!(
+        "agents won't get the CLI: there's none at {}",
+        cli.display()
+    );
+    None
 }
 
 /// Ctrl-C in a terminal, or SIGTERM from launchd when the service stops or is upgraded.

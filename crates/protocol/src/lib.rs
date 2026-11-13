@@ -13,7 +13,7 @@
 //!    [`ServerMessage::StateChanged`] for every later change.
 //! 4. The client sends [`ClientMessage::Subscribe`] for each session it wants
 //!    to follow, and receives every [`SessionEvent`] after the given sequence
-//!    number, followed by live events.
+//!    number, then [`ServerMessage::SessionReplayed`], then live events.
 //! 5. The client sends [`ClientMessage::AttachTerminal`] for each terminal it shows. What
 //!    the terminal prints and what's typed into it travel as binary [`frame`]s.
 //!
@@ -64,6 +64,15 @@ impl Channel {
         }
     }
 
+    /// What agents call the CLI. Dev has its own name, so a release `tectr` earlier on an
+    /// agent's PATH can't send it to the wrong daemon.
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::Release => "tectr",
+            Self::Dev => "tectr-dev",
+        }
+    }
+
     /// The folder name for this channel's data and settings, such as
     /// `~/Library/Application Support/<dir_name>`.
     pub fn dir_name(self) -> &'static str {
@@ -81,9 +90,14 @@ pub fn local_daemon_url() -> String {
 
 /// Over iroh, a paired client speaks this protocol on one bidirectional stream.
 pub const REMOTE_ALPN: &[u8] = b"tectr/1";
-/// Over iroh, a client that isn't paired yet speaks this to become paired: one
-/// [`PairRequest`] line, answered by one [`PairResponse`] line.
-pub const PAIRING_ALPN: &[u8] = b"tectr-pair/1";
+/// Over iroh, a client that isn't paired yet speaks this to become paired: it sends one
+/// [`PairRequest`] and finishes, and the daemon answers with [`PairResponse`] lines, a
+/// [`PairResponse::Confirm`] and then the outcome, or only a refusal.
+pub const PAIRING_ALPN: &[u8] = b"tectr-pair/2";
+/// The QUIC close code of a daemon that refuses a remote client because its machine is only
+/// briefly awake, as a sleeping Mac is every so often. It would be gone again in seconds, so
+/// showing it as online would only flicker.
+pub const CLOSE_ASLEEP: u32 = 2;
 const REMOTE_SCHEME: &str = "iroh://";
 
 /// The address of a daemon on another machine, reached over iroh by its public key.
@@ -98,7 +112,8 @@ pub fn remote_daemon_key(url: &str) -> Option<&str> {
 }
 
 /// What a daemon shows to pair a new client: its public key, which is also where to
-/// reach it, and a secret that only works once and only for a few minutes.
+/// reach it, and a secret that only works for a few minutes. The secret only lets a client
+/// ask: someone at the daemon still types the digits that client shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingCode {
     pub daemon_key: String,
@@ -138,6 +153,13 @@ pub struct PairRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum PairResponse {
+    /// The secret was right, and the client waits for someone at the daemon to type
+    /// `digits`, which it shows. They're picked for this client, so seeing the code isn't
+    /// enough to get in.
+    Confirm {
+        digits: String,
+        machine: Machine,
+    },
     /// The client's key is on the allowed list now, so it can connect over [`REMOTE_ALPN`].
     Paired {
         machine: Machine,
@@ -156,6 +178,14 @@ pub struct PairedClient {
     pub key: String,
     pub name: String,
     pub paired_at_ms: i64,
+}
+
+/// A client that brought the secret of an open code and waits for its digits to be typed.
+/// The digits stay out of the state, so only the client's own screen shows them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingRequest {
+    pub key: String,
+    pub name: String,
 }
 
 /// Picks the highest version both sides support, if there is one.
@@ -283,6 +313,15 @@ pub enum ServerMessage {
     },
     SessionEvent {
         event: SessionEvent,
+    },
+    /// Every stored event a [`ClientMessage::Subscribe`] asked for has been sent, so what
+    /// follows is live. A client can show a session's history in one piece once this comes,
+    /// rather than guess from how events arrive.
+    SessionReplayed {
+        session_id: SessionId,
+        /// The last event sent, or the `after_seq` asked for when there was nothing to send.
+        /// A client that has fewer events is hearing about an earlier subscription.
+        seq: u64,
     },
     Response {
         id: u64,
@@ -418,6 +457,12 @@ pub enum Command {
     SetDeviceSettings {
         settings: DeviceSettings,
     },
+    /// Keep the machine from idle sleep for this many seconds from now, whatever its agents
+    /// do, so it stays reachable. It's a duration and not a time, so the client's clock
+    /// doesn't matter. `None` stops early. At most [`MAX_KEEP_AWAKE_SECS`].
+    KeepAwakeFor {
+        seconds: Option<u64>,
+    },
     /// Change what a session runs with. A running agent changes straight away, even during
     /// a turn, and the session only reports the change once the agent has made it. A stopped
     /// agent gets these when it next starts. They're sent together because the efforts on
@@ -504,6 +549,19 @@ pub enum Command {
     ReadDiff {
         diff_id: DiffId,
     },
+    /// What a terminal shows as plain text, its last `lines` lines with wrapped lines joined.
+    /// Without `lines`, as many as it has rows. A terminal that isn't running starts its shell.
+    ReadTerminal {
+        terminal_id: TerminalId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lines: Option<u32>,
+    },
+    /// Type into a terminal, for clients that don't show it. A terminal that isn't running
+    /// starts its shell first.
+    WriteTerminal {
+        terminal_id: TerminalId,
+        text: String,
+    },
     /// Stop the agent and remove its tab. Fails with [`ErrorCode::Busy`] while the agent
     /// is starting, working or waiting, unless `force` says the person has confirmed.
     CloseSession {
@@ -579,11 +637,20 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_seq: Option<u64>,
     },
-    /// Show a code that pairs one more client from another machine, answered with
+    /// Show a code that lets a client from another machine ask to pair, answered with
     /// [`CommandOutput::Pairing`]. Only a client on the daemon's own machine can ask, so
-    /// letting a new machine in needs someone at this one. A new code replaces the last.
+    /// letting a new machine in needs someone at this one. A new code replaces the last,
+    /// which keeps working for a short grace, like every code past its `expires_at_ms`.
+    /// Clients already waiting keep waiting.
     StartPairing,
-    /// Stop a code from [`Command::StartPairing`] from working before it expires.
+    /// Pair the waiting client that shows `digits`, answered with [`CommandOutput::Paired`].
+    /// The others are refused and the code stops working. Only from the daemon's own
+    /// machine, like [`Command::StartPairing`].
+    ConfirmPairing {
+        digits: String,
+    },
+    /// Stop a code from [`Command::StartPairing`] from working, and refuse every client
+    /// waiting on one.
     CancelPairing,
     /// Take a client off the allowed list. If it's connected, it's disconnected.
     RemovePairedClient {
@@ -617,6 +684,9 @@ pub enum CommandOutput {
     },
     DiffContent {
         content: DiffContent,
+    },
+    TerminalText {
+        text: String,
     },
     ProviderCandidates {
         candidates: Vec<ProviderCandidate>,
@@ -672,6 +742,9 @@ pub enum CommandOutput {
         /// The [`PairingCode`] as text.
         code: String,
         expires_at_ms: i64,
+    },
+    Paired {
+        client: PairedClient,
     },
     Done,
     #[serde(other)]
@@ -790,6 +863,10 @@ impl DeviceSettings {
     }
 }
 
+/// The longest [`Command::KeepAwakeFor`] takes. A week covers any trip, and anything longer
+/// is more likely a typo than a plan.
+pub const MAX_KEEP_AWAKE_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// Everything a daemon knows that clients show, so that every client sees the same. What
 /// each client is looking at is its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -803,6 +880,11 @@ pub struct DaemonState {
     pub providers: Vec<Provider>,
     #[serde(default, skip_serializing_if = "DeviceSettings::is_default")]
     pub settings: DeviceSettings,
+    /// Until when the machine stays awake because someone asked with
+    /// [`Command::KeepAwakeFor`], in milliseconds since the Unix epoch on the daemon's clock.
+    /// The daemon clears it once it has passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awake_until_ms: Option<i64>,
     /// What's typed for each session but not sent yet.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drafts: BTreeMap<SessionId, String>,
@@ -820,6 +902,9 @@ pub struct DaemonState {
     /// The clients on other machines that may connect, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paired_clients: Vec<PairedClient>,
+    /// Clients waiting for their digits to be typed, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pairing_requests: Vec<PairingRequest>,
 }
 
 impl DaemonState {
@@ -893,6 +978,9 @@ impl DaemonState {
             }
             StateChange::DeviceSettingsChanged { settings } => {
                 self.settings = settings.clone();
+            }
+            StateChange::AwakeUntilChanged { until_ms } => {
+                self.awake_until_ms = *until_ms;
             }
             StateChange::TerminalAdded { topic_id, terminal } => {
                 if let Some(topic) = self.topic_mut(topic_id) {
@@ -981,6 +1069,9 @@ impl DaemonState {
             }
             StateChange::PairedClientRemoved { key } => {
                 self.paired_clients.retain(|c| &c.key != key);
+            }
+            StateChange::PairingRequestsChanged { requests } => {
+                self.pairing_requests = requests.clone();
             }
             StateChange::Unknown => {}
         }
@@ -1557,6 +1648,9 @@ pub enum StateChange {
     DeviceSettingsChanged {
         settings: DeviceSettings,
     },
+    AwakeUntilChanged {
+        until_ms: Option<i64>,
+    },
     TerminalAdded {
         topic_id: TopicId,
         terminal: Terminal,
@@ -1614,6 +1708,10 @@ pub enum StateChange {
     /// The daemon has also closed its connections.
     PairedClientRemoved {
         key: String,
+    },
+    /// Replaces the clients waiting for their digits to be typed.
+    PairingRequestsChanged {
+        requests: Vec<PairingRequest>,
     },
     #[serde(other)]
     Unknown,
@@ -1928,6 +2026,7 @@ mod tests {
             draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
+            awake_until_ms: None,
             mcp_servers: vec![
                 server("on", None, true),
                 server("off", None, false),
@@ -1936,6 +2035,7 @@ mod tests {
                 server("theirs", Some("other"), true),
             ],
             paired_clients: vec![],
+            pairing_requests: vec![],
         };
         let names = |topic: &Topic| -> Vec<String> {
             state
@@ -1965,8 +2065,10 @@ mod tests {
             draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
+            awake_until_ms: None,
             mcp_servers: vec![],
             paired_clients: vec![],
+            pairing_requests: vec![],
         };
         let change = StateChange::WorkspaceAdded {
             workspace: Workspace {
@@ -2057,8 +2159,10 @@ mod tests {
             draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
+            awake_until_ms: None,
             mcp_servers: vec![],
             paired_clients: vec![],
+            pairing_requests: vec![],
         };
         let usage = vec![AgentCommand {
             name: "usage".into(),

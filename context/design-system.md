@@ -9,7 +9,7 @@ Statuses match `architecture.md`:
 - **Settled**: explicitly agreed.
 - **Proposed**: recommended and not yet explicitly confirmed. Change it freely.
 
-The desktop and phone layouts aren't settled, so nothing here decides a layout.
+The desktop layout isn't settled. The iOS layout is under iOS layout below.
 
 ## Approach
 
@@ -33,7 +33,7 @@ Share the design decisions, not the components. No UI library renders native Swi
 | Tokens use a small dependency-free script, not Style Dictionary | Proposed | About 70 tokens, and light/dark outputs would need custom formats anyway. Revisit if outputs multiply |
 | Generated token files are committed, with a check for drift | Proposed | iOS builds then don't need Node, which also avoids the Xcode and mise pitfall in `architecture.md`. UniFFI bindings stay out of git as planned |
 | Desktop imports `design/tokens/generated/tokens.css` directly, while iOS gets generated files inside its package | Proposed | Vite can read the file where it is, so no copy can drift. A Swift package can't reach outside its folder |
-| iOS colors are generated as code rather than an asset catalog | Proposed | Names are checked by the compiler, and there's no lookup that can fail silently. Icons stay in a catalog, which is what gives them vector scaling and template rendering |
+| iOS colors are generated as code rather than an asset catalog: a `Palette` for each of tectr's own themes, read through `ThemeColor`, which looks the role up in the palette in the environment when it's drawn | Proposed | Names are checked by the compiler, and there's no lookup that can fail silently. Going through the environment lets the theme change at runtime while views still write `.foregroundStyle(.textSecondary)`. Other themes arrive as colors by token name, the shape the settings crate resolves, and `Palette(colors:)` refuses one with a color missing. Icons stay in a catalog, which is what gives them vector scaling and template rendering |
 | Highlighting and diffing run in Rust, which sends spans labelled by role (`keyword`, `added`) | Settled | Both apps get the same result, and each maps roles to tokens. This also meets the off-UI-thread rule. Highlighting is built in `crates/highlight`. Diffs come from git on the daemon, as hunks of lines, which the app highlights one side at a time (see Diff tabs in `architecture.md`) |
 | Status icons are drawn by hand, and other desktop icons come from Lucide through one `Icon` component | Built | Status icons need the cut-outs, one color for iOS templates, and layers to move between states, which no library has. Lucide covers the rest at a 1.5px stroke, and only `ui/Icon.tsx` imports it, so an icon can be swapped or drawn in one place. iOS uses SF Symbols |
 | Components have the same names, parts, and states on both platforms | Proposed | People and agents can talk about one `RequestCard`. See `design/spec/components.md` |
@@ -41,7 +41,8 @@ Share the design decisions, not the components. No UI library renders native Swi
 | App icons are the light mark on a dark tile, and the name is Inter SemiBold, outlined | Proposed | The dark tile matches the near-black direction and keeps purple for primary actions. Outlining means no logo file depends on an installed font |
 | Both apps use a Liquid Glass app icon from an Icon Composer document, with the flat `.icns` as the fallback on older macOS | Proposed | It's how app icons look on macOS 26 and iOS 26. The build generates the document, so it stays in step with the mark and the tokens. Tauri compiles it into `Assets.car`, and iOS needs no flat icon because it targets iOS 26 |
 | Fonts are bundled, not loaded from a CDN | Proposed | Instant startup, and it works offline. Desktop uses Fontsource's Inter and Geist Mono packages, and iOS ships a Geist Mono TTF with its license. The mockups and preview page use Google Fonts only for convenience |
-| Both apps follow the system appearance, with a manual override | Proposed | Expected on both platforms. Desktop has the override, in its appearance settings |
+| Both apps follow the system appearance, with a manual override | Proposed | Expected on both platforms. Both have it in their appearance settings |
+| The iOS app offers the same themes as the desktop, with its own dark and light picks kept on the device | Settled | People asked to choose on the phone too. The list will come from the settings crate through the engine. Until then the app bundles the resolved built-in themes in `Tectr/Mock/themes.json` |
 | Desktop offers other people's themes alongside its own | Settled | People asked to choose. Tectr's own two stay the default, and everything in Color below that's about the look applies to those two |
 
 ## Liquid Glass
@@ -55,6 +56,25 @@ The rule is **content is ours, chrome is Apple's**. (Proposed)
 - **Desktop title bar:** the native macOS one, made transparent over a window colored `surface.base`, and never drawn in HTML. macOS draws the bar in a separate window in full screen, so `color_title_bar` in `apps/dsk/src-tauri/src/main.rs` colors it through private AppKit views, as Ghostty does. If a macOS update renames them, the full-screen bar falls back to the system's color. This is the workspace's only `unsafe` code, so `dsk` uses `deny` where other crates use `forbid`.
 
 How glass looks over near-black and over our light surfaces is untested. HTML can't show it, so it has to be judged in a real SwiftUI screen on a device.
+
+## iOS layout
+
+The phone and iPad app does nearly everything the desktop does. (Settled) What it leaves out is on purpose: pairing another machine starts on that machine, because `start_pairing` refuses remote clients, and keybinds and vim keys wait for an iPad with a keyboard.
+
+| Decision | Status | Why |
+|---|---|---|
+| iPhone and iPad from the start, in a two-column `NavigationSplitView`: the device tree, then the topic | Settled | On iPhone it collapses into one stack at no cost, and on iPad it sits side by side like the desktop's sidebar and pane |
+| Content sits on our surface tokens: the device tree, transcripts and terminals | Settled | It matches the desktop and the chosen theme. `tectrList()` hides the system background and sets our text color |
+| Forms, settings and sheets are stock SwiftUI: default `Form` and `List` styles, system fonts, text colors and backgrounds, standard rows and the system `PasteButton`. Only the tint comes from the theme | Proposed | They're chrome, and Apple's own components are what makes them feel native. Our dark surfaces are too close together to show grouped cards, and a sheet only gets its glass with the system background. `tectrTheme()` sets no font or text color for this reason |
+| Home is the desktop's sidebar: a flat plain list of device rows with settings and add buttons, workspace rows with a button for a new topic, and topics indented under them, with no title, paths or separators. Topics say only Waiting or Failed | Settled | One model of the tree on every client, and it's dense enough to see everything at once |
+| New topic is its own screen in the second column, not a sheet, built around the first prompt: workspace and where to work as small menus above it, the agent's provider, model, effort and mode below, and Start. No name field, and it starts in the repo root | Settled | Same as the desktop: a topic starts with what the agent should do, and takes its first tab's title |
+| Home's navigation bar holds the sidebar's foot, Settings on the left and the menu of what isn't about one topic on the right, and the bottom bar holds search. Search finds topics and actions, and every action is also in a menu | Proposed | The bottom is where iOS 26 puts search. The bar stays because hiding it made a short pull at the top snap back and shifted the screen by its height on every push and pop, so it holds controls instead of sitting empty |
+| The topic's title menu switches tabs and opens new ones. The toolbar menu holds what the desktop's tab bar menu does, plus the shown tab's own actions | Proposed | One tab at a time, with the switcher where iOS puts it |
+| A request takes the message box's place, on the same glass, until it's answered. Nothing opens by itself or covers the transcript | Settled | It doesn't block: you can still read and scroll the transcript and switch tabs while deciding, and the box comes back once nothing is waiting |
+| The composer is glass at the bottom. At rest it's a one-line pill with +, the text and Stop while the agent works. Focus, text or images open it into a card: the text above +, the agent's model, effort and mode, and one button that's Send or Stop, shown only when it does something. + opens our own glass panel of Camera, Photos and Paste, with large round icons, and closes the keyboard | Proposed | The same parts as the desktop's message box, small while you read and roomy while you write. Pickers opened while the keyboard moved were closed again straight away, and so were ones presented from inside the bottom bar, so the panel and pickers belong to the screen |
+| Terminals take input through the keyboard, with SwiftTerm's bar above it for Esc, Tab, Ctrl and arrows | Proposed | iOS keyboards lack those keys. Its own bar comes with the terminal and does what ours would |
+| Toasts are a glass capsule at the top | Proposed | Clear of the composer and the home indicator |
+| Settings is a sheet: devices, each with the daemon's own settings, then this app's appearance, conversation, terminal and notifications | Proposed | Device settings are the daemon's, so they match the desktop exactly. App settings use the desktop's names where the setting is the same |
 
 ## Color
 
@@ -90,7 +110,7 @@ Each component in `design/spec/components.md` is built separately per platform, 
 | ⌘K palette | `.searchable` |
 | Menu on a button or a right click | System context menu |
 | Creation sheet | `.sheet` with detents |
-| Tab strip and split | One tab at a time, with a native switcher |
+| Tab strip and split | One tab at a time, switched from the title menu |
 
 ## Repository
 
@@ -119,8 +139,7 @@ apps/ios/
 
 ## Not done yet
 
-- **Components:** both apps have the tokens, fonts, and root theme. Desktop has first versions of `StatusIcon`, `DeviceHeader`, `WorkspaceRow`, `TopicRow`, `RequestCard`, `ActivityLine`, `NewTab`, `Sheet`, `Button`, `Kbd`, `Sidebar`, `TabBar`, `Menu`, `Toast`, and the ⌘K palette, without the folded states. iOS shows only a placeholder.
-- **Appearance on iOS:** it follows the system only, with tectr's own themes. Choosing a theme is desktop only.
+- **Components:** both apps have the tokens, fonts, and root theme. Desktop has first versions of `StatusIcon`, `DeviceHeader`, `WorkspaceRow`, `TopicRow`, `RequestCard`, `ActivityLine`, `NewTab`, `Sheet`, `Button`, `Kbd`, `Sidebar`, `TabBar`, `Menu`, `Toast`, and the ⌘K palette, without the folded states. iOS has first versions of `StatusIcon`, `DeviceHeader`, `TopicRow`, `RequestCard`, `ActivityLine`, `ToolCallRow`, `DiffHunk` and `ThemeSwatch` in `TectrDesign`, and every screen working against the engine.
 - **Automated token check:** nothing runs `mise run tokens:test` or the package tests in CI yet.
 
 ## Open questions

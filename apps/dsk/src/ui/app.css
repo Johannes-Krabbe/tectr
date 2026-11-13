@@ -1689,6 +1689,9 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   outline: 0;
 }
 
+/* A time, which is a few characters, beside the suggestions in its row. */
+.settings-input.short { width: calc(96 * var(--unit)); }
+
 .settings-actions-what.error { color: var(--color-status-failed); }
 
 .settings-actions-what.code {
@@ -2021,6 +2024,31 @@ textarea.sheet-name {
   padding-block: calc((40 * var(--unit) - 1lh) / 2);
   field-sizing: content;
   resize: none;
+}
+
+/* Scanners read dark modules on a light ground most reliably, so a dark theme swaps the two
+ * instead of drawing light on dark. The tokens keep it to the user's palette either way. */
+.qr {
+  display: block;
+  width: calc(176 * var(--unit));
+  margin: var(--space-sm) auto 0;
+  border-radius: var(--radius-sm);
+  background: var(--color-text-primary);
+  fill: var(--color-surface-overlay);
+}
+
+[data-theme="light"] .qr {
+  background: var(--color-surface-overlay);
+  fill: var(--color-text-primary);
+}
+
+.pairing-code { text-align: center; }
+
+.pairing-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  font-variant-numeric: tabular-nums;
 }
 
 .sheet-error { padding: var(--space-xs) var(--space-lg); }

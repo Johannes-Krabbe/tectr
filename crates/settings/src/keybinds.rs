@@ -547,6 +547,16 @@ pub const ACTIONS: &[Action] = &[
         "Keep the device awake while agents work, or not",
         &["w"],
     ),
+    once(
+        "device.keep_awake_for",
+        "Keep the device awake for a while",
+        &["t"],
+    ),
+    once(
+        "device.stop_keep_awake",
+        "Stop keeping the device awake",
+        &["shift+t"],
+    ),
     once("pairing.add", "Pair another machine", &["p"]),
     once("pairing.add_device", "Add a device", &["a"]),
     once(

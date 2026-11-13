@@ -15,7 +15,7 @@ tectr is a single place to run all of your agents:
 - **See everything at a glance.** A sidebar sorted by device shows each agent's state live (working, waiting for you, done, failed) across all workspaces and topics.
 - **Full control, not just monitoring.** Send prompts, answer the agent's questions, interrupt, and resume, all from the app. Agents run in auto mode by default, or in yolo mode if you configure it.
 - **Keyboard first.** Everything on desktop can be done from the keyboard, including creating workspaces and topics with just a name and sensible defaults.
-- **Desk and pocket.** A desktop app for real work and a native phone app for checking in and unblocking agents on the go. Both are views of the same live sessions.
+- **Desk and pocket.** A desktop app and a native iPhone and iPad app with nearly the same features, so everything can be done from either. Both are views of the same live sessions.
 - **Agent-agnostic.** Claude Code first, with Codex, Gemini CLI, and others behind the same interface.
 - **Fast.** Instant startup, no lag while output streams, and smooth scrolling through long sessions, in the spirit of Zed.
 
@@ -102,7 +102,7 @@ Routing everything through a server (client => server => daemon => agent) would 
 
 - **Auth and terms**: confirm what Anthropic's terms allow when a third-party client drives Claude Code with a claude.ai subscription rather than an API key.
 - **Relationship to twig**: twig is written in Go and the daemon in Rust. Should the daemon call twig as a separate process, or reimplement its worktree logic?
-- **Desktop and phone layout**: the desktop UX isn't settled, and the phone app hasn't been redesigned around workspaces and topics yet.
+- **Desktop layout**: the desktop UX isn't settled.
 
 ## First milestone
 

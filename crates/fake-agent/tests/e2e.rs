@@ -71,6 +71,7 @@ impl Fixture {
             shell: Shell {
                 program: "/bin/sh".into(),
                 args: vec![],
+                launcher: None,
             },
             ..Config::new(self.root.join("Application Support").join(name), port)
         }
@@ -1305,6 +1306,10 @@ async fn subscribing_after_n_sends_only_later_events() {
         };
         assert_eq!(event.seq, expected);
     }
+    let ServerMessage::SessionReplayed { session_id, seq } = raw_next(&mut socket).await else {
+        panic!("the replay should end by saying so");
+    };
+    assert_eq!((session_id, seq), (session.session_id.clone(), total));
     daemon.shutdown().await;
 }
 
@@ -3019,6 +3024,185 @@ async fn closing_a_terminal_removes_its_tab_and_what_it_showed() {
     daemon.shutdown().await;
 }
 
+async fn open_terminal(engine: &Engine, machine: &MachineId, topic: &Topic) -> protocol::Terminal {
+    let command = Command::OpenTerminal {
+        topic_id: topic.id.clone(),
+        cols: 80,
+        rows: 24,
+    };
+    match engine.request(machine, command).await.unwrap() {
+        CommandOutput::Terminal { terminal, .. } => terminal,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+async fn read_terminal(engine: &Engine, machine: &MachineId, id: &protocol::TerminalId) -> String {
+    let command = Command::ReadTerminal {
+        terminal_id: id.clone(),
+        lines: Some(100),
+    };
+    match engine.request(machine, command).await.unwrap() {
+        CommandOutput::TerminalText { text } => text,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+async fn wait_for_terminal_text(
+    engine: &Engine,
+    machine: &MachineId,
+    id: &protocol::TerminalId,
+    wanted: &str,
+) {
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    loop {
+        let text = read_terminal(engine, machine, id).await;
+        if text.contains(wanted) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never read {wanted:?} in {text:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn write_terminal(
+    engine: &Engine,
+    machine: &MachineId,
+    id: &protocol::TerminalId,
+    text: &str,
+) {
+    let command = Command::WriteTerminal {
+        terminal_id: id.clone(),
+        text: text.to_owned(),
+    };
+    engine.request(machine, command).await.unwrap();
+}
+
+/// What the CLI does: no client shows the terminal, and it's read and typed into by command.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_terminal_nobody_shows_can_be_typed_into_and_read() {
+    let fixture = Fixture::new();
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let terminal = open_terminal(&engine, &machine, &topic).await;
+
+    write_terminal(&engine, &machine, &terminal.id, "echo typed-$((40+2))\r").await;
+    wait_for_terminal_text(&engine, &machine, &terminal.id, "typed-42").await;
+    daemon.shutdown().await;
+
+    // After a restart nothing runs it, and reading or typing starts it again.
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    assert_eq!(
+        terminal_state(&engine, &terminal.id).map(|t| t.status),
+        Some(protocol::TerminalStatus::Stopped)
+    );
+    write_terminal(&engine, &machine, &terminal.id, "echo again-$((1+1))\r").await;
+    wait_for_terminal_text(&engine, &machine, &terminal.id, "again-2").await;
+    assert!(
+        read_terminal(&engine, &machine, &terminal.id)
+            .await
+            .contains("typed-42")
+    );
+
+    let missing = engine
+        .request(
+            &machine,
+            Command::ReadTerminal {
+                terminal_id: protocol::TerminalId::from("nope"),
+                lines: None,
+            },
+        )
+        .await;
+    assert!(
+        matches!(&missing, Err(EngineError::Command(error)) if error.code == ErrorCode::NotFound),
+        "{missing:?}"
+    );
+    daemon.shutdown().await;
+}
+
+async fn agent_context(engine: &Engine, session: &SessionRef) -> String {
+    prompt(engine, session, "context").await.unwrap();
+    wait_for_status(engine, session, SessionStatus::Done).await;
+    agent_text(engine, session).last().unwrap().clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_knows_where_it_is_and_gets_the_cli_with_a_word_on_using_it() {
+    let fixture = Fixture::new();
+    let cli = fixture.root.join("built").join("tectr");
+    std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    std::fs::write(&cli, "").unwrap();
+    let daemon = Daemon::start(Config {
+        cli: Some(cli.clone()),
+        ..fixture.config("d", 0)
+    })
+    .await
+    .unwrap();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    let report = agent_context(&engine, &session).await;
+    let bin = fixture
+        .root
+        .join("Application Support")
+        .join("d")
+        .join("bin");
+    assert!(
+        report.contains(&format!("session={}\n", session.session_id)),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!("topic={}\n", topic.id)),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!("path={}\n", bin.display())),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!(
+            "You are session {} in topic {}",
+            session.session_id, topic.id
+        )),
+        "{report}"
+    );
+    assert!(report.contains("`tectr-dev help COMMAND`"), "{report}");
+    assert_eq!(std::fs::read_link(bin.join("tectr-dev")).unwrap(), cli);
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_cli_an_agent_still_knows_where_it_is() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    let report = agent_context(&engine, &session).await;
+    assert!(
+        report.contains(&format!(
+            "session={}\ntopic={}\n",
+            session.session_id, topic.id
+        )),
+        "{report}"
+    );
+    assert!(report.ends_with("prompt=none"), "{report}");
+    daemon.shutdown().await;
+}
+
 // Remote clients, over iroh on loopback: no relay, and addresses come from a lookup the test fills in.
 
 async fn remote_daemon(fixture: &Fixture, name: &str) -> Daemon {
@@ -3035,6 +3219,31 @@ async fn pairing_code(local: &Engine, machine: &MachineId) -> String {
         CommandOutput::Pairing { code, .. } => code,
         other => panic!("unexpected output {other:?}"),
     }
+}
+
+/// Pairs `remote` the way a person does: it asks with the code, and the digits it shows are
+/// typed on the device.
+async fn pair(
+    local: &Engine,
+    machine: &MachineId,
+    remote: &Engine,
+    code: &str,
+    name: &str,
+) -> String {
+    let pending = remote.pair(code, name).await.unwrap();
+    let confirm = Command::ConfirmPairing {
+        digits: pending.digits.clone(),
+    };
+    local.request(machine, confirm).await.unwrap();
+    remote.finish_pairing(pending).await.unwrap()
+}
+
+fn pairing_requests(local: &Engine) -> Vec<protocol::PairingRequest> {
+    local.devices()[0]
+        .state
+        .as_ref()
+        .map(|state| state.pairing_requests.clone())
+        .unwrap_or_default()
 }
 
 /// A client on "another machine", which finds the daemon only through the lookup.
@@ -3071,7 +3280,7 @@ async fn a_paired_client_works_over_iroh_until_it_is_removed() {
     let code = pairing_code(&local, &machine).await;
 
     let remote = remote_engine(&daemon);
-    let url = remote.pair(&code, "Phone").await.unwrap();
+    let url = pair(&local, &machine, &remote, &code, "Phone").await;
     remote.wait_until_settled().await;
     assert!(connection(&remote, &url).is_some_and(|connection| connection.is_online()));
     let client = wait_for("the paired client", || {
@@ -3092,16 +3301,20 @@ async fn a_paired_client_works_over_iroh_until_it_is_removed() {
     })
     .await;
 
-    let refused = remote
-        .request(&machine, Command::StartPairing)
-        .await
-        .unwrap_err();
-    assert!(
-        refused
-            .to_string()
-            .contains("only starts on the device itself"),
-        "{refused}"
-    );
+    for command in [
+        Command::StartPairing,
+        Command::ConfirmPairing {
+            digits: "123456".to_owned(),
+        },
+    ] {
+        let refused = remote.request(&machine, command).await.unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("only happens on the device itself"),
+            "{refused}"
+        );
+    }
 
     local
         .request(&machine, Command::RemovePairedClient { key: client.key })
@@ -3138,7 +3351,7 @@ async fn an_idle_remote_client_stays_connected_by_pinging() {
         stalled_after: Duration::from_millis(400),
         silence_limit: Duration::from_millis(800),
     });
-    let url = remote.pair(&code, "Phone").await.unwrap();
+    let url = pair(&local, &machine, &remote, &code, "Phone").await;
     remote.wait_until_settled().await;
 
     // Nothing happens for several times what either end would wait in silence.
@@ -3179,14 +3392,79 @@ async fn strangers_and_wrong_codes_are_refused() {
     assert!(error.to_string().contains("wrong"), "{error}");
     assert!(stranger.pair("not a code", "x").await.is_err());
 
+    let waiting = stranger.pair(&code, "x").await.unwrap();
+    wait_for("the stranger to wait", || {
+        (pairing_requests(&local).len() == 1).then_some(())
+    })
+    .await;
     local
         .request(&machine, Command::CancelPairing)
         .await
         .unwrap();
+    let error = stranger.finish_pairing(waiting).await.unwrap_err();
+    assert!(error.to_string().contains("stopped pairing"), "{error}");
     let error = stranger.pair(&code, "x").await.unwrap_err();
     assert!(error.to_string().contains("isn't pairing"), "{error}");
     let state = local.devices()[0].state.clone().unwrap();
     assert!(state.paired_clients.is_empty());
+    assert!(state.pairing_requests.is_empty());
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn someone_else_with_the_code_stays_out_unless_their_digits_are_typed() {
+    let fixture = Fixture::new();
+    let daemon = remote_daemon(&fixture, "d").await;
+    let machine = daemon.machine_id().clone();
+    let local = connect(&daemon).await;
+    let code = pairing_code(&local, &machine).await;
+    let phone = remote_engine(&daemon);
+    let stranger = remote_engine(&daemon);
+
+    // Whoever stops waiting comes off the list, and their digits stop working.
+    let gone = stranger.pair(&code, "iPhone").await.unwrap();
+    let digits = gone.digits.clone();
+    wait_for("the first to wait", || {
+        (pairing_requests(&local).len() == 1).then_some(())
+    })
+    .await;
+    drop(gone);
+    wait_for("the first to stop waiting", || {
+        pairing_requests(&local).is_empty().then_some(())
+    })
+    .await;
+    let confirm = |digits: &str| Command::ConfirmPairing {
+        digits: digits.to_owned(),
+    };
+    assert!(local.request(&machine, confirm(&digits)).await.is_err());
+
+    let stranger_pending = stranger.pair(&code, "iPhone").await.unwrap();
+    let phone_pending = phone.pair(&code, "iPhone").await.unwrap();
+    wait_for("both to wait", || {
+        (pairing_requests(&local).len() == 2).then_some(())
+    })
+    .await;
+    assert_ne!(stranger_pending.digits, phone_pending.digits);
+    assert_eq!(phone_pending.machine.id, machine);
+    local
+        .request(&machine, confirm(&phone_pending.digits))
+        .await
+        .unwrap();
+    let url = phone.finish_pairing(phone_pending).await.unwrap();
+    let error = stranger.finish_pairing(stranger_pending).await.unwrap_err();
+    assert!(error.to_string().contains("another"), "{error}");
+
+    phone.wait_until_settled().await;
+    assert!(connection(&phone, &url).is_some_and(|connection| connection.is_online()));
+    stranger.add_daemon(&url);
+    stranger.wait_until_settled().await;
+    match connection(&stranger, &url) {
+        Some(Connection::Offline { reason }) => assert!(reason.contains("not paired"), "{reason}"),
+        other => panic!("the stranger got {other:?}"),
+    }
+    let state = local.devices()[0].state.clone().unwrap();
+    assert_eq!(state.paired_clients.len(), 1);
+    assert!(state.pairing_requests.is_empty());
     daemon.shutdown().await;
 }
 
@@ -3207,7 +3485,7 @@ async fn a_paired_daemon_listens_again_after_a_restart() {
             network: engine::Network::Local(lookup.clone()),
         },
     );
-    let url = remote.pair(&code, "Laptop").await.unwrap();
+    let url = pair(&local, &machine, &remote, &code, "Laptop").await;
     drop(remote);
     drop(local);
     daemon.shutdown().await;

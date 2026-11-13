@@ -6,7 +6,7 @@ members = ["crates/*", "apps/dsk/src-tauri"]
 default-members = ["crates/*"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.91"
 publish = false
@@ -47,6 +47,8 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["c
 toml_edit = "0.25"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Swift bindings for the iOS app. The bindings generator comes from the same version.
+uniffi = "0.32"
 uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]

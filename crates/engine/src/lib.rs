@@ -31,13 +31,13 @@ use protocol::frame::{self, Kind};
 pub use protocol::liveness::Liveness;
 use protocol::liveness::SleepWatch;
 use protocol::{
-    Approval, ClientMessage, Command, CommandError, CommandOutput, DaemonState,
+    Approval, CLOSE_ASLEEP, ClientMessage, Command, CommandError, CommandOutput, DaemonState,
     MIN_PROTOCOL_VERSION, Machine, MachineId, PAIRING_ALPN, PROTOCOL_VERSION, PairRequest,
     PairResponse, PairingCode, REMOTE_ALPN, ServerMessage, SessionEvent, SessionRef,
     TerminalColors, TerminalId,
 };
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -54,7 +54,9 @@ const UPDATE_BUFFER: usize = 4096;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Finding a remote daemon can take a lookup and a relay before the first byte.
 const PAIR_TIMEOUT: Duration = Duration::from_secs(30);
-/// A pairing answer is a machine's ID and name, so anything longer isn't one.
+/// Past the 5 minutes the daemon waits for the digits, in case its answer is slow.
+const PAIR_WAIT_TIMEOUT: Duration = Duration::from_secs(6 * 60);
+/// A pairing answer is digits and a machine's ID and name, so anything longer isn't one.
 const MAX_PAIR_RESPONSE: usize = 64 * 1024;
 
 /// What the engine knows about one daemon. The state stays after a disconnect,
@@ -81,6 +83,9 @@ pub enum Connection {
     Offline {
         reason: String,
     },
+    /// Its machine is asleep: it refused this client during one of the brief wakes a sleeping
+    /// Mac has, and nothing has answered since.
+    Asleep,
     /// The daemon and this client have no protocol version in common.
     Incompatible {
         daemon_min: u32,
@@ -99,8 +104,17 @@ impl Connection {
 /// [`Engine::events_after`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Update {
-    DeviceChanged { url: String },
-    SessionEvent { session: SessionRef, seq: u64 },
+    DeviceChanged {
+        url: String,
+    },
+    SessionEvent {
+        session: SessionRef,
+        seq: u64,
+    },
+    /// The session's history has all arrived. See [`Engine::is_replayed`].
+    SessionReplayed {
+        session: SessionRef,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -197,9 +211,18 @@ struct DaemonEntry {
 
 struct Shared {
     daemons: BTreeMap<String, DaemonEntry>,
-    /// Sessions the UI is following, with all their events so far.
-    open: HashMap<SessionRef, Vec<SessionEvent>>,
+    /// Sessions the UI is following.
+    open: HashMap<SessionRef, OpenSession>,
     terminals: HashMap<(MachineId, TerminalId), AttachedTerminal>,
+}
+
+#[derive(Default)]
+struct OpenSession {
+    /// Every event so far, in order.
+    events: Vec<SessionEvent>,
+    /// Whether the history it had when opened has all arrived. It stays set across
+    /// reconnects, which only bring what was missed.
+    replayed: bool,
 }
 
 impl Shared {
@@ -367,9 +390,10 @@ impl Engine {
         self.inner.device_changed(url);
     }
 
-    /// Pairs with a daemon on another machine using the code it showed, then adds it.
-    /// `name` is what the daemon lists this client as. Returns the daemon's URL.
-    pub async fn pair(&self, code: &str, name: &str) -> Result<String, EngineError> {
+    /// Asks a daemon on another machine to pair, using the code it showed. `name` is what
+    /// the daemon lists this client as. The answer is digits to show, which someone at the
+    /// device types before [`Engine::finish_pairing`] returns.
+    pub async fn pair(&self, code: &str, name: &str) -> Result<PendingPairing, EngineError> {
         let pairing = |message: &str| EngineError::Pairing(message.to_owned());
         let code = PairingCode::parse(code).ok_or_else(|| pairing("that isn't a pairing code"))?;
         let daemon: EndpointId = code
@@ -391,31 +415,57 @@ impl Engine {
                 .connect(daemon, PAIRING_ALPN)
                 .await
                 .map_err(|error| format!("couldn't reach the device: {error}"))?;
-            let (mut send, mut recv) = connection.open_bi().await.map_err(describe_closed)?;
+            let (mut send, recv) = connection.open_bi().await.map_err(describe_closed)?;
             let request = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
             send.write_all(&request).await.map_err(describe_write)?;
             send.finish().map_err(|error| error.to_string())?;
-            let answer = recv
-                .read_to_end(MAX_PAIR_RESPONSE)
-                .await
-                .map_err(describe_read)?;
-            connection.close(0u32.into(), b"");
-            serde_json::from_slice::<PairResponse>(&answer)
-                .map_err(|_| "the device sent something odd back".to_owned())
+            let mut answers = BufReader::new(recv.take(MAX_PAIR_RESPONSE as u64));
+            let first = read_answer(&connection, &mut answers).await?;
+            Ok::<_, String>((connection, answers, first))
         };
-        let response = tokio::time::timeout(PAIR_TIMEOUT, exchange)
+        let (connection, answers, first) = tokio::time::timeout(PAIR_TIMEOUT, exchange)
             .await
             .map_err(|_| pairing("the device didn't answer in time"))?
             .map_err(EngineError::Pairing)?;
-        match response {
+        match first {
+            PairResponse::Confirm { digits, machine } => Ok(PendingPairing {
+                digits,
+                machine,
+                daemon,
+                connection,
+                answers,
+            }),
+            PairResponse::Refused { reason } => Err(EngineError::Pairing(reason)),
+            PairResponse::Paired { .. } | PairResponse::Unknown => Err(pairing(
+                "the device answered in a way this client doesn't know",
+            )),
+        }
+    }
+
+    /// Waits for someone at the device to type the pairing's digits, then adds the device.
+    /// Returns its URL.
+    pub async fn finish_pairing(&self, pending: PendingPairing) -> Result<String, EngineError> {
+        let PendingPairing {
+            daemon,
+            connection,
+            mut answers,
+            ..
+        } = pending;
+        let answer =
+            tokio::time::timeout(PAIR_WAIT_TIMEOUT, read_answer(&connection, &mut answers))
+                .await
+                .map_err(|_| EngineError::Pairing("the device didn't answer in time".to_owned()))?
+                .map_err(EngineError::Pairing)?;
+        connection.close(0u32.into(), b"");
+        match answer {
             PairResponse::Paired { .. } => {
                 let url = protocol::remote_daemon_url(&daemon.to_string());
                 self.add_daemon(&url);
                 Ok(url)
             }
             PairResponse::Refused { reason } => Err(EngineError::Pairing(reason)),
-            PairResponse::Unknown => Err(pairing(
-                "the device answered in a way this client doesn't know",
+            PairResponse::Confirm { .. } | PairResponse::Unknown => Err(EngineError::Pairing(
+                "the device answered in a way this client doesn't know".to_owned(),
             )),
         }
     }
@@ -509,7 +559,7 @@ impl Engine {
         if shared.open.contains_key(session) {
             return;
         }
-        shared.open.insert(session.clone(), vec![]);
+        shared.open.insert(session.clone(), OpenSession::default());
         for daemon in shared.daemons.values() {
             let on_this_daemon = daemon.device.state.as_ref().map(|state| &state.machine.id)
                 == Some(&session.machine_id);
@@ -631,11 +681,21 @@ impl Engine {
     /// The open session's events after `after_seq`, in order.
     pub fn events_after(&self, session: &SessionRef, after_seq: u64) -> Vec<SessionEvent> {
         let shared = self.inner.lock();
-        let Some(events) = shared.open.get(session) else {
+        let Some(open) = shared.open.get(session) else {
             return vec![];
         };
-        let start = events.partition_point(|event| event.seq <= after_seq);
-        events[start..].to_vec()
+        let start = open.events.partition_point(|event| event.seq <= after_seq);
+        open.events[start..].to_vec()
+    }
+
+    /// Whether the open session's history has all arrived, so a UI can show it in one
+    /// piece instead of growing as it's replayed.
+    pub fn is_replayed(&self, session: &SessionRef) -> bool {
+        self.inner
+            .lock()
+            .open
+            .get(session)
+            .is_some_and(|open| open.replayed)
     }
 }
 
@@ -643,6 +703,10 @@ impl Engine {
 enum Lost {
     /// What to show until the next attempt.
     Because(String),
+    /// Nothing answered, which says nothing new about a device known to be asleep.
+    Unreachable(String),
+    /// The daemon refused because its machine is asleep.
+    Asleep,
     /// Asked to try again in the middle of an attempt. What's shown stays as it is, and
     /// the next attempt starts straight away.
     Retry,
@@ -651,6 +715,24 @@ enum Lost {
 impl From<String> for Lost {
     fn from(reason: String) -> Self {
         Lost::Because(reason)
+    }
+}
+
+impl From<&str> for Lost {
+    fn from(reason: &str) -> Self {
+        Lost::Because(reason.to_owned())
+    }
+}
+
+/// Why a daemon on another machine closed the connection.
+fn refused(error: iroh::endpoint::ConnectionError) -> Lost {
+    match &error {
+        iroh::endpoint::ConnectionError::ApplicationClosed(close)
+            if close.error_code == CLOSE_ASLEEP.into() =>
+        {
+            Lost::Asleep
+        }
+        _ => describe_closed(error).into(),
     }
 }
 
@@ -675,12 +757,8 @@ async fn maintain_connection(inner: Arc<Inner>, url: String) {
             if was_online {
                 daemon.device.last_seen_ms = Some(now_ms());
             }
-            match outcome {
-                Ok(state) => daemon.device.connection = state,
-                Err(Lost::Because(reason)) => {
-                    daemon.device.connection = Connection::Offline { reason };
-                }
-                Err(Lost::Retry) => {}
+            if let Some(shown) = shown_after(&daemon.device.connection, outcome) {
+                daemon.device.connection = shown;
             }
         }
         inner.device_changed(&url);
@@ -695,6 +773,21 @@ async fn maintain_connection(inner: Arc<Inner>, url: String) {
     }
 }
 
+/// What to show once a connection or an attempt has ended, or `None` to keep what's shown.
+fn shown_after(shown: &Connection, outcome: Result<Connection, Lost>) -> Option<Connection> {
+    match outcome {
+        Ok(state) => Some(state),
+        // Between its brief wakes, a sleeping machine doesn't answer at all, and showing that
+        // as offline would flicker between the two.
+        Err(Lost::Unreachable(_)) if *shown == Connection::Asleep => None,
+        Err(Lost::Because(reason) | Lost::Unreachable(reason)) => {
+            Some(Connection::Offline { reason })
+        }
+        Err(Lost::Asleep) => Some(Connection::Asleep),
+        Err(Lost::Retry) => None,
+    }
+}
+
 type Socket = WebSocketStream<Box<dyn Io>>;
 
 /// Opens the websocket the URL describes. The iroh connection comes back too, because
@@ -702,7 +795,7 @@ type Socket = WebSocketStream<Box<dyn Io>>;
 async fn open(
     inner: &Inner,
     url: &str,
-) -> Result<(Socket, Option<iroh::endpoint::Connection>), String> {
+) -> Result<(Socket, Option<iroh::endpoint::Connection>), Lost> {
     if let Some(key) = protocol::remote_daemon_key(url) {
         let daemon: EndpointId = key
             .parse()
@@ -715,8 +808,8 @@ async fn open(
         let connection = endpoint
             .connect(daemon, REMOTE_ALPN)
             .await
-            .map_err(|error| format!("couldn't reach the device: {error}"))?;
-        let (send, recv) = connection.open_bi().await.map_err(describe_closed)?;
+            .map_err(|error| Lost::Unreachable(format!("couldn't reach the device: {error}")))?;
+        let (send, recv) = connection.open_bi().await.map_err(refused)?;
         let stream: Box<dyn Io> = Box::new(tokio::io::join(recv, send));
         // The stream is already the daemon's, so the address only fills in the handshake.
         let (socket, _) = tokio_tungstenite::client_async("ws://tectr", stream)
@@ -724,7 +817,7 @@ async fn open(
             .map_err(|error| {
                 connection
                     .close_reason()
-                    .map_or_else(|| error.to_string(), describe_closed)
+                    .map_or_else(|| error.to_string().into(), refused)
             })?;
         return Ok((socket, Some(connection)));
     }
@@ -751,6 +844,36 @@ async fn open(
 
 /// A daemon that refuses a client closes the connection with a reason, which says more
 /// than the error around it.
+/// A pairing that waits for someone at the device to type `digits`. Dropping it stops
+/// waiting, and the device takes it off its list.
+#[derive(Debug)]
+pub struct PendingPairing {
+    pub digits: String,
+    /// The device it pairs with.
+    pub machine: Machine,
+    daemon: EndpointId,
+    connection: iroh::endpoint::Connection,
+    answers: BufReader<tokio::io::Take<iroh::endpoint::RecvStream>>,
+}
+
+/// One line of the daemon's answers, or why there wasn't one. The daemon says why it closed
+/// in the connection's close reason, which a read error doesn't carry.
+async fn read_answer(
+    connection: &iroh::endpoint::Connection,
+    answers: &mut BufReader<tokio::io::Take<iroh::endpoint::RecvStream>>,
+) -> Result<PairResponse, String> {
+    let mut line = String::new();
+    let read = answers.read_line(&mut line).await;
+    let closed = || connection.close_reason().map(describe_closed);
+    match read {
+        Ok(0) => Err(closed().unwrap_or_else(|| "the device closed the connection".to_owned())),
+        Ok(_) => {
+            serde_json::from_str(&line).map_err(|_| "the device sent something odd back".to_owned())
+        }
+        Err(error) => Err(closed().unwrap_or_else(|| error.to_string())),
+    }
+}
+
 fn describe_closed(error: iroh::endpoint::ConnectionError) -> String {
     match error {
         iroh::endpoint::ConnectionError::ApplicationClosed(close) => {
@@ -761,14 +884,6 @@ fn describe_closed(error: iroh::endpoint::ConnectionError) -> String {
                 reason
             }
         }
-        other => other.to_string(),
-    }
-}
-
-fn describe_read(error: iroh::endpoint::ReadToEndError) -> String {
-    use iroh::endpoint::{ReadError, ReadToEndError};
-    match error {
-        ReadToEndError::Read(ReadError::ConnectionLost(error)) => describe_closed(error),
         other => other.to_string(),
     }
 }
@@ -788,7 +903,7 @@ enum Handshake {
 }
 
 /// Connects and agrees on a protocol version.
-async fn handshake(inner: &Inner, url: &str) -> Result<Handshake, String> {
+async fn handshake(inner: &Inner, url: &str) -> Result<Handshake, Lost> {
     let (mut socket, connection) = open(inner, url).await?;
     send(
         &mut socket,
@@ -823,7 +938,7 @@ async fn handshake(inner: &Inner, url: &str) -> Result<Handshake, String> {
             min_version,
             max_version,
         } => Ok(refused(min_version, max_version)),
-        other => Err(format!("expected a welcome, got {other:?}")),
+        other => Err(format!("expected a welcome, got {other:?}").into()),
     }
 }
 
@@ -833,7 +948,7 @@ async fn connect_and_run(inner: &Inner, url: &str, online: &mut bool) -> Result<
     let attempt = tokio::time::timeout(CONNECT_TIMEOUT, handshake(inner, url));
     let (mut socket, connection) = tokio::select! {
         result = attempt => {
-            match result.map_err(|_| "the device didn't answer in time".to_owned())?? {
+            match result.map_err(|_| Lost::Unreachable("the device didn't answer in time".to_owned()))?? {
                 Handshake::Ready(socket, connection) => (*socket, connection),
                 Handshake::Refused(state) => return Ok(state),
             }
@@ -983,7 +1098,7 @@ fn handle_message(
         }
         ServerMessage::SessionEvent { event } => {
             let mut shared = inner.lock();
-            let Some(events) = shared.open.get_mut(&event.session) else {
+            let Some(OpenSession { events, .. }) = shared.open.get_mut(&event.session) else {
                 return; // Closed while this event was on its way.
             };
             // Only the next event in order counts. Anything else is a stale
@@ -1001,6 +1116,31 @@ fn handle_message(
             events.push(event);
             drop(shared);
             let _ = inner.updates.send(update);
+        }
+        ServerMessage::SessionReplayed { session_id, seq } => {
+            let mut shared = inner.lock();
+            let Some(machine_id) = shared
+                .daemons
+                .get(url)
+                .and_then(|daemon| daemon.device.state.as_ref())
+                .map(|state| state.machine.id.clone())
+            else {
+                return;
+            };
+            let session = SessionRef {
+                machine_id,
+                session_id,
+            };
+            let Some(open) = shared.open.get_mut(&session) else {
+                return;
+            };
+            let last_seq = open.events.last().map_or(0, |event| event.seq);
+            if open.replayed || last_seq < seq {
+                return;
+            }
+            open.replayed = true;
+            drop(shared);
+            let _ = inner.updates.send(Update::SessionReplayed { session });
         }
         ServerMessage::Response { id, result } => {
             let mut shared = inner.lock();
@@ -1020,16 +1160,16 @@ fn handle_message(
 /// After connecting, picks up every open session on this machine where it left off, and shows
 /// its terminals again.
 fn resubscribe(
-    open: &HashMap<SessionRef, Vec<SessionEvent>>,
+    open: &HashMap<SessionRef, OpenSession>,
     terminals: &HashMap<(MachineId, TerminalId), AttachedTerminal>,
     machine: &Machine,
     outgoing: &mpsc::UnboundedSender<Outgoing>,
 ) {
-    for (session, events) in open {
+    for (session, open) in open {
         if session.machine_id == machine.id {
             let _ = outgoing.send(Outgoing::Message(ClientMessage::Subscribe {
                 session_id: session.session_id.clone(),
-                after_seq: events.last().map_or(0, |event| event.seq),
+                after_seq: open.events.last().map_or(0, |event| event.seq),
             }));
         }
     }
@@ -1083,4 +1223,43 @@ fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sleeping_device_stays_asleep_until_it_answers_otherwise() {
+        let offline = |reason: &str| Connection::Offline {
+            reason: reason.to_owned(),
+        };
+        let unreachable = || Err(Lost::Unreachable("nothing answered".to_owned()));
+
+        assert_eq!(
+            shown_after(&offline("quiet"), Err(Lost::Asleep)),
+            Some(Connection::Asleep)
+        );
+        assert_eq!(
+            shown_after(&Connection::Asleep, unreachable()),
+            None,
+            "the gaps between its brief wakes don't flicker to offline"
+        );
+        assert_eq!(
+            shown_after(&offline("quiet"), unreachable()),
+            Some(offline("nothing answered"))
+        );
+        assert_eq!(
+            shown_after(&Connection::Asleep, Err("not paired".into())),
+            Some(offline("not paired")),
+            "a daemon that answers with something else is awake"
+        );
+        assert_eq!(
+            shown_after(
+                &Connection::Asleep,
+                Ok(Connection::Online { stalled: false })
+            ),
+            Some(Connection::Online { stalled: false })
+        );
+    }
 }

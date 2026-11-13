@@ -2,6 +2,7 @@
 //! logic of its own beyond parsing arguments and printing.
 
 mod mcp;
+mod terminal;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -95,6 +96,8 @@ enum Cmd {
     },
     /// Start an agent in a topic's folder.
     NewSession {
+        /// The topic, by name or ID prefix. Inside a tectr agent, its own topic.
+        #[arg(env = "TECTR_TOPIC")]
         topic: String,
         #[arg(long, default_value = "claude")]
         agent: String,
@@ -120,7 +123,11 @@ enum Cmd {
     /// Open a new tab in the session's topic that carries on from its latest finished answer,
     /// with the agent remembering everything up to there. Only agents that can copy their
     /// sessions can do this.
-    Fork { session: String },
+    Fork {
+        /// The session's ID or a prefix of it. Inside a tectr agent, itself.
+        #[arg(env = "TECTR_SESSION")]
+        session: String,
+    },
     /// Send a prompt and return without waiting for the agent.
     Prompt { session: String, text: String },
     /// Print a session's history and follow it live.
@@ -144,15 +151,21 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Open terminals in a topic's folder, read what they show and type into them.
+    Terminal {
+        #[command(subcommand)]
+        command: terminal::TerminalCmd,
+    },
     /// Manage the MCP servers agents get, device-wide and per topic.
     Mcp {
         #[command(subcommand)]
         command: mcp::McpCmd,
     },
     /// Show a code that lets one more machine in. Run it on the machine to reach, then
-    /// `tectr add-device <code>` on the one that wants in. The code works once.
+    /// `tectr add-device <code>` on the one that wants in, and type the digits it shows here.
     Pair,
-    /// Pair with a device on another machine using the code `tectr pair` showed there.
+    /// Pair with a device on another machine using the code `tectr pair` showed there. It
+    /// shows digits to type there.
     AddDevice { code: String },
     /// Stop reaching a paired device, and take this machine off its allowed list if it's online.
     RemoveDevice {
@@ -494,6 +507,7 @@ async fn main() -> Result<()> {
                 )
                 .await?;
         }
+        Cmd::Terminal { command } => terminal::run(&engine, command).await?,
         Cmd::Mcp { command } => mcp::run(&engine, command).await?,
         Cmd::Pair => {
             let machine = choose_local_machine(&engine)?;
@@ -502,13 +516,20 @@ async fn main() -> Result<()> {
             {
                 println!("{code}");
                 eprintln!(
-                    "On the other machine, run: tectr add-device {code}\nThe code works once, for 5 minutes."
+                    "On the other machine, run: tectr add-device {code}\nThen type the digits it shows here. The code works for 5 minutes."
                 );
+                confirm_pairing(&engine, &machine).await?;
             }
         }
         Cmd::AddDevice { code } => {
             let store = store.context("couldn't find a data directory to keep pairings in")?;
-            let url = engine.pair(&code, &engine::this_machine_name()).await?;
+            let pending = engine.pair(&code, &engine::this_machine_name()).await?;
+            eprintln!(
+                "On {}, type {}",
+                pending.machine.name,
+                spaced_digits(&pending.digits)
+            );
+            let url = engine.finish_pairing(pending).await?;
             store.add_daemon(&url)?;
             println!("paired with {url}");
         }
@@ -555,6 +576,42 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Asks for the digits the other machine shows until they pair it. Running out of input
+/// stops the pairing, so the code doesn't stay open with nobody to confirm it.
+async fn confirm_pairing(engine: &Engine, machine: &MachineId) -> Result<()> {
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    loop {
+        eprint!("Digits: ");
+        let Some(line) = lines.next_line().await? else {
+            engine.request(machine, Command::CancelPairing).await?;
+            bail!("stopped pairing");
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let confirm = Command::ConfirmPairing { digits: line };
+        match engine.request(machine, confirm).await {
+            Ok(CommandOutput::Paired { client }) => {
+                println!("paired {}", client.name);
+                return Ok(());
+            }
+            Ok(_) => return Ok(()),
+            Err(error) => eprintln!("{error}"),
+        }
+    }
+}
+
+/// `482913` as `482 913`, which is easier to read off one screen and type on another.
+fn spaced_digits(digits: &str) -> String {
+    let digits: Vec<char> = digits.chars().collect();
+    let (first, second) = digits.split_at(digits.len() / 2);
+    format!(
+        "{} {}",
+        first.iter().collect::<String>(),
+        second.iter().collect::<String>()
+    )
 }
 
 /// Pairing starts on the device itself, so it's the daemon reached over loopback.
@@ -758,6 +815,7 @@ fn print_status(engine: &Engine) {
             Connection::Online { stalled: false } => "online".to_owned(),
             Connection::Online { stalled: true } => "not responding".to_owned(),
             Connection::Offline { .. } => "offline".to_owned(),
+            Connection::Asleep => "asleep".to_owned(),
             Connection::Incompatible {
                 daemon_min,
                 daemon_max,
@@ -809,6 +867,14 @@ fn print_status(engine: &Engine) {
                         session.mode,
                         session.status,
                         session.title.as_deref().unwrap_or(""),
+                    );
+                }
+                for terminal in &topic.terminals {
+                    println!(
+                        "      terminal {} {:?} {}",
+                        short(&terminal.id.0),
+                        terminal.status,
+                        terminal.title.as_deref().unwrap_or(""),
                     );
                 }
             }

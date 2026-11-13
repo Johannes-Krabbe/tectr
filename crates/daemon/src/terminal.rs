@@ -9,8 +9,13 @@
 //! up, and then the screen as it is by then, so a flood of output never queues up anywhere.
 
 use std::cell::RefCell;
+use std::ffi::OsString;
+use std::fs::File;
 use std::io::{Read, Write};
+use std::os::fd::OwnedFd;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
@@ -22,9 +27,13 @@ use libghostty_vt::fmt::{Extras, Format, Formatter};
 use libghostty_vt::screen::Screen;
 use libghostty_vt::snapshot::Decoder;
 use libghostty_vt::style::RgbColor;
-use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use protocol::frame::{self, Kind};
 use protocol::{TerminalColors, TerminalId};
+use rustix::fs::{Mode, OFlags};
+use rustix::io::FdFlags;
+use rustix::process::{Pid, Signal};
+use rustix::pty::OpenptFlags;
+use rustix::termios::Winsize;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Lines of history a terminal keeps.
@@ -45,6 +54,10 @@ const BATCH: usize = 256 * 1024;
 pub struct Shell {
     pub program: String,
     pub args: Vec<String>,
+    /// The daemon's own binary, which starts the shell through `launch_shell` so the
+    /// terminal controls it. Without it the shell has no job control, so Ctrl-C reaches
+    /// nothing, which only tests get away with.
+    pub launcher: Option<PathBuf>,
 }
 
 impl Shell {
@@ -57,8 +70,33 @@ impl Shell {
         Self {
             program,
             args: vec!["-l".to_owned()],
+            launcher: std::env::current_exe().ok(),
         }
     }
+}
+
+/// The argument that makes the daemon's binary run `launch_shell` instead.
+pub const LAUNCH_SHELL: &str = "--launch-shell";
+
+/// Becomes a terminal's shell, given the folder, the program and its arguments. It runs in a
+/// process of its own with the terminal as its stdio, and makes a session the terminal
+/// controls first. Returns only if that fails.
+///
+/// The daemon can't do this between fork and exec, the usual way: once Apple's Network
+/// framework has done its work in a process, its fork handler crashes the child. Starting
+/// this process doesn't fork.
+pub fn launch_shell(mut args: impl Iterator<Item = OsString>) -> anyhow::Error {
+    let (Some(folder), Some(program)) = (args.next(), args.next()) else {
+        return anyhow::anyhow!("expected a folder and a program");
+    };
+    if let Err(error) = rustix::process::setsid() {
+        return anyhow::Error::new(error).context("couldn't start a session");
+    }
+    if let Err(error) = rustix::process::ioctl_tiocsctty(std::io::stdin()) {
+        return anyhow::Error::new(error).context("couldn't take the terminal");
+    }
+    let error = Command::new(&program).args(args).current_dir(folder).exec();
+    anyhow::Error::new(error).context(format!("couldn't start {}", program.display()))
 }
 
 pub struct Start {
@@ -97,7 +135,7 @@ enum Message {
     Output(Vec<u8>),
     ShellExited {
         run: u64,
-        code: Option<u32>,
+        status: Option<ExitStatus>,
     },
     Input(Vec<u8>),
     Resize {
@@ -114,6 +152,11 @@ enum Message {
     Ack {
         subscriber: u64,
         bytes: u32,
+    },
+    /// What it shows as plain text, for clients that don't draw it.
+    Read {
+        lines: Option<u32>,
+        reply: tokio::sync::oneshot::Sender<String>,
     },
     /// Ends the terminal. Kept history is saved first, and otherwise deleted.
     Stop {
@@ -172,6 +215,15 @@ impl Handle {
         let _ = self.messages.send(Message::Ack { subscriber, bytes });
     }
 
+    /// Its last `lines` lines as plain text, or as many as it has rows. Fails only if the
+    /// terminal ended first.
+    /// The answer doesn't borrow the handle, so it can be awaited after letting go of it.
+    pub fn read(&self, lines: Option<u32>) -> impl Future<Output = Result<String>> + use<> {
+        let (reply, text) = tokio::sync::oneshot::channel();
+        let _ = self.messages.send(Message::Read { lines, reply });
+        async move { text.await.context("the terminal ended") }
+    }
+
     /// Ends the shell, keeping what the terminal showed for next time or deleting it. Returns
     /// the thread, which finishes as soon as that's done.
     pub fn stop(mut self, keep: bool) -> Option<JoinHandle<()>> {
@@ -183,15 +235,15 @@ impl Handle {
 /// The running shell. Its output is read on its own thread, which also waits for it to exit.
 struct ShellProcess {
     run: u64,
-    pid: Option<u32>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
-    master: Box<dyn MasterPty + Send>,
+    pid: u32,
+    /// The terminal's end of the pseudo terminal.
+    master: OwnedFd,
 }
 
 enum Write_ {
     Data(Vec<u8>),
-    /// The new shell's end to write to.
-    Pty(Box<dyn Write + Send>),
+    /// The shell's end to write to, or none once it's gone so the pseudo terminal can close.
+    Pty(Option<File>),
 }
 
 struct Client {
@@ -352,7 +404,7 @@ impl Emulator {
     fn handle(&mut self, message: Message) -> bool {
         match message {
             Message::Output(data) => self.output(&data),
-            Message::ShellExited { run, code } => self.shell_exited(run, code),
+            Message::ShellExited { run, status } => self.shell_exited(run, status),
             Message::Input(data) => {
                 if self.process.is_some() {
                     let _ = self.writer.send(Write_::Data(data));
@@ -406,6 +458,9 @@ impl Emulator {
                     }
                 }
             }
+            Message::Read { lines, reply } => {
+                let _ = reply.send(self.text(lines));
+            }
             Message::Stop { keep } => {
                 if keep {
                     self.save();
@@ -450,12 +505,7 @@ impl Emulator {
             tracing::warn!("a terminal didn't resize: {error:?}");
         }
         if let Some(process) = &self.process {
-            let _ = process.master.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
+            let _ = rustix::termios::tcsetwinsize(&process.master, winsize(cols, rows));
         }
         // Everyone showing it starts over at the new size, so no client draws lines wrapped
         // for another.
@@ -488,6 +538,27 @@ impl Emulator {
         }
     }
 
+    /// The last `lines` lines of the screen and its history, with wrapped lines joined so a
+    /// long line reads as one.
+    fn text(&self, lines: Option<u32>) -> String {
+        let text = Formatter::new(&self.terminal)
+            .ok()
+            .and_then(|mut formatter| {
+                formatter
+                    .set_format(Format::Plain)
+                    .and_then(|f| f.set_unwrap(true))
+                    .and_then(|f| f.set_trim(true))
+                    .and_then(|f| f.set_extras(Extras::NONE))
+                    .ok()?;
+                Some(formatter.format_alloc(None).ok()?.to_vec())
+            })
+            .unwrap_or_default();
+        let text = String::from_utf8_lossy(&text);
+        let all: Vec<&str> = text.lines().collect();
+        let wanted = lines.map_or(usize::from(self.rows), |lines| lines as usize);
+        all[all.len().saturating_sub(wanted)..].join("\n")
+    }
+
     /// Everything the terminal shows, modes and cursor included, at its size. The palette is
     /// left out so each client keeps its own colors.
     fn reset_frame(&mut self) -> (Vec<u8>, usize) {
@@ -506,31 +577,44 @@ impl Emulator {
         } else {
             self.fallback.clone()
         };
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: self.rows,
-                cols: self.cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .context("failed to open a pseudo terminal")?;
-        let mut command = CommandBuilder::new(&self.shell.program);
-        command.args(&self.shell.args);
-        command.cwd(&cwd);
-        command.env("TERM", "xterm-256color");
-        command.env("COLORTERM", "truecolor");
-        command.env("TERM_PROGRAM", "tectr");
-        command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
-        let mut child = pair
-            .slave
-            .spawn_command(command)
+        let (master, slave) =
+            open_pty(self.cols, self.rows).context("failed to open a pseudo terminal")?;
+        // Nothing here may make std fork rather than posix_spawn, see `launch_shell`. A
+        // pre-exec hook would.
+        let mut command = match &self.shell.launcher {
+            Some(launcher) => {
+                let mut command = Command::new(launcher);
+                command
+                    .arg(LAUNCH_SHELL)
+                    .arg(&cwd)
+                    .arg(&self.shell.program)
+                    .args(&self.shell.args);
+                command
+            }
+            None => {
+                let mut command = Command::new(&self.shell.program);
+                command.args(&self.shell.args).current_dir(&cwd);
+                command
+            }
+        };
+        command
+            .env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
+            .env("TERM_PROGRAM", "tectr")
+            .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))
+            .stdin(Stdio::from(slave.try_clone()?))
+            .stdout(Stdio::from(slave.try_clone()?))
+            .stderr(Stdio::from(slave));
+        let mut child = command
+            .spawn()
             .with_context(|| format!("failed to start {}", self.shell.program))?;
-        drop(pair.slave);
-        let pid = child.process_id();
-        let killer = child.clone_killer();
-        let mut reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
-        let _ = self.writer.send(Write_::Pty(writer));
+        // The command held the shell's end, so only the shell has it open now, and reading
+        // ends when it exits.
+        drop(command);
+        let pid = child.id();
+        let mut reader = File::from(master.try_clone()?);
+        let writer = File::from(master.try_clone()?);
+        let _ = self.writer.send(Write_::Pty(Some(writer)));
 
         let messages = self.messages.clone();
         std::thread::Builder::new()
@@ -550,23 +634,18 @@ impl Emulator {
                         }
                     }
                 }
-                let code = child.wait().ok().map(|status| status.exit_code());
-                let _ = messages.send(Message::ShellExited { run, code });
+                let status = child.wait().ok();
+                let _ = messages.send(Message::ShellExited { run, status });
             })
             .context("failed to start a terminal's reader")?;
 
         self.cwd = cwd;
-        self.process = Some(ShellProcess {
-            run,
-            pid,
-            killer,
-            master: pair.master,
-        });
+        self.process = Some(ShellProcess { run, pid, master });
         (self.notify)(Event::Running);
         Ok(())
     }
 
-    fn shell_exited(&mut self, run: u64, code: Option<u32>) {
+    fn shell_exited(&mut self, run: u64, status: Option<ExitStatus>) {
         if self
             .process
             .as_ref()
@@ -575,12 +654,19 @@ impl Emulator {
             return;
         }
         self.process = None;
+        let _ = self.writer.send(Write_::Pty(None));
         let _ = std::fs::remove_file(&self.history);
+        let signal = status.and_then(|status| status.signal());
+        let code = status
+            .and_then(|status| status.code())
+            .and_then(|code| u32::try_from(code).ok());
         if code != Some(0) {
-            let what = code.map_or_else(
-                || "The shell ended".to_owned(),
-                |code| format!("The shell exited with code {code}"),
-            );
+            tracing::warn!(id = %self.id, ?code, ?signal, "a terminal's shell ended");
+            let what = match (signal, code) {
+                (Some(signal), _) => format!("The shell was ended by {}", signal_name(signal)),
+                (None, Some(code)) => format!("The shell exited with code {code}"),
+                (None, None) => "The shell ended".to_owned(),
+            };
             self.show_failure(&format!("{what}. Type to start another."));
         }
         (self.notify)(Event::Exited(code));
@@ -601,8 +687,10 @@ impl Emulator {
     /// when the pseudo terminal closes behind it. It ends by itself after that, so a shell
     /// writing its history on the way out isn't cut off.
     fn end_shell(&mut self) {
-        if let Some(mut process) = self.process.take() {
-            let _ = process.killer.kill();
+        if let Some(process) = self.process.take()
+            && let Some(pid) = i32::try_from(process.pid).ok().and_then(Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process(pid, Signal::HUP);
         }
     }
 
@@ -617,12 +705,7 @@ impl Emulator {
 
     /// Writes what the terminal shows, and says where the shell is, for after a restart.
     fn save(&mut self) {
-        if let Some(cwd) = self
-            .process
-            .as_ref()
-            .and_then(|p| p.pid)
-            .and_then(process_cwd)
-        {
+        if let Some(cwd) = self.process.as_ref().and_then(|p| process_cwd(p.pid)) {
             self.cwd = cwd;
             (self.notify)(Event::Cwd(self.cwd.display().to_string()));
         }
@@ -637,6 +720,48 @@ impl Emulator {
         }
         self.changed = None;
     }
+}
+
+/// A pseudo terminal at this size: the terminal's end, then the shell's.
+fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd)> {
+    let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
+    rustix::io::fcntl_setfd(&master, FdFlags::CLOEXEC)?;
+    rustix::pty::grantpt(&master)?;
+    rustix::pty::unlockpt(&master)?;
+    let name = rustix::pty::ptsname(&master, Vec::new())?;
+    let slave = rustix::fs::open(
+        name.as_c_str(),
+        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    rustix::termios::tcsetwinsize(&master, winsize(cols, rows))?;
+    Ok((master, slave))
+}
+
+fn winsize(cols: u16, rows: u16) -> Winsize {
+    Winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    }
+}
+
+fn signal_name(signal: i32) -> String {
+    let name = [
+        (Signal::HUP, "SIGHUP"),
+        (Signal::INT, "SIGINT"),
+        (Signal::QUIT, "SIGQUIT"),
+        (Signal::ILL, "SIGILL"),
+        (Signal::ABORT, "SIGABRT"),
+        (Signal::BUS, "SIGBUS"),
+        (Signal::KILL, "SIGKILL"),
+        (Signal::SEGV, "SIGSEGV"),
+        (Signal::TERM, "SIGTERM"),
+    ]
+    .into_iter()
+    .find(|(known, _)| known.as_raw() == signal);
+    name.map_or_else(|| format!("signal {signal}"), |(_, name)| name.to_owned())
 }
 
 fn send_reset(client: &mut Client, (frame, len): (Vec<u8>, usize)) {
@@ -654,10 +779,10 @@ fn is_kitty_keyboard_report(data: &[u8]) -> bool {
 }
 
 fn write_loop(writes: Receiver<Write_>) {
-    let mut pty: Option<Box<dyn Write + Send>> = None;
+    let mut pty: Option<File> = None;
     for write in writes {
         match write {
-            Write_::Pty(writer) => pty = Some(writer),
+            Write_::Pty(writer) => pty = writer,
             Write_::Data(data) => {
                 if let Some(writer) = &mut pty
                     && (writer.write_all(&data).is_err() || writer.flush().is_err())
@@ -762,6 +887,7 @@ mod tests {
                 shell: Shell {
                     program: "/bin/sh".into(),
                     args: vec![],
+                    launcher: None,
                 },
                 cwd: folder.to_owned(),
                 fallback: folder.to_owned(),
@@ -852,6 +978,38 @@ mod tests {
 
         terminal.type_text("echo one-$((40+2))\n");
         terminal.wait_for("one-42");
+        terminal.handle.stop(false).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn reading_gives_the_last_lines_as_text_with_wrapped_lines_joined() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut terminal = start(folder.path(), &folder.path().join("h.vt"), 20);
+        terminal.wait_for_event(&Event::Running);
+        terminal.type_text("i=1; while [ $i -le 60 ]; do echo line-$i; i=$((i+1)); done\n");
+        terminal.wait_for("line-60");
+        terminal.type_text("echo abcdefghij-abcdefghij-abcdefghij-end\n");
+        terminal.wait_for("-end");
+        terminal.read(true);
+        let read = |lines| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(terminal.handle.read(lines))
+                .unwrap()
+        };
+
+        // Older than the screen's 24 rows, so only history has it.
+        let long = read(Some(40));
+        assert!(long.contains("line-30\n"), "{long:?}");
+        assert!(!long.contains("line-10\n"), "{long:?}");
+        assert!(
+            long.contains("\nabcdefghij-abcdefghij-abcdefghij-end"),
+            "{long:?}"
+        );
+
+        let screen = read(None);
+        assert!(screen.lines().count() <= 24, "{screen:?}");
+        assert!(!screen.contains("line-30\n"), "{screen:?}");
         terminal.handle.stop(false).unwrap().join().unwrap();
     }
 

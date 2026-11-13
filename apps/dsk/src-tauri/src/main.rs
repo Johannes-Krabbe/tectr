@@ -58,18 +58,80 @@ impl Pairings {
     }
 }
 
+/// The one pairing this app has under way: asked, with digits showing, then waiting for them
+/// to be typed on the device.
+#[derive(Default)]
+struct PairingAttempt {
+    asked: Mutex<Option<engine::PendingPairing>>,
+    /// Dropping it stops the wait.
+    waiting: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+#[derive(serde::Serialize)]
+struct PairingDigits {
+    digits: String,
+    /// The device's name, where they're typed.
+    machine: String,
+}
+
+/// Asks the device that showed `code` to pair, and returns the digits to type there.
 #[tauri::command]
 async fn pair_device(
     engine: State<'_, Engine>,
-    pairings: State<'_, Pairings>,
+    attempt: State<'_, PairingAttempt>,
     code: String,
-) -> Result<(), String> {
-    let store = pairings.store()?;
-    let url = engine
+) -> Result<PairingDigits, String> {
+    let pending = engine
         .pair(&code, &engine::this_machine_name())
         .await
         .map_err(|error| error.to_string())?;
+    let digits = PairingDigits {
+        digits: pending.digits.clone(),
+        machine: pending.machine.name.clone(),
+    };
+    *attempt.asked.lock().unwrap_or_else(PoisonError::into_inner) = Some(pending);
+    Ok(digits)
+}
+
+/// Waits for the digits from `pair_device` to be typed on the device, then keeps it.
+#[tauri::command]
+async fn finish_pairing(
+    engine: State<'_, Engine>,
+    pairings: State<'_, Pairings>,
+    attempt: State<'_, PairingAttempt>,
+) -> Result<(), String> {
+    let store = pairings.store()?;
+    let pending = attempt
+        .asked
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .ok_or("nothing is pairing")?;
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    *attempt
+        .waiting
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(stop);
+    let url = tokio::select! {
+        url = engine.finish_pairing(pending) => url.map_err(|error| error.to_string())?,
+        _ = stopped => return Err("stopped pairing".to_owned()),
+    };
     store.add_daemon(&url).map_err(|error| error.to_string())
+}
+
+/// Stops the pairing under way, and the device takes this app off its waiting list.
+#[tauri::command]
+fn stop_pairing(attempt: State<'_, PairingAttempt>) {
+    attempt
+        .asked
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    attempt
+        .waiting
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
 }
 
 /// Stops reaching a device, and takes this app off its allowed list first while it can.
@@ -394,14 +456,14 @@ fn watch_settings(app: AppHandle, store: SharedSettings) -> notify::Result<Recom
 async fn forward_updates(app: AppHandle, mut updates: broadcast::Receiver<Update>) {
     loop {
         let mut devices = match updates.recv().await {
-            Ok(Update::SessionEvent { .. }) => false,
+            Ok(Update::SessionEvent { .. } | Update::SessionReplayed { .. }) => false,
             Ok(Update::DeviceChanged { .. }) | Err(RecvError::Lagged(_)) => true,
             Err(RecvError::Closed) => return,
         };
         tokio::time::sleep(FRAME).await;
         loop {
             match updates.try_recv() {
-                Ok(Update::SessionEvent { .. }) => {}
+                Ok(Update::SessionEvent { .. } | Update::SessionReplayed { .. }) => {}
                 Ok(Update::DeviceChanged { .. }) | Err(TryRecvError::Lagged(_)) => devices = true,
                 Err(TryRecvError::Empty | TryRecvError::Closed) => break,
             }
@@ -687,6 +749,7 @@ fn main() {
                 engine
             });
             app.manage(Pairings(store));
+            app.manage(PairingAttempt::default());
             tauri::async_runtime::spawn(forward_updates(app.handle().clone(), engine.updates()));
             app.manage(engine);
 
@@ -741,6 +804,8 @@ fn main() {
             read_clipboard,
             write_clipboard,
             pair_device,
+            finish_pairing,
+            stop_pairing,
             forget_device,
             client_key
         ])
