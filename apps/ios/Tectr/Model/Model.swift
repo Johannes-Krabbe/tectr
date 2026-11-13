@@ -17,7 +17,11 @@ struct Device: Identifiable, Hashable {
     /// Why it can't be reached, or that it has stopped answering, in the words of whatever said so.
     var problem: String?
     var lastSeen: String?
+    /// It refused while only briefly awake, as a sleeping Mac is every so often.
+    var asleep = false
     var keepAwake = true
+    /// Until when someone asked it to stay awake, whatever its agents do.
+    var awakeUntil: Date?
     var providers: [Provider] = []
     var mcpServers: [McpServer] = []
     var pairedClients: [PairedClient] = []

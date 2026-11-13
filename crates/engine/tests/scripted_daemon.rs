@@ -89,6 +89,7 @@ async fn accept(listener: &TcpListener) -> Socket {
                 draft_images: Default::default(),
                 commands: Default::default(),
                 settings: Default::default(),
+                awake_until_ms: None,
                 mcp_servers: vec![],
                 paired_clients: vec![],
                 pairing_requests: vec![],

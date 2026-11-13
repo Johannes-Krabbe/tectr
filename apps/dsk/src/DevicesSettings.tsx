@@ -3,7 +3,7 @@ import { Row, keepFocus, useScrollToCurrent } from "./DeviceSettings";
 import type { Device } from "./engine";
 import { act, type ActionId } from "./keybinds";
 import { inPane } from "./keys";
-import { isOnline } from "./model";
+import { connectionProblem, isOnline } from "./model";
 import { isLoopback } from "./pathInput";
 import { hint, SETTINGS_MOVES, useHints } from "./shortcuts";
 import { GoInHint, listMoves, SettingsPage } from "./ui/SettingsPage";
@@ -17,6 +17,8 @@ function status(device: Device): string {
       return device.connection.stalled ? "Not responding" : "Online";
     case "offline":
       return "Offline";
+    case "asleep":
+      return "Asleep";
     case "incompatible":
       return "Needs an update";
   }
@@ -83,7 +85,7 @@ export function DevicesSettings({
     active && device ? (
       <>
         <span className="settings-actions-what">
-          {device.connection.state === "offline" ? device.connection.reason : device.url}
+          {connectionProblem(device) ?? device.url}
         </span>
         {removable && (
           <button className="button" onMouseDown={keepFocus} onClick={() => onForget(device)}>

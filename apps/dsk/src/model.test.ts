@@ -12,6 +12,9 @@ import type {
   Workspace,
 } from "./engine";
 import {
+  awakeUntil,
+  parseDuration,
+  timeLeft,
   archiveLosses,
   archiveSummary,
   conversationsFor,
@@ -243,6 +246,7 @@ test("a pane says what keeps its device from answering, worst first", () => {
   assert.equal(text({ state: "online", stalled: false }, true), "Waiting for Laptop");
   assert.equal(text({ state: "online", stalled: true }, true), "Laptop isn't responding");
   assert.equal(text({ state: "offline", reason: "gone" }, true), "Laptop is offline");
+  assert.equal(text({ state: "asleep" }, true), "Laptop is asleep");
   assert.equal(text({ state: "incompatible", daemon_min: 7, daemon_max: 8 }), "Laptop needs an update");
 });
 
@@ -250,6 +254,7 @@ test("reconnecting is offered only for a device that isn't connected", () => {
   const offers = (connection: Device["connection"]) =>
     deviceNotice(deviceWith(connection), true)?.reconnect;
   assert.equal(offers({ state: "offline", reason: "gone" }), true);
+  assert.equal(offers({ state: "asleep" }), true);
   assert.equal(offers({ state: "incompatible", daemon_min: 7, daemon_max: 8 }), true);
   assert.equal(offers({ state: "online", stalled: true }), false);
   assert.equal(offers({ state: "online", stalled: false }), false);
@@ -259,4 +264,35 @@ test("an offline device's notice carries why, and one never reached goes by its 
   const notice = deviceNotice(deviceWith({ state: "offline", reason: "the device stopped answering" }, false), false);
   assert.equal(notice?.text, "iroh://abc is offline");
   assert.equal(notice?.detail, "the device stopped answering");
+});
+
+test("a keep-awake time is typed the way the suggestions are written", () => {
+  assert.equal(parseDuration("2h"), 7_200);
+  assert.equal(parseDuration(" 90m "), 5_400);
+  assert.equal(parseDuration("1h30m"), 5_400);
+  assert.equal(parseDuration("1h 30m"), 5_400);
+  assert.equal(parseDuration("1.5h"), 5_400);
+  assert.equal(parseDuration("1d"), 86_400);
+  assert.equal(parseDuration("3"), 10_800, "a bare number is hours, like the suggestions");
+  assert.equal(parseDuration("2H"), 7_200);
+  for (const refused of ["", "0", "0h", "h", "2 hours", "-1h", "8d", "1h30"]) {
+    assert.equal(parseDuration(refused), null, refused);
+  }
+});
+
+test("what's left of keeping awake rounds up and drops empty units", () => {
+  assert.equal(timeLeft(4_240 * 60_000), "2d 22h 40m");
+  assert.equal(timeLeft(100 * 60_000), "1h 40m");
+  assert.equal(timeLeft(2 * 3_600_000), "2h");
+  assert.equal(timeLeft(61 * 60_000), "1h 1m");
+  assert.equal(timeLeft(1_000), "1m");
+  const state: DaemonState = {
+    machine: { id: "m", name: "m" },
+    workspaces: [],
+    approvals: [],
+    awake_until_ms: 5_000,
+  };
+  assert.equal(awakeUntil(state, 4_000), 5_000);
+  assert.equal(awakeUntil(state, 5_000), null, "a time that has passed is over before the daemon says so");
+  assert.equal(awakeUntil({ ...state, awake_until_ms: undefined }, 0), null);
 });

@@ -10,6 +10,9 @@ struct DeviceView: View {
     /// The name being typed, until it's sent.
     @State private var name: String?
     @State private var forgetting = false
+    /// The wheel for how long to keep it awake is out.
+    @State private var timing = false
+    @State private var duration: TimeInterval = 60 * 60
 
     var body: some View {
         if let device = store.device(deviceID) {
@@ -31,6 +34,8 @@ struct DeviceView: View {
                     }
                 }
                 .disabled(!device.online)
+                keepAwakeFor(device)
+                    .disabled(!device.online)
                 Section {
                     NavigationLink { ProvidersView(deviceID: deviceID) } label: {
                         LabeledContent("Providers", value: "\(device.providers.count)")
@@ -48,6 +53,7 @@ struct DeviceView: View {
                 }
             }
             .navigationTitle(device.name)
+            .animation(.default, value: timing)
             .confirmationDialog("Forget \(device.name)?", isPresented: $forgetting, titleVisibility: .visible) {
                 Button("Forget", role: .destructive) {
                     Task {
@@ -58,6 +64,31 @@ struct DeviceView: View {
             } message: {
                 Text("This phone stops reaching it, and comes off its paired list. Pairing again needs a new code from it")
             }
+        }
+    }
+
+    /// Set like a timer in the Clock app, and it counts down the same way.
+    private func keepAwakeFor(_ device: Device) -> some View {
+        Section {
+            if let until = device.awakeUntil, until > .now {
+                LabeledContent("Awake for") {
+                    Text(timerInterval: Date.now...until, countsDown: true)
+                        .monospacedDigit()
+                }
+                Button("Stop keeping awake") { store.keepAwake(for: nil, on: deviceID) }
+            }
+            if timing {
+                DurationWheel(seconds: $duration)
+                Button("Start") {
+                    store.keepAwake(for: duration, on: deviceID)
+                    timing = false
+                }
+                Button("Cancel", role: .cancel) { timing = false }
+            } else {
+                Button(device.awakeUntil == nil ? "Keep awake for a while" : "Change how long") { timing = true }
+            }
+        } footer: {
+            Text("Closing a laptop's lid still sleeps it")
         }
     }
 }
@@ -533,5 +564,34 @@ struct AddDeviceView: View {
     private static func spaced(_ digits: String) -> String {
         let middle = digits.index(digits.startIndex, offsetBy: digits.count / 2)
         return "\(digits[..<middle]) \(digits[middle...])"
+    }
+}
+
+/// The hours and minutes wheel of the Clock app's timer.
+struct DurationWheel: UIViewRepresentable {
+    @Binding var seconds: TimeInterval
+
+    func makeUIView(context: Context) -> UIDatePicker {
+        let picker = UIDatePicker()
+        picker.datePickerMode = .countDownTimer
+        picker.countDownDuration = seconds
+        picker.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
+        return picker
+    }
+
+    func updateUIView(_ picker: UIDatePicker, context: Context) {
+        context.coordinator.parent = self
+        if picker.countDownDuration != seconds { picker.countDownDuration = seconds }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var parent: DurationWheel
+
+        init(_ parent: DurationWheel) { self.parent = parent }
+
+        @objc func changed(_ picker: UIDatePicker) { parent.seconds = picker.countDownDuration }
     }
 }

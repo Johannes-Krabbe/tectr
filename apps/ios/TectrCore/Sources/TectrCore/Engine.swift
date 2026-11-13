@@ -111,6 +111,11 @@ public extension Command {
         Command("set_device_settings", ["settings": settings])
     }
 
+    /// Keeps the machine awake this many seconds from now, whatever its agents do. Nil stops early.
+    static func keepAwakeFor(seconds: UInt64?) -> Command {
+        Command("keep_awake_for", ["seconds": seconds])
+    }
+
     static func setSessionSettings(_ sessionId: String, mode: String, model: String?, effort: String?) -> Command {
         Command("set_session_settings", ["session_id": sessionId, "mode": mode, "model": model, "effort": effort])
     }

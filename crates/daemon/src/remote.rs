@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use iroh::endpoint::{Connection, Incoming, presets};
 use iroh::{Endpoint, EndpointId, SecretKey};
-use protocol::{PAIRING_ALPN, PairRequest, PairResponse, REMOTE_ALPN};
+use protocol::{CLOSE_ASLEEP, PAIRING_ALPN, PairRequest, PairResponse, REMOTE_ALPN};
 use tokio::task::JoinSet;
 
 use crate::core::{Core, PAIRING_WAIT};
@@ -85,6 +85,11 @@ async fn handle(core: Arc<Core>, incoming: Incoming) -> Result<()> {
     if connection.alpn() == REMOTE_ALPN {
         if !core.is_paired(&peer) {
             connection.close(CLOSE_NOT_PAIRED.into(), b"not paired with this device");
+            return Ok(());
+        }
+        if in_dark_wake().await {
+            tracing::debug!(peer = %peer.fmt_short(), "refused a remote client while asleep");
+            connection.close(CLOSE_ASLEEP.into(), b"the device is asleep");
             return Ok(());
         }
         tracing::debug!(peer = %peer.fmt_short(), "remote client connected");
@@ -171,4 +176,60 @@ async fn write_line(send: &mut iroh::endpoint::SendStream, response: &PairRespon
     line.push(b'\n');
     send.write_all(&line).await?;
     Ok(())
+}
+
+/// Whether this machine is only briefly awake. A sleeping Mac wakes every few minutes for
+/// seconds at a time, with no display, to fetch mail and keep its network up. A client let in
+/// then would show it online until it falls asleep again moments later. Anything unclear
+/// counts as awake, because refusing an awake machine is worse than a flicker.
+async fn in_dark_wake() -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    let output = tokio::process::Command::new("/usr/bin/pmset")
+        .args(["-g", "systemstate"])
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    match tokio::time::timeout(Duration::from_secs(2), output).await {
+        Ok(Ok(output)) if output.status.success() => {
+            is_dark_wake(&String::from_utf8_lossy(&output.stdout))
+        }
+        _ => false,
+    }
+}
+
+/// A fully awake Mac lists Graphics among its capabilities, display off or not. A dark wake
+/// leaves it out.
+fn is_dark_wake(systemstate: &str) -> bool {
+    systemstate
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Current System Capabilities are:"))
+        .is_some_and(|capabilities| {
+            let mut capabilities = capabilities.split_whitespace();
+            capabilities.clone().any(|capability| capability == "CPU")
+                && !capabilities.any(|capability| capability == "Graphics")
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_dark_wake;
+
+    #[test]
+    fn a_dark_wake_is_a_running_machine_without_graphics() {
+        let state = |capabilities: &str| {
+            format!("Current System Capabilities are: {capabilities}\nCurrent Power State: 4\n")
+        };
+        assert!(!is_dark_wake(&state("CPU Graphics Audio Network ")));
+        assert!(is_dark_wake(&state("CPU Network ")));
+        assert!(is_dark_wake(&state("CPU Audio Network")));
+    }
+
+    #[test]
+    fn output_it_does_not_understand_counts_as_awake() {
+        assert!(!is_dark_wake(""));
+        assert!(!is_dark_wake("pmset: unknown option"));
+        assert!(!is_dark_wake("Current System Capabilities are: \n"));
+    }
 }

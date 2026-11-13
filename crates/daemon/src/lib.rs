@@ -148,6 +148,7 @@ impl Daemon {
         tokio::spawn(core.clone().refresh_providers());
         tokio::spawn(core.clone().refresh_branches(None));
         tokio::spawn(core.clone().collect_images());
+        tokio::spawn(core.clone().expire_keep_awake());
         let (shutdown, shutdown_rx) = watch::channel(false);
         let accept_task = tokio::spawn(server::accept_loop(core.clone(), listener, shutdown_rx));
 

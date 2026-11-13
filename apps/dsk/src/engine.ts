@@ -217,6 +217,9 @@ export interface DaemonState {
   commands?: Record<string, AgentCommand[]>;
   /** Left out while every value is its default. */
   settings?: DeviceSettings;
+  /** Until when someone asked the machine to stay awake, on the daemon's clock. Left out when
+   * nobody did, and cleared once it has passed. */
+  awake_until_ms?: number;
   /** The MCP servers agents on this device get, device-wide and per topic. */
   mcp_servers?: McpServer[];
   /** The clients on other machines that may connect, oldest first. */
@@ -280,6 +283,8 @@ export type Connection =
    * the connection drops and they fail. */
   | { state: "online"; stalled: boolean }
   | { state: "offline"; reason: string }
+  /** It refused during one of the brief wakes a sleeping Mac has, and hasn't answered since. */
+  | { state: "asleep" }
   | { state: "incompatible"; daemon_min: number; daemon_max: number };
 
 export interface Device {
@@ -341,6 +346,8 @@ export type Command =
   | { command: "answer_approval"; approval_id: string; option_id: string }
   | { command: "rename_machine"; name: string }
   | { command: "set_device_settings"; settings: DeviceSettings }
+  /** Keeps the machine awake for this long from now, whatever its agents do. Null stops early. */
+  | { command: "keep_awake_for"; seconds: number | null }
   | { command: "detect_providers" }
   | { command: "add_provider"; agent: string }
   | { command: "remove_provider"; agent: string }

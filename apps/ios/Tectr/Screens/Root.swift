@@ -215,7 +215,8 @@ struct HomeView: View {
     private func status(_ device: Device) -> String? {
         if device.online { return device.problem }
         if device.problem == "Connecting" { return "Connecting" }
-        return device.lastSeen.map { "Offline, seen \($0)" } ?? "Offline"
+        let state = device.asleep ? "Asleep" : "Offline"
+        return device.lastSeen.map { "\(state), seen \($0)" } ?? state
     }
 
     private func run(_ action: AppAction) {

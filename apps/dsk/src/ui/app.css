@@ -1269,6 +1269,9 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   outline: 0;
 }
 
+/* A time, which is a few characters, beside the suggestions in its row. */
+.settings-input.short { width: calc(96 * var(--unit)); }
+
 .settings-actions-what.error { color: var(--color-status-failed); }
 
 .settings-actions-what.code {

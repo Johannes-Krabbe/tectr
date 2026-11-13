@@ -815,6 +815,7 @@ fn print_status(engine: &Engine) {
             Connection::Online { stalled: false } => "online".to_owned(),
             Connection::Online { stalled: true } => "not responding".to_owned(),
             Connection::Offline { .. } => "offline".to_owned(),
+            Connection::Asleep => "asleep".to_owned(),
             Connection::Incompatible {
                 daemon_min,
                 daemon_max,

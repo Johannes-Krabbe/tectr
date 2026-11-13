@@ -297,6 +297,7 @@ impl Store {
                 [],
             )?,
             settings: self.device_settings()?,
+            awake_until_ms: self.meta_json("awake_until_ms")?,
             mcp_servers: mcp_servers
                 .iter()
                 .filter_map(|server| serde_json::from_str(server).ok())
@@ -336,6 +337,21 @@ impl Store {
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             [serde_json::to_string(settings)?],
         )?;
+        Ok(())
+    }
+
+    /// Kept so a daemon that restarts mid-way keeps the machine awake for the rest of it.
+    pub fn set_awake_until(&self, until_ms: Option<i64>) -> Result<()> {
+        match until_ms {
+            Some(until_ms) => self.conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('awake_until_ms', ?1)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [until_ms.to_string()],
+            )?,
+            None => self
+                .conn
+                .execute("DELETE FROM meta WHERE key = 'awake_until_ms'", [])?,
+        };
         Ok(())
     }
 

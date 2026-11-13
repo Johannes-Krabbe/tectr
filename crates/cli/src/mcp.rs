@@ -732,6 +732,7 @@ mod tests {
             draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: protocol::DeviceSettings::default(),
+            awake_until_ms: None,
             mcp_servers: servers,
             paired_clients: vec![],
             pairing_requests: vec![],

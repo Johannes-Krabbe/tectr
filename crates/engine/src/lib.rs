@@ -31,7 +31,7 @@ use protocol::frame::{self, Kind};
 pub use protocol::liveness::Liveness;
 use protocol::liveness::SleepWatch;
 use protocol::{
-    Approval, ClientMessage, Command, CommandError, CommandOutput, DaemonState,
+    Approval, CLOSE_ASLEEP, ClientMessage, Command, CommandError, CommandOutput, DaemonState,
     MIN_PROTOCOL_VERSION, Machine, MachineId, PAIRING_ALPN, PROTOCOL_VERSION, PairRequest,
     PairResponse, PairingCode, REMOTE_ALPN, ServerMessage, SessionEvent, SessionRef,
     TerminalColors, TerminalId,
@@ -83,6 +83,9 @@ pub enum Connection {
     Offline {
         reason: String,
     },
+    /// Its machine is asleep: it refused this client during one of the brief wakes a sleeping
+    /// Mac has, and nothing has answered since.
+    Asleep,
     /// The daemon and this client have no protocol version in common.
     Incompatible {
         daemon_min: u32,
@@ -700,6 +703,10 @@ impl Engine {
 enum Lost {
     /// What to show until the next attempt.
     Because(String),
+    /// Nothing answered, which says nothing new about a device known to be asleep.
+    Unreachable(String),
+    /// The daemon refused because its machine is asleep.
+    Asleep,
     /// Asked to try again in the middle of an attempt. What's shown stays as it is, and
     /// the next attempt starts straight away.
     Retry,
@@ -708,6 +715,24 @@ enum Lost {
 impl From<String> for Lost {
     fn from(reason: String) -> Self {
         Lost::Because(reason)
+    }
+}
+
+impl From<&str> for Lost {
+    fn from(reason: &str) -> Self {
+        Lost::Because(reason.to_owned())
+    }
+}
+
+/// Why a daemon on another machine closed the connection.
+fn refused(error: iroh::endpoint::ConnectionError) -> Lost {
+    match &error {
+        iroh::endpoint::ConnectionError::ApplicationClosed(close)
+            if close.error_code == CLOSE_ASLEEP.into() =>
+        {
+            Lost::Asleep
+        }
+        _ => describe_closed(error).into(),
     }
 }
 
@@ -732,12 +757,8 @@ async fn maintain_connection(inner: Arc<Inner>, url: String) {
             if was_online {
                 daemon.device.last_seen_ms = Some(now_ms());
             }
-            match outcome {
-                Ok(state) => daemon.device.connection = state,
-                Err(Lost::Because(reason)) => {
-                    daemon.device.connection = Connection::Offline { reason };
-                }
-                Err(Lost::Retry) => {}
+            if let Some(shown) = shown_after(&daemon.device.connection, outcome) {
+                daemon.device.connection = shown;
             }
         }
         inner.device_changed(&url);
@@ -752,6 +773,21 @@ async fn maintain_connection(inner: Arc<Inner>, url: String) {
     }
 }
 
+/// What to show once a connection or an attempt has ended, or `None` to keep what's shown.
+fn shown_after(shown: &Connection, outcome: Result<Connection, Lost>) -> Option<Connection> {
+    match outcome {
+        Ok(state) => Some(state),
+        // Between its brief wakes, a sleeping machine doesn't answer at all, and showing that
+        // as offline would flicker between the two.
+        Err(Lost::Unreachable(_)) if *shown == Connection::Asleep => None,
+        Err(Lost::Because(reason) | Lost::Unreachable(reason)) => {
+            Some(Connection::Offline { reason })
+        }
+        Err(Lost::Asleep) => Some(Connection::Asleep),
+        Err(Lost::Retry) => None,
+    }
+}
+
 type Socket = WebSocketStream<Box<dyn Io>>;
 
 /// Opens the websocket the URL describes. The iroh connection comes back too, because
@@ -759,7 +795,7 @@ type Socket = WebSocketStream<Box<dyn Io>>;
 async fn open(
     inner: &Inner,
     url: &str,
-) -> Result<(Socket, Option<iroh::endpoint::Connection>), String> {
+) -> Result<(Socket, Option<iroh::endpoint::Connection>), Lost> {
     if let Some(key) = protocol::remote_daemon_key(url) {
         let daemon: EndpointId = key
             .parse()
@@ -772,8 +808,8 @@ async fn open(
         let connection = endpoint
             .connect(daemon, REMOTE_ALPN)
             .await
-            .map_err(|error| format!("couldn't reach the device: {error}"))?;
-        let (send, recv) = connection.open_bi().await.map_err(describe_closed)?;
+            .map_err(|error| Lost::Unreachable(format!("couldn't reach the device: {error}")))?;
+        let (send, recv) = connection.open_bi().await.map_err(refused)?;
         let stream: Box<dyn Io> = Box::new(tokio::io::join(recv, send));
         // The stream is already the daemon's, so the address only fills in the handshake.
         let (socket, _) = tokio_tungstenite::client_async("ws://tectr", stream)
@@ -781,7 +817,7 @@ async fn open(
             .map_err(|error| {
                 connection
                     .close_reason()
-                    .map_or_else(|| error.to_string(), describe_closed)
+                    .map_or_else(|| error.to_string().into(), refused)
             })?;
         return Ok((socket, Some(connection)));
     }
@@ -867,7 +903,7 @@ enum Handshake {
 }
 
 /// Connects and agrees on a protocol version.
-async fn handshake(inner: &Inner, url: &str) -> Result<Handshake, String> {
+async fn handshake(inner: &Inner, url: &str) -> Result<Handshake, Lost> {
     let (mut socket, connection) = open(inner, url).await?;
     send(
         &mut socket,
@@ -902,7 +938,7 @@ async fn handshake(inner: &Inner, url: &str) -> Result<Handshake, String> {
             min_version,
             max_version,
         } => Ok(refused(min_version, max_version)),
-        other => Err(format!("expected a welcome, got {other:?}")),
+        other => Err(format!("expected a welcome, got {other:?}").into()),
     }
 }
 
@@ -912,7 +948,7 @@ async fn connect_and_run(inner: &Inner, url: &str, online: &mut bool) -> Result<
     let attempt = tokio::time::timeout(CONNECT_TIMEOUT, handshake(inner, url));
     let (mut socket, connection) = tokio::select! {
         result = attempt => {
-            match result.map_err(|_| "the device didn't answer in time".to_owned())?? {
+            match result.map_err(|_| Lost::Unreachable("the device didn't answer in time".to_owned()))?? {
                 Handshake::Ready(socket, connection) => (*socket, connection),
                 Handshake::Refused(state) => return Ok(state),
             }
@@ -1187,4 +1223,43 @@ fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sleeping_device_stays_asleep_until_it_answers_otherwise() {
+        let offline = |reason: &str| Connection::Offline {
+            reason: reason.to_owned(),
+        };
+        let unreachable = || Err(Lost::Unreachable("nothing answered".to_owned()));
+
+        assert_eq!(
+            shown_after(&offline("quiet"), Err(Lost::Asleep)),
+            Some(Connection::Asleep)
+        );
+        assert_eq!(
+            shown_after(&Connection::Asleep, unreachable()),
+            None,
+            "the gaps between its brief wakes don't flicker to offline"
+        );
+        assert_eq!(
+            shown_after(&offline("quiet"), unreachable()),
+            Some(offline("nothing answered"))
+        );
+        assert_eq!(
+            shown_after(&Connection::Asleep, Err("not paired".into())),
+            Some(offline("not paired")),
+            "a daemon that answers with something else is awake"
+        );
+        assert_eq!(
+            shown_after(
+                &Connection::Asleep,
+                Ok(Connection::Online { stalled: false })
+            ),
+            Some(Connection::Online { stalled: false })
+        );
+    }
 }

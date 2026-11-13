@@ -23,6 +23,8 @@ public enum Wire {
         case connecting
         case online(stalled: Bool)
         case offline(reason: String)
+        /// It refused during one of the brief wakes a sleeping Mac has, and hasn't answered since.
+        case asleep
         case incompatible(daemonMin: UInt32, daemonMax: UInt32)
         case unknown
 
@@ -38,6 +40,7 @@ public enum Wire {
             case "connecting": self = .connecting
             case "online": self = .online(stalled: try c.decodeIfPresent(Bool.self, forKey: .stalled) ?? false)
             case "offline": self = .offline(reason: try c.decodeIfPresent(String.self, forKey: .reason) ?? "")
+            case "asleep": self = .asleep
             case "incompatible":
                 self = .incompatible(
                     daemonMin: try c.decode(UInt32.self, forKey: .daemonMin),
@@ -64,6 +67,9 @@ public enum Wire {
         public let approvals: [Approval]
         public let providers: [Provider]
         public let settings: DeviceSettings
+        /// Until when someone asked the machine to stay awake, in milliseconds since the Unix
+        /// epoch on the daemon's clock. Nil when nobody did, and cleared once it has passed.
+        public let awakeUntilMs: Int64?
         public let drafts: [String: String]
         public let draftImages: [String: [PromptImage]]
         public let commands: [String: [AgentCommand]]
@@ -75,11 +81,13 @@ public enum Wire {
             case draftImages = "draft_images"
             case mcpServers = "mcp_servers"
             case pairedClients = "paired_clients"
+            case awakeUntilMs = "awake_until_ms"
         }
 
         public init(from decoder: any Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             machine = try c.decode(Machine.self, forKey: .machine)
+            awakeUntilMs = try c.decodeIfPresent(Int64.self, forKey: .awakeUntilMs)
             workspaces = try c.decode([Workspace].self, forKey: .workspaces)
             approvals = try c.decode([Approval].self, forKey: .approvals)
             providers = try c.decodeIfPresent([Provider].self, forKey: .providers) ?? []

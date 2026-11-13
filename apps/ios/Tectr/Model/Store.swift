@@ -127,7 +127,9 @@ final class Store {
                 online: wire.connection.isOnline,
                 problem: Self.problem(wire.connection),
                 lastSeen: wire.lastSeenMs.map(ago),
+                asleep: wire.connection == .asleep,
                 keepAwake: state?.settings.keepAwake ?? true,
+                awakeUntil: state?.awakeUntilMs.map { Date(timeIntervalSince1970: Double($0) / 1000) },
                 providers: state?.providers.map(Provider.init) ?? [],
                 mcpServers: state?.mcpServers.map(McpServer.init) ?? [],
                 pairedClients: state?.pairedClients.map {
@@ -195,6 +197,7 @@ final class Store {
         case .connecting: "Connecting"
         case .online(let stalled): stalled ? "Not responding" : nil
         case .offline(let reason): reason
+        case .asleep: "It's asleep, and shows up again once it wakes"
         case .incompatible(let min, let max): "It speaks protocol \(min) to \(max), which this app doesn't"
         case .unknown: nil
         }
@@ -587,6 +590,12 @@ final class Store {
 
     func setKeepAwake(_ on: Bool, on deviceID: Device.ID) {
         fire(device(deviceID)?.machineID, .setDeviceSettings(Wire.DeviceSettings(keepAwake: on)))
+    }
+
+    /// Keeps the device awake this long from now, whatever its agents do. Nil stops early.
+    func keepAwake(for duration: TimeInterval?, on deviceID: Device.ID) {
+        let seconds = duration.map { UInt64(max($0, 60)) }
+        fire(device(deviceID)?.machineID, .keepAwakeFor(seconds: seconds))
     }
 
     func detectProviders(on deviceID: Device.ID) async {

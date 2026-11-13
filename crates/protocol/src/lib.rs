@@ -94,6 +94,10 @@ pub const REMOTE_ALPN: &[u8] = b"tectr/1";
 /// [`PairRequest`] and finishes, and the daemon answers with [`PairResponse`] lines, a
 /// [`PairResponse::Confirm`] and then the outcome, or only a refusal.
 pub const PAIRING_ALPN: &[u8] = b"tectr-pair/2";
+/// The QUIC close code of a daemon that refuses a remote client because its machine is only
+/// briefly awake, as a sleeping Mac is every so often. It would be gone again in seconds, so
+/// showing it as online would only flicker.
+pub const CLOSE_ASLEEP: u32 = 2;
 const REMOTE_SCHEME: &str = "iroh://";
 
 /// The address of a daemon on another machine, reached over iroh by its public key.
@@ -451,6 +455,12 @@ pub enum Command {
     SetDeviceSettings {
         settings: DeviceSettings,
     },
+    /// Keep the machine from idle sleep for this many seconds from now, whatever its agents
+    /// do, so it stays reachable. It's a duration and not a time, so the client's clock
+    /// doesn't matter. `None` stops early. At most [`MAX_KEEP_AWAKE_SECS`].
+    KeepAwakeFor {
+        seconds: Option<u64>,
+    },
     /// Change what a session runs with. A running agent changes straight away, even during
     /// a turn, and the session only reports the change once the agent has made it. A stopped
     /// agent gets these when it next starts. They're sent together because the efforts on
@@ -791,6 +801,10 @@ impl DeviceSettings {
     }
 }
 
+/// The longest [`Command::KeepAwakeFor`] takes. A week covers any trip, and anything longer
+/// is more likely a typo than a plan.
+pub const MAX_KEEP_AWAKE_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// Everything a daemon knows that clients show, so that every client sees the same. What
 /// each client is looking at is its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -804,6 +818,11 @@ pub struct DaemonState {
     pub providers: Vec<Provider>,
     #[serde(default, skip_serializing_if = "DeviceSettings::is_default")]
     pub settings: DeviceSettings,
+    /// Until when the machine stays awake because someone asked with
+    /// [`Command::KeepAwakeFor`], in milliseconds since the Unix epoch on the daemon's clock.
+    /// The daemon clears it once it has passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awake_until_ms: Option<i64>,
     /// What's typed for each session but not sent yet.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drafts: BTreeMap<SessionId, String>,
@@ -897,6 +916,9 @@ impl DaemonState {
             }
             StateChange::DeviceSettingsChanged { settings } => {
                 self.settings = settings.clone();
+            }
+            StateChange::AwakeUntilChanged { until_ms } => {
+                self.awake_until_ms = *until_ms;
             }
             StateChange::TerminalAdded { topic_id, terminal } => {
                 if let Some(topic) = self.topic_mut(topic_id) {
@@ -1435,6 +1457,9 @@ pub enum StateChange {
     DeviceSettingsChanged {
         settings: DeviceSettings,
     },
+    AwakeUntilChanged {
+        until_ms: Option<i64>,
+    },
     TerminalAdded {
         topic_id: TopicId,
         terminal: Terminal,
@@ -1798,6 +1823,7 @@ mod tests {
             draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
+            awake_until_ms: None,
             mcp_servers: vec![
                 server("on", None, true),
                 server("off", None, false),
@@ -1836,6 +1862,7 @@ mod tests {
             draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
+            awake_until_ms: None,
             mcp_servers: vec![],
             paired_clients: vec![],
             pairing_requests: vec![],
@@ -1928,6 +1955,7 @@ mod tests {
             draft_images: BTreeMap::new(),
             commands: BTreeMap::new(),
             settings: DeviceSettings::default(),
+            awake_until_ms: None,
             mcp_servers: vec![],
             paired_clients: vec![],
             pairing_requests: vec![],

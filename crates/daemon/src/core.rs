@@ -14,11 +14,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use protocol::{
     AgentCommand, Approval, ApprovalId, ArchiveRisk, Command, CommandError, CommandOutput,
-    DaemonState, DeviceSettings, ErrorCode, Machine, MachineId, MoveTarget, PermissionMode,
-    PermissionOption, PermissionOutcome, PromptImage, Provider, ProviderCandidate, Session,
-    SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, StateChange, StopReason,
-    Terminal, TerminalColors, TerminalId, TerminalStatus, ToolCallPatch, Topic, TopicId, Workspace,
-    WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
+    DaemonState, DeviceSettings, ErrorCode, MAX_KEEP_AWAKE_SECS, Machine, MachineId, MoveTarget,
+    PermissionMode, PermissionOption, PermissionOutcome, PromptImage, Provider, ProviderCandidate,
+    Session, SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, StateChange,
+    StopReason, Terminal, TerminalColors, TerminalId, TerminalStatus, ToolCallPatch, Topic,
+    TopicId, Workspace, WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -158,6 +158,8 @@ pub struct Core {
     /// Set once something needs remote clients: a pairing, or a client already paired.
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
     pairing: Mutex<remote::Pairings>,
+    /// Wakes [`Core::expire_keep_awake`] when the keep-awake timer changes.
+    awake_timer: tokio::sync::Notify,
 }
 
 /// What `Core::open` needs besides the data directory.
@@ -215,6 +217,8 @@ impl Core {
             awake: KeepAwake::new(keep_awake),
         };
         inner.recover()?;
+        // A timer from before a restart keeps going, which nothing else would start.
+        inner.sync_awake();
         Ok(Arc::new(Self {
             inner: Mutex::new(inner),
             signals,
@@ -242,6 +246,7 @@ impl Core {
             client_silence,
             endpoint: tokio::sync::OnceCell::new(),
             pairing: Mutex::new(remote::Pairings::default()),
+            awake_timer: tokio::sync::Notify::new(),
         }))
     }
 
@@ -350,6 +355,7 @@ impl Core {
                 effort,
             } => self.set_provider_defaults(&agent, model, effort),
             Command::SetDeviceSettings { settings } => self.set_device_settings(settings),
+            Command::KeepAwakeFor { seconds } => self.keep_awake_for(seconds),
             Command::SetSessionSettings {
                 session_id,
                 mode,
@@ -550,6 +556,49 @@ impl Core {
             .map_err(internal)?;
         inner.emit(StateChange::DeviceSettingsChanged { settings });
         Ok(CommandOutput::Done)
+    }
+
+    fn keep_awake_for(&self, seconds: Option<u64>) -> Result<CommandOutput, CommandError> {
+        let until_ms = match seconds {
+            None => None,
+            Some(0) => return Err(invalid("keeping awake takes a time longer than nothing")),
+            Some(seconds) if seconds > MAX_KEEP_AWAKE_SECS => {
+                return Err(invalid("keeping awake takes at most a week"));
+            }
+            Some(seconds) => Some(now_ms() + seconds as i64 * 1000),
+        };
+        self.lock().set_awake_until(until_ms).map_err(internal)?;
+        self.awake_timer.notify_one();
+        Ok(CommandOutput::Done)
+    }
+
+    /// Ends the keep-awake timer once its time has passed, for as long as the daemon runs. It
+    /// reads the wall clock at least once a minute, because tokio's timers stand still while
+    /// the machine sleeps, as it does when a lid closes, and would end it late by that long.
+    pub async fn expire_keep_awake(self: Arc<Self>) {
+        const LOOK_EVERY: Duration = Duration::from_secs(60);
+        loop {
+            let wait = {
+                let mut inner = self.lock();
+                match inner.state.awake_until_ms {
+                    None => None,
+                    Some(until) => {
+                        let left = until - now_ms();
+                        if left <= 0 {
+                            if let Err(error) = inner.set_awake_until(None) {
+                                tracing::warn!("couldn't end keeping awake: {error:#}");
+                            }
+                            continue;
+                        }
+                        Some(Duration::from_millis(left as u64).min(LOOK_EVERY))
+                    }
+                }
+            };
+            tokio::select! {
+                () = tokio::time::sleep(wait.unwrap_or(LOOK_EVERY)), if wait.is_some() => {}
+                () = self.awake_timer.notified() => {}
+            }
+        }
     }
 
     fn rename_topic(
@@ -2104,15 +2153,25 @@ impl Inner {
         self.set_draft(session_id, String::new(), vec![])
     }
 
+    fn set_awake_until(&mut self, until_ms: Option<i64>) -> Result<()> {
+        if self.state.awake_until_ms == until_ms {
+            return Ok(());
+        }
+        self.store.set_awake_until(until_ms)?;
+        self.emit(StateChange::AwakeUntilChanged { until_ms });
+        Ok(())
+    }
+
     fn emit(&mut self, change: StateChange) {
         self.state.apply(&change);
         let _ = self.signals.send(Signal::State(Arc::new(change)));
         self.sync_awake();
     }
 
-    /// Every status, setting, and removed tab arrives through `emit`, so checking here keeps
-    /// the machine awake exactly while some agent is starting or working. Waiting for an
-    /// answer doesn't count: nothing moves until someone is back anyway.
+    /// Every status, setting, timer and removed tab arrives through `emit`, so checking here
+    /// keeps the machine awake exactly while some agent is starting or working, or someone
+    /// asked for it. Waiting for an answer doesn't count: nothing moves until someone is back
+    /// anyway.
     fn sync_awake(&mut self) {
         let busy = self.state.sessions().any(|session| {
             matches!(
@@ -2120,7 +2179,12 @@ impl Inner {
                 SessionStatus::Starting | SessionStatus::Working
             )
         });
-        self.awake.set(busy && self.state.settings.keep_awake);
+        let asked = self
+            .state
+            .awake_until_ms
+            .is_some_and(|until| now_ms() < until);
+        self.awake
+            .set(busy && self.state.settings.keep_awake || asked);
     }
 
     fn append(&mut self, id: &SessionId, kind: SessionEventKind) {
@@ -2692,6 +2756,64 @@ mod tests {
         );
 
         set_status(&core, SessionStatus::Done);
+        assert!(!awake(&core));
+    }
+
+    #[tokio::test]
+    async fn keeping_awake_for_a_while_holds_without_agents_and_ends_by_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let stand_in = KeepAwakeCommand {
+            program: "sleep".into(),
+            args: vec!["60".into()],
+        };
+        let open = || Core::open(dir.path(), options("m", Some(stand_in.clone()))).unwrap();
+        let core = open();
+        let awake = |core: &Core| core.lock().awake.is_on();
+        let until = |core: &Core| core.snapshot_and_subscribe().0.awake_until_ms;
+        let keep_awake_for = |seconds| Command::KeepAwakeFor { seconds };
+
+        core.handle(Command::SetDeviceSettings {
+            settings: DeviceSettings { keep_awake: false },
+        })
+        .await
+        .unwrap();
+        let before = now_ms();
+        core.handle(keep_awake_for(Some(3600))).await.unwrap();
+        assert!(awake(&core), "it holds with no agent and the setting off");
+        let asked = until(&core).unwrap();
+        assert!((before + 3_600_000..=now_ms() + 3_600_000).contains(&asked));
+
+        // The rest of the time outlives a restart.
+        drop(core);
+        let core = open();
+        assert_eq!(until(&core), Some(asked));
+        assert!(awake(&core));
+
+        core.handle(keep_awake_for(None)).await.unwrap();
+        assert_eq!(until(&core), None);
+        assert!(!awake(&core), "stopping early lets it sleep");
+
+        for refused in [0, MAX_KEEP_AWAKE_SECS + 1] {
+            let error = core
+                .handle(keep_awake_for(Some(refused)))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidInput);
+        }
+        assert_eq!(until(&core), None);
+
+        // A time that has passed ends, as it would after a lid was closed past it.
+        core.lock().set_awake_until(Some(now_ms() - 1)).unwrap();
+        let mut changes = core.snapshot_and_subscribe().1;
+        tokio::spawn(core.clone().expire_keep_awake());
+        let ended = tokio::time::timeout(Duration::from_secs(5), changes.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ended,
+            Signal::State(change) if *change == StateChange::AwakeUntilChanged { until_ms: None }
+        ));
         assert!(!awake(&core));
     }
 

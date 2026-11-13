@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } fro
 import { AgentPane } from "./AgentPane";
 import { shownValue } from "./appearance";
 import { AppSettings } from "./AppSettings";
-import { DeviceSettings } from "./DeviceSettings";
+import { type DeviceField, DeviceSettings } from "./DeviceSettings";
 import {
   type Approval,
   type Device,
@@ -41,6 +41,8 @@ import {
 } from "./keys";
 import {
   allTopics,
+  awakeUntil,
+  connectionProblem,
   conversationsFor,
   deviceNotice,
   folderName,
@@ -172,7 +174,10 @@ export function App() {
   const [newTabStates, setNewTabStates] = useState<Record<string, NewTabState>>({});
   const [sheet, setSheet] = useState<SheetRequest | null>(null);
   // The device whose name is being edited in place, in its settings.
-  const [renamingDevice, setRenamingDevice] = useState<string | null>(null);
+  const [editingDevice, setEditingDevice] = useState<{
+    machineId: string;
+    field: DeviceField;
+  } | null>(null);
   const [palette, setPalette] = useState(false);
   const [picker, setPicker] = useState<Picker | null>(null);
   // The topic whose MCP servers are being chosen. It reads the topic live, so changes show.
@@ -365,16 +370,17 @@ export function App() {
   useEffect(() => {
     const showing =
       view?.kind === "device_settings" &&
-      view.machineId === renamingDevice &&
+      view.machineId === editingDevice?.machineId &&
       (view.section ?? "general") === "general";
-    if (renamingDevice && !showing) setRenamingDevice(null);
-  }, [view, renamingDevice]);
+    if (editingDevice && !showing) setEditingDevice(null);
+  }, [view, editingDevice]);
 
-  const renameDevice = (device: Device) => {
+  /** Opens the device's general settings with `field` ready to type in. */
+  const editDevice = (device: Device, field: DeviceField) => {
     if (!device.state || !isOnline(device)) return;
     const { id } = device.state.machine;
     preview({ kind: "device_settings", machineId: id, section: "general" });
-    setRenamingDevice(id);
+    setEditingDevice({ machineId: id, field });
   };
 
   const openSettings = (machineId: string, section?: string) => {
@@ -944,7 +950,7 @@ export function App() {
           id: `rename-device/${device.url}`,
           label: `Rename ${deviceName}`,
           keys: device === settingsDevice ? keysLabel("device.rename") : undefined,
-          run: () => renameDevice(device),
+          run: () => editDevice(device, "name"),
         });
         const state = device.state;
         items.push({
@@ -958,6 +964,22 @@ export function App() {
             request(id, { command: "set_device_settings", settings }).catch(reportFailure);
           },
         });
+        items.push({
+          id: `keep-awake-for/${device.url}`,
+          label: `Keep ${deviceName} awake for a while`,
+          keys: device === settingsDevice ? keysLabel("device.keep_awake_for") : undefined,
+          run: () => editDevice(device, "awake"),
+        });
+        if (awakeUntil(state, Date.now()) !== null) {
+          items.push({
+            id: `stop-keep-awake/${device.url}`,
+            label: `Stop keeping ${deviceName} awake`,
+            keys: device === settingsDevice ? keysLabel("device.stop_keep_awake") : undefined,
+            run: () => {
+              request(id, { command: "keep_awake_for", seconds: null }).catch(reportFailure);
+            },
+          });
+        }
       }
       for (const workspace of device.state?.workspaces ?? []) {
         items.push({
@@ -1119,9 +1141,9 @@ export function App() {
           machineId={view.machineId}
           section={view.section}
           nav={settingsNav}
-          renaming={renamingDevice === view.machineId}
-          onRename={() => renameDevice(settingsDevice)}
-          onRenameEnd={() => setRenamingDevice(null)}
+          editing={editingDevice?.machineId === view.machineId ? editingDevice.field : null}
+          onEdit={(field) => editDevice(settingsDevice, field)}
+          onEditEnd={() => setEditingDevice(null)}
           onPair={() => void pairWith(settingsDevice).catch(reportFailure)}
           onForget={() => void forget(settingsDevice).catch(reportFailure)}
         />
@@ -1343,7 +1365,7 @@ function Empty({ children }: { children: React.ReactNode }) {
 function Welcome({ devices, topics }: { devices: Device[]; topics: TopicEntry[] }) {
   if (!devices.some(isOnline)) {
     const failure = devices
-      .map((device) => (device.connection.state === "offline" ? device.connection.reason : null))
+      .map(connectionProblem)
       .find(Boolean);
     return (
       <Empty>

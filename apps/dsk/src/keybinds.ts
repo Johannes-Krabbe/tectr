@@ -178,6 +178,8 @@ export type ActionId =
   | "device.pick_effort"
   | "device.rename"
   | "device.toggle_keep_awake"
+  | "device.keep_awake_for"
+  | "device.stop_keep_awake"
   | "mcp.up"
   | "mcp.down"
   | "mcp.first"
