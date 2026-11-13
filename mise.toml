@@ -35,6 +35,10 @@ run = "xcodegen generate"
 description = "Build the engine for the iOS app: the ffi crate, its Swift bindings and TectrCore's xcframework"
 run = "scripts/ios-core.sh"
 
+[tasks."ios:testflight"]
+description = "Archive the iOS app on this Mac and upload it to TestFlight"
+run = "scripts/ios-testflight.sh"
+
 [tasks.tokens]
 description = "Regenerate design tokens and icons for both apps"
 run = "node design/tokens/build.mjs"

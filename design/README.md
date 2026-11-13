@@ -43,6 +43,7 @@ The mark is the Joint: a T-shaped tenon set into a block, after the tectonics in
 | `mark.svg`, `lockup.svg` | The mark alone, and the mark with the name, in `currentColor` for inline use |
 | `mark-on-dark.svg`, `mark-on-light.svg`, `lockup-on-*.svg` | The same in fixed colors, for places without CSS such as the README |
 | `AppIcon.icon` | The Liquid Glass app icon for macOS 26 and iOS 26, an Icon Composer document. The tenon and the block are separate glass layers |
+| `AppIconDev.icon`, `app-icon-ios-dev.svg` | The same icon on a green tile, the online green darkened. Debug builds of the iOS app use it, as a separate app called tectr dev, so a build from Xcode sits next to the TestFlight one and the two are easy to tell apart |
 | `app-icon-macos.svg`, `app-icon.icns` | The flat macOS app icon, on Apple's 1024 grid with its margin and shadow. Older macOS falls back to it |
 | `app-icon-ios.svg` | A flat, opaque full-bleed icon, the source for the web icons |
 | `tile.svg` | A rounded tile, the source for the raster favicons |
@@ -50,6 +51,6 @@ The mark is the Joint: a T-shaped tenon set into a block, after the tectonics in
 | `favicon/` | A web set: `favicon.svg` follows light and dark, `favicon.ico`, PNGs, `apple-touch-icon.png` and `icon-192/512.png` for a manifest |
 | `png/` | Every SVG above rendered at common sizes |
 
-After changing the mark, the name or the colors, run `mise run logo`. It rewrites the files here, the desktop app's `src-tauri/icons/` and the iOS app's `AppIcon.icon`. It renders with the Tauri CLI and `sips`, so it needs a Mac and `pnpm install` in `apps/dsk`. `mise run tokens:test` fails when the SVGs fall behind the tokens.
+After changing the mark, the name or the colors, run `mise run logo`. It rewrites the files here, the desktop app's `src-tauri/icons/` and the iOS app's `AppIcon.icon` and `AppIconDev.icon`. It renders with the Tauri CLI and `sips`, so it needs a Mac and `pnpm install` in `apps/dsk`. `mise run tokens:test` fails when the SVGs fall behind the tokens.
 
 To tune the glass, open `AppIcon.icon` in Icon Composer, which comes with Xcode 26 or later, and copy what you settle on into `glassIcon` in `build.mjs`, or the next build overwrites it. Compiling it takes `actool` from Xcode 26 or later. Xcode builds do that by themselves. `mise run release:build` uses Xcode even when `xcode-select` points at the Command Line Tools, and fails if the app comes out without the icon.

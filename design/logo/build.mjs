@@ -21,6 +21,9 @@ const LOGO = 'design/logo';
 const TAURI_ICONS = 'apps/dsk/src-tauri/icons';
 // The iOS file name is the icon's name in the build settings. Tauri renames its copy itself.
 const GLASS_ICONS = [`${LOGO}/AppIcon.icon`, `${TAURI_ICONS}/icon.icon`, 'apps/ios/Tectr/AppIcon.icon'];
+// Debug builds of the iOS app use this one, so a build from Xcode and a TestFlight build can sit
+// side by side on a phone and still be told apart.
+const DEV_GLASS_ICONS = [`${LOGO}/AppIconDev.icon`, 'apps/ios/Tectr/AppIconDev.icon'];
 
 // The Joint: a T-shaped tenon set into a block, on a 48 unit grid with 12 unit walls and 4 unit
 // gaps. Every coordinate is a multiple of 4, so at 12px (a 16px favicon with 2px padding) each
@@ -50,6 +53,27 @@ const COLOR = {
   edge: dark['color.line.strong'].value,
 };
 
+// The dev tile is the online green with its hue and saturation kept and its lightness lowered,
+// so the light mark keeps at least 3:1 contrast on it. The top is a step lighter, like the dark tile.
+const DEV = {
+  raised: withLightness(dark['color.status.online'].value, 0.34),
+  base: withLightness(dark['color.status.online'].value, 0.24),
+};
+
+function withLightness(hex, lightness) {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const s = max === min ? 0 : (max - min) / (1 - Math.abs(2 * l - 1));
+  const h = max === min ? 0 : max === r ? ((g - b) / (max - min) + 6) % 6 : max === g ? (b - r) / (max - min) + 2 : (r - g) / (max - min) + 4;
+  const c = (1 - Math.abs(2 * lightness - 1)) * s;
+  const x = c * (1 - Math.abs((h % 2) - 1));
+  const m = lightness - c / 2;
+  const rgb = [[c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x]][Math.floor(h)];
+  return `#${rgb.map(v => Math.round((v + m) * 255).toString(16).padStart(2, '0')).join('')}`;
+}
+
 const num = (value, places = 2) => String(Number(value.toFixed(places)));
 
 function markPath(x, y, size, pieces = MARK) {
@@ -67,7 +91,8 @@ const TEXT_SCALE = 48 / WORDMARK.ascent;
 const LOCKUP = { width: 48 + GAP + WORDMARK.width * TEXT_SCALE, height: 48 + WORDMARK.descent * TEXT_SCALE };
 const lockupBody = `<path d="${markPath(0, 0, 48)}"/><path transform="translate(${48 + GAP} 48) scale(${num(TEXT_SCALE, 6)})" d="${WORDMARK.d}"/>`;
 
-const background = `<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${COLOR.raised}"/><stop offset="1" stop-color="${COLOR.base}"/></linearGradient></defs>`;
+const gradient = ({ raised, base }) => `<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${raised}"/><stop offset="1" stop-color="${base}"/></linearGradient></defs>`;
+const background = gradient(COLOR);
 
 // macOS draws icons as they are, so this follows Apple's 1024 grid: an 824 tile with a 100
 // margin for the shadow. The edge keeps the dark tile visible on a dark Dock.
@@ -79,22 +104,22 @@ const macIcon = svg(1024, 1024, [
 ].join(''));
 
 // The flat iOS icon, for web icons. iOS masks the corners itself and wants a full, opaque square.
-const iosIcon = svg(1024, 1024, `${background}<rect width="1024" height="1024" fill="url(#bg)"/><path fill="${COLOR.onDark}" d="${markPath(248, 248, 528)}"/>`);
+const iosIcon = tile => svg(1024, 1024, `${gradient(tile)}<rect width="1024" height="1024" fill="url(#bg)"/><path fill="${COLOR.onDark}" d="${markPath(248, 248, 528)}"/>`);
 
 // Liquid Glass icons for macOS 26 and iOS 26, read by Icon Composer, Xcode and Tauri. Each piece of
 // the joint is its own glass layer, so the system lights the tenon and the block separately.
 // Layers cover the whole 1024 canvas, as Icon Composer expects, which keeps the pieces in register.
 const srgb = hex => `extended-srgb:${[1, 3, 5].map(i => (parseInt(hex.slice(i, i + 2), 16) / 255).toFixed(5)).join(',')},1.00000`;
 const GLASS_LAYERS = { tenon: [MARK[0]], block: [MARK[1]] };
-const glassIcon = {
-  fill: { 'automatic-gradient': srgb(COLOR.raised) },
+const glassIcon = tile => ({
+  fill: { 'automatic-gradient': srgb(tile.raised) },
   groups: [{
     layers: Object.keys(GLASS_LAYERS).map(name => ({ glass: true, 'image-name': `${name}.svg`, name })),
     shadow: { kind: 'neutral', opacity: 0.5 },
     translucency: { enabled: true, value: 0.5 },
   }],
   'supported-platforms': { squares: 'shared' },
-};
+});
 
 const SOCIAL = { width: 1280, height: 640, lockup: 560 };
 const socialScale = SOCIAL.lockup / LOCKUP.width;
@@ -115,12 +140,13 @@ export function outputs() {
     [`${LOGO}/lockup-on-dark.svg`]: lockup(` fill="${COLOR.onDark}"`),
     [`${LOGO}/lockup-on-light.svg`]: lockup(` fill="${COLOR.onLight}"`),
     [`${LOGO}/app-icon-macos.svg`]: macIcon,
-    [`${LOGO}/app-icon-ios.svg`]: iosIcon,
+    [`${LOGO}/app-icon-ios.svg`]: iosIcon(COLOR),
+    [`${LOGO}/app-icon-ios-dev.svg`]: iosIcon(DEV),
     [`${LOGO}/tile.svg`]: svg(64, 64, `<rect width="64" height="64" rx="14" fill="${COLOR.base}"/><path fill="${COLOR.onDark}" d="${markPath(8, 8, 48)}"/>`),
     [`${LOGO}/social.svg`]: social,
     [`${LOGO}/favicon/favicon.svg`]: svg(64, 64, `<style>path{fill:${COLOR.onLight}}@media (prefers-color-scheme:dark){path{fill:${COLOR.onDark}}}</style><path d="${markPath(8, 8, 48)}"/>`),
-    ...Object.fromEntries(GLASS_ICONS.flatMap(dir => [
-      [`${dir}/icon.json`, `${JSON.stringify(glassIcon, null, 2)}\n`],
+    ...Object.fromEntries([...GLASS_ICONS.map(dir => [dir, COLOR]), ...DEV_GLASS_ICONS.map(dir => [dir, DEV])].flatMap(([dir, tile]) => [
+      [`${dir}/icon.json`, `${JSON.stringify(glassIcon(tile), null, 2)}\n`],
       ...Object.entries(GLASS_LAYERS).map(([name, pieces]) => [
         `${dir}/Assets/${name}.svg`,
         svg(1024, 1024, `<path fill="${COLOR.onDark}" d="${markPath(248, 248, 528, pieces)}"/>`),
@@ -140,6 +166,7 @@ export function staleFiles() {
 const RASTERS = [
   ['app-icon-macos.svg', 'png/app-icon-macos-{s}.png', [16, 32, 64, 128, 256, 512, 1024]],
   ['app-icon-ios.svg', 'png/app-icon-ios-{s}.png', [1024], { opaque: true }],
+  ['app-icon-ios-dev.svg', 'png/app-icon-ios-dev-{s}.png', [1024], { opaque: true }],
   ['mark-on-dark.svg', 'png/mark-on-dark-{s}.png', [64, 128, 256, 512, 1024]],
   ['mark-on-light.svg', 'png/mark-on-light-{s}.png', [64, 128, 256, 512, 1024]],
   ['lockup-on-dark.svg', 'png/lockup-on-dark-{s}w.png', [480, 960, 1920], { aspect: LOCKUP.height / LOCKUP.width }],

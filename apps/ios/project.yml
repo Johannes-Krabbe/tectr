@@ -35,6 +35,12 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.tectr.ios
+        # In here rather than set in Xcode, which `xcodegen generate` would undo.
+        DEVELOPMENT_TEAM: V23RY29ZXJ
+        CODE_SIGN_STYLE: Automatic
+        # iroh's TLS is standard encryption, which is exempt, so uploads skip the export
+        # compliance question.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         # The engine is built for Apple Silicon simulators only, like the rest of tectr.
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -47,6 +53,13 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_NSCameraUsageDescription: Scans a pairing code, and takes photos to send to an agent
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Reaches your devices directly when they're on the same network
+      # A build from Xcode is a separate app with a green icon, so it installs next to the
+      # TestFlight one instead of replacing it, and the two are easy to tell apart.
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.tectr.ios.debug
+          INFOPLIST_KEY_CFBundleDisplayName: tectr dev
+          ASSETCATALOG_COMPILER_APPICON_NAME: AppIconDev
   TectrTests:
     type: bundle.unit-test
     platform: iOS

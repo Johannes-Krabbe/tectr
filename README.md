@@ -188,9 +188,11 @@ Releases are built and published from this Mac, not CI. `mise run release:build`
 
 ## iOS app
 
-This only shows a placeholder so far. It's SwiftUI, and needs Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen). The Xcode project is generated and isn't in git:
+It's SwiftUI, and needs Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen). The Xcode project is generated and isn't in git:
 
 ```sh
 cd apps/ios && xcodegen generate
 open Tectr.xcodeproj
 ```
+
+Debug builds install as a separate app, tectr dev, with a green icon. `mise run ios:testflight` archives a Release build on this Mac and uploads it to TestFlight, where it shows up after Apple processes it, 10 to 30 minutes.

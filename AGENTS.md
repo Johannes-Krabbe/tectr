@@ -64,9 +64,12 @@ mise run tokens       # regenerate tokens and icons
 mise run ios:core     # build the engine for the iOS app, after any Rust change
 mise run logo         # regenerate logo files and app icons
 mise run release:build  # build the release app, CLI and daemon locally, publishing nothing
+mise run ios:testflight  # archive the iOS app and upload it to TestFlight; publishes, only when asked
 ```
 
 Builds from source are the dev channel (port 7769, `tectr-dev` folders) and never touch the installed release. Run `mise run release <version>` only when asked: it publishes.
+
+iOS has two apps on one phone. Debug builds are `dev.tectr.ios.debug`, named tectr dev, with the green `AppIconDev` icon: build and install them with `xcodebuild -configuration Debug -allowProvisioningUpdates` for the device, then `xcrun devicectl device install app`. Release builds are `dev.tectr.ios`, named tectr, with the black icon, and only reach the phone through TestFlight. `mise run ios:testflight` runs on this Mac instead of CI: it rebuilds the engine, archives unsigned, then exports with automatic signing (team `V23RY29ZXJ`, the Apple account in Xcode) straight to App Store Connect. It ships the working tree as it is. The version comes from `Cargo.toml` and the build number is the UTC time. Signing settings live in `apps/ios/project.yml`, since `xcodegen generate` overwrites anything set in Xcode.
 
 Avoid `cargo --workspace`: it includes the desktop app, which needs its frontend built first.
 
