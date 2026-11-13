@@ -65,10 +65,36 @@ pub struct ForkPoint {
 async fn launch(core: &Core, launcher: &AgentLauncher, isolation: &Isolation) -> Result<AcpAgent> {
     let (program, mut args) = core.resolve_launcher(launcher).await?;
     args.extend(isolation.args.iter().cloned());
+    let program = program_path(program, &isolation.env)?;
     let config = AcpAgentConfig::new(program)
         .args(args)
         .envs(isolation.env.iter().cloned());
     Ok(AcpAgent::new(config))
+}
+
+/// The program as a path, found on the `PATH` the agent gets. Given a bare name and a `PATH`
+/// of its own, std forks rather than using posix_spawn, so it can search that `PATH` itself.
+/// Once Apple's Network framework has run in the daemon, a forked child crashes before exec
+/// (see `terminal::launch_shell`), and the agent dies with SIGSEGV.
+fn program_path(program: PathBuf, env: &[(String, String)]) -> Result<PathBuf> {
+    if program.components().count() != 1 || program.is_absolute() {
+        return Ok(program);
+    }
+    let path = match env.iter().rev().find(|(key, _)| key == "PATH") {
+        Some((_, path)) => std::ffi::OsString::from(path),
+        None => std::env::var_os("PATH").unwrap_or_default(),
+    };
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(&program))
+        .find(|candidate| is_executable(candidate))
+        .ok_or_else(|| anyhow!("couldn't find {} on PATH", program.display()))
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 /// The servers as ACP passes them. An agent that can't use HTTP servers goes without them,
@@ -896,5 +922,56 @@ fn stop_reason_from_acp(reason: StopReason) -> tp::StopReason {
         StopReason::Refusal => tp::StopReason::Refusal,
         StopReason::Cancelled => tp::StopReason::Cancelled,
         _ => tp::StopReason::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    use super::*;
+
+    fn write(path: &Path, mode: u32) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    fn env_path(dirs: &[&Path]) -> Vec<(String, String)> {
+        let path = std::env::join_paths(dirs).unwrap();
+        vec![("PATH".to_owned(), path.into_string().unwrap())]
+    }
+
+    #[test]
+    fn a_bare_program_is_found_on_the_agents_own_path_so_std_never_forks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (first, second) = (dir.path().join("a"), dir.path().join("b"));
+        write(&first.join("node"), 0o644);
+        write(&second.join("node"), 0o755);
+        write(&dir.path().join("c").join("node"), 0o755);
+        let env = env_path(&[&first, &second, &dir.path().join("c")]);
+        assert_eq!(
+            program_path(PathBuf::from("node"), &env).unwrap(),
+            second.join("node")
+        );
+    }
+
+    #[test]
+    fn a_program_with_a_folder_is_left_alone() {
+        let env = env_path(&[Path::new("/nowhere")]);
+        for program in ["/usr/bin/agent", "./agent", "bin/agent"] {
+            assert_eq!(
+                program_path(PathBuf::from(program), &env).unwrap(),
+                PathBuf::from(program)
+            );
+        }
+    }
+
+    #[test]
+    fn a_program_missing_from_the_path_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = program_path(PathBuf::from("opencode"), &env_path(&[dir.path()])).unwrap_err();
+        assert_eq!(error.to_string(), "couldn't find opencode on PATH");
     }
 }
