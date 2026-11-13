@@ -61,6 +61,11 @@ pub const GROUPS: &[Group] = &[
         about: "While typing what to find in a diff.",
     },
     Group {
+        id: "commit",
+        title: "Writing a commit message",
+        about: "In a diff's commit box. Enter starts a new line.",
+    },
+    Group {
         id: "new_topic",
         title: "Starting an agent",
         about: "On the new topic screen, and in a new tab once you've chosen an agent.",
@@ -449,8 +454,38 @@ pub const ACTIONS: &[Action] = &[
     once(
         "diff.scope",
         "Switch between uncommitted changes and the whole branch",
+        &["b"],
+    ),
+    once(
+        "diff.stage_hunk",
+        "Stage or unstage the hunk at the top",
         &["s"],
     ),
+    once(
+        "diff.stage_file",
+        "Stage or unstage the file at the top",
+        &["shift+s"],
+    ),
+    once(
+        "diff.stage_all",
+        "Stage everything, or unstage it all once it's all staged",
+        &["a"],
+    ),
+    once("diff.discard_hunk", "Discard the hunk at the top", &["x"]),
+    once(
+        "diff.discard_file",
+        "Discard the file at the top",
+        &["shift+x"],
+    ),
+    once("diff.commit", "Commit what's staged", &["c"]),
+    once("diff.amend", "Amend the last commit", &["shift+a"]),
+    once("commit.send", "Commit", &["mod+enter"]),
+    once(
+        "commit.toggle_amend",
+        "Amend the last commit or not",
+        &["alt+a"],
+    ),
+    follows("commit.cancel", "Close the commit box", "nav.back"),
     once(
         "diff.toggle_files",
         "Show or hide the list of files",
@@ -637,6 +672,7 @@ const SHARED_WITH_GLOBAL: &[&str] = &[
     "new_tab",
     "diff",
     "diff_search",
+    "commit",
     "new_topic",
     "device",
     "mcp",
@@ -694,6 +730,7 @@ const TEXT_GROUPS: &[&str] = &[
     "palette",
     "mcp_form",
     "diff_search",
+    "commit",
 ];
 
 /// The longest a key can be required to be held. Long enough for anyone, and short

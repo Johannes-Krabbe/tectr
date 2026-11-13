@@ -807,6 +807,117 @@ button.side-search:hover {
 .diff-line.added .diff-code { color: var(--color-diff-add-text); }
 .diff-line.removed .diff-code { color: var(--color-diff-del-text); }
 
+/* A file's lines scroll sideways together, and the hunk header stays the width of what's on
+   screen, so its buttons never sit on its text however wide the lines are. */
+.diff-lines { container-type: inline-size; }
+
+.diff-hunk-line {
+  position: sticky;
+  left: var(--space-md);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: calc(100cqw - 2 * var(--space-md));
+}
+
+.diff-hunk-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diff-hunk-context { color: var(--color-text-secondary); }
+
+.diff-hunk-git {
+  flex: none;
+  display: flex;
+  gap: var(--space-xs);
+  visibility: hidden;
+}
+
+.diff-hunk:hover .diff-hunk-git,
+.diff-hunk.current .diff-hunk-git { visibility: visible; }
+
+/* The hunk the keys act on. */
+.diff-table .diff-hunk.current td {
+  box-shadow: inset 2px 0 0 var(--color-accent-solid);
+  color: var(--color-text-secondary);
+}
+
+.diff-file-git {
+  display: flex;
+  gap: var(--space-xs);
+  align-self: center;
+  visibility: hidden;
+}
+
+.diff-file-head:hover .diff-file-git { visibility: visible; }
+
+.diff-commit {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-line-subtle);
+}
+
+/* Drawn like the message box: the text and its vim mode inside one border. */
+.diff-commit-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+}
+
+.diff-commit-box:focus-within { border-color: var(--color-accent-ring); }
+
+.diff-commit-box .composer-mode { align-self: flex-start; }
+
+.diff-commit-message {
+  width: 100%;
+  min-height: calc(60 * var(--unit));
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--color-text-primary);
+  font: var(--text-code-body);
+  /* Grows with the message instead of a drag handle, as the message box does. */
+  resize: none;
+  field-sizing: content;
+  max-height: 240px;
+}
+
+.diff-commit-message::placeholder { color: var(--color-text-tertiary); }
+
+.diff-commit-message[data-vim="normal"] { caret-color: var(--color-text-primary); }
+
+.diff-commit-message[data-vim="normal"]::selection {
+  background: var(--color-text-primary);
+  color: var(--color-surface-raised);
+}
+
+.diff-commit-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.diff-commit-foot .error { flex: 1; }
+
+.diff-commit-amend {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+  color: var(--color-text-secondary);
+  font: var(--text-meta);
+}
+
 .diff-table .diff-hunk td {
   padding: var(--space-xs) var(--space-md);
   background: var(--color-surface-raised);
@@ -1456,6 +1567,13 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 .button.primary { background: var(--color-accent-solid); color: var(--color-text-on-accent); }
 .button.primary:hover:not(:disabled) { background: var(--color-accent-solid); }
 .button.primary .kbd { background: none; color: var(--color-text-on-accent); }
+
+.button.small {
+  height: calc(20 * var(--unit));
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-xs);
+  font: var(--text-meta);
+}
 
 /* Settings */
 .settings {

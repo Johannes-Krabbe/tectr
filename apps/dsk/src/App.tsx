@@ -1281,6 +1281,7 @@ export function App() {
                   diff={shownDiff}
                   online={isOnline(entry.device)}
                   onPicker={setPicker}
+                  onConfirm={setSheet}
                 />
               ) : (
                 <NewTab

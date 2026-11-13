@@ -172,6 +172,13 @@ export type DiffItemId =
   | "diff-fold"
   | "diff-viewed"
   | "diff-copy"
+  | "diff-stage-hunk"
+  | "diff-stage-file"
+  | "diff-stage-all"
+  | "diff-discard-hunk"
+  | "diff-discard-file"
+  | "diff-commit"
+  | "diff-amend"
   | "diff-fold-all"
   | "diff-files"
   | "diff-wrap";
@@ -186,6 +193,13 @@ export function diffItems(diff: {
   /** Whether any file is unfolded, which folding every file would fold. */
   anyOpen: boolean;
   file?: { path: string; folded: boolean; viewed: boolean };
+  /** Only uncommitted changes can be staged and committed. */
+  git?: {
+    /** The file at the top: whether it's the staged half, and whether its hunks go apart. */
+    file?: { staged: boolean; hunks: boolean };
+    anyStaged: boolean;
+    anyUnstaged: boolean;
+  };
 }): ActionItem<DiffItemId>[][] {
   const scope = diff.switchTo === "branch" ? "the whole branch" : "uncommitted changes";
   const files = diff.filesShown ? "Hide the list of files" : "Show the list of files";
@@ -207,6 +221,35 @@ export function diffItems(diff: {
       { id: "diff-viewed", label: viewed, inPalette: `${viewed}: ${file.path}`, detail: "Diff", key: "diff.viewed" },
       { id: "diff-copy", label: "Copy its path", inPalette: `Copy the path of ${file.path}`, detail: "Diff", key: "diff.copy_path" },
     ]);
+  }
+  const { git } = diff;
+  if (git) {
+    const items: ActionItem<DiffItemId>[] = [];
+    const where = file ? `: ${file.path}` : "";
+    if (git.file) {
+      const verb = git.file.staged ? "Unstage" : "Stage";
+      if (git.file.hunks) {
+        items.push({ id: "diff-stage-hunk", label: `${verb} this hunk`, inPalette: `${verb} the hunk at the top${where}`, detail: "Diff", key: "diff.stage_hunk" });
+      }
+      items.push({ id: "diff-stage-file", label: `${verb} this file`, inPalette: `${verb} ${file?.path ?? "the file"}`, detail: "Diff", key: "diff.stage_file" });
+    }
+    if (git.anyUnstaged || git.anyStaged) {
+      const all = git.anyUnstaged ? "Stage everything" : "Unstage everything";
+      items.push({ id: "diff-stage-all", label: all, inPalette: all, detail: "Diff", key: "diff.stage_all" });
+    }
+    items.push(
+      { id: "diff-commit", label: "Commit", inPalette: "Commit what's staged", detail: "Diff", key: "diff.commit" },
+      { id: "diff-amend", label: "Amend the last commit", inPalette: "Amend the last commit", detail: "Diff", key: "diff.amend" },
+    );
+    groups.push(items);
+    if (git.file && !git.file.staged) {
+      const discard: ActionItem<DiffItemId>[] = [];
+      if (git.file.hunks) {
+        discard.push({ id: "diff-discard-hunk", label: "Discard this hunk", inPalette: `Discard the hunk at the top${where}`, detail: "Diff", key: "diff.discard_hunk" });
+      }
+      discard.push({ id: "diff-discard-file", label: "Discard this file", inPalette: `Discard the changes to ${file?.path ?? "the file"}`, detail: "Diff", key: "diff.discard_file" });
+      groups.push(discard);
+    }
   }
   groups.push([
     { id: "diff-fold-all", label: all, inPalette: all, detail: "Diff", key: "diff.toggle_all" },

@@ -171,6 +171,16 @@ export type ActionId =
   | "diff.prev_match"
   | "diff_search.confirm"
   | "diff_search.cancel"
+  | "diff.stage_hunk"
+  | "diff.stage_file"
+  | "diff.stage_all"
+  | "diff.discard_hunk"
+  | "diff.discard_file"
+  | "diff.commit"
+  | "diff.amend"
+  | "commit.send"
+  | "commit.toggle_amend"
+  | "commit.cancel"
   | "new_topic.start"
   | "new_topic.newline"
   | "new_topic.cancel"
@@ -404,6 +414,7 @@ const TEXT_CONTEXTS = new Set([
   "palette",
   "mcp_form",
   "diff_search",
+  "commit",
 ]);
 
 interface KeyEventLike extends KeyPress {

@@ -21,6 +21,9 @@ const BINARY_PROBE: usize = 8_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Changes {
     pub base: Option<String>,
+    /// The last commit's message, which amending starts from. Only the uncommitted scope reads
+    /// it, because only it can commit.
+    pub head_message: Option<String>,
     pub files: Vec<FileDiff>,
 }
 
@@ -51,7 +54,19 @@ pub async fn read(dir: &Path, scope: &DiffScope) -> Result<Changes> {
         DiffScope::Unknown => bail!("this daemon doesn't know that kind of diff"),
     };
     limit_total(&mut files);
-    Ok(Changes { base, files })
+    // A repository with no commits yet has nothing to amend.
+    let head_message = match scope {
+        DiffScope::Uncommitted => run(dir, &["log", "-1", "--format=%B"])
+            .await
+            .ok()
+            .map(|message| message.trim_end().to_owned()),
+        _ => None,
+    };
+    Ok(Changes {
+        base,
+        head_message,
+        files,
+    })
 }
 
 /// The branch a topic's work is compared with: the remote's default branch, as a local branch
@@ -88,7 +103,7 @@ pub async fn default_base(dir: &Path) -> Option<String> {
 
 /// Settings people have that would change what `diff` prints are overridden, so the output
 /// always parses the same way.
-fn diff_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+pub(super) fn diff_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
     let mut args = vec![
         "diff",
         "--no-color",
@@ -106,7 +121,7 @@ fn diff_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// Runs git and keeps its output exactly, unlike `super::git`, which trims it.
-async fn run(dir: &Path, args: &[&str]) -> Result<String> {
+pub(super) async fn run(dir: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)

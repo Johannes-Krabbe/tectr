@@ -9,12 +9,33 @@ use std::time::Duration;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use protocol::{
-    CommandError, CommandOutput, Diff, DiffContent, DiffId, DiffScope, StateChange, TopicId,
+    CommandError, CommandOutput, Diff, DiffContent, DiffId, DiffScope, Hunk, StateChange, TopicId,
 };
 use tokio::sync::Notify;
 
 use super::{Core, Inner, internal, invalid, not_found, now_ms};
+use crate::git::actions::{self, HunkAction};
 use crate::git::diff::{self, Changes};
+
+/// What a diff tab can do to its folder.
+pub(super) enum DiffAction {
+    StageFiles {
+        paths: Vec<String>,
+        stage: bool,
+    },
+    Hunk {
+        path: String,
+        hunk: Hunk,
+        action: HunkAction,
+    },
+    DiscardFiles {
+        paths: Vec<String>,
+    },
+    Commit {
+        message: String,
+        amend: bool,
+    },
+}
 
 /// Changes come in bursts, like a save or a checkout, and one read covers the whole burst.
 const SETTLE: Duration = Duration::from_millis(250);
@@ -55,6 +76,7 @@ impl Cached {
                 content: DiffContent {
                     revision: self.revision,
                     base: changes.base.clone(),
+                    head_message: changes.head_message.clone(),
                     files: changes.files.clone(),
                 },
             }),
@@ -175,6 +197,46 @@ impl Core {
         self.read_folder(&folder, scope).await
     }
 
+    /// Runs one of a diff tab's git actions in its folder, then reads the folder again before
+    /// answering, rather than after the watcher's pause, so the tab shows the result as soon
+    /// as the command returns.
+    pub(super) async fn diff_action(
+        &self,
+        diff_id: &DiffId,
+        action: DiffAction,
+    ) -> Result<CommandOutput, CommandError> {
+        let folder = self.diff_folder(diff_id)?;
+        let dir = Path::new(&folder);
+        let result = match &action {
+            DiffAction::StageFiles { paths, stage: true } => actions::stage_files(dir, paths).await,
+            DiffAction::StageFiles {
+                paths,
+                stage: false,
+            } => actions::unstage_files(dir, paths).await,
+            DiffAction::Hunk { path, hunk, action } => {
+                actions::apply_hunk(dir, path, hunk, *action).await
+            }
+            DiffAction::DiscardFiles { paths } => actions::discard_files(dir, paths).await,
+            DiffAction::Commit { message, amend } => actions::commit(dir, message, *amend).await,
+        };
+        self.refresh_folder(&folder).await;
+        result.map_err(|error| invalid(format!("{error:#}")))?;
+        Ok(CommandOutput::Done)
+    }
+
+    fn diff_folder(&self, diff_id: &DiffId) -> Result<String, CommandError> {
+        let inner = self.lock();
+        let (topic, _) = inner
+            .state
+            .diff(diff_id)
+            .ok_or_else(|| not_found("diff", diff_id))?;
+        Ok(topic
+            .worktree()
+            .ok_or_else(|| internal(anyhow::anyhow!("the topic has no folder")))?
+            .path
+            .clone())
+    }
+
     /// Reads folders again once they've settled after changing on disk, for as long as the
     /// daemon runs.
     pub async fn refresh_diffs(self: Arc<Self>) {
@@ -183,26 +245,31 @@ impl Core {
             dirty.wake.notified().await;
             tokio::time::sleep(SETTLE).await;
             for folder in dirty.take() {
-                let scopes: HashSet<DiffScope> = {
-                    let mut inner = self.lock();
-                    let scopes: HashSet<DiffScope> = inner
-                        .state
-                        .topics()
-                        .filter(|t| t.worktree().is_some_and(|w| w.path == folder))
-                        .flat_map(|t| t.diffs.iter().map(|d| d.scope.clone()))
-                        .collect();
-                    // A scope nobody shows would go stale unseen, so it's read again when asked.
-                    inner
-                        .diffs
-                        .cache
-                        .retain(|(f, scope), _| f != &folder || scopes.contains(scope));
-                    scopes
-                };
-                for scope in scopes {
-                    // A failure is kept as the answer, which the tab shows.
-                    let _ = self.read_folder(&folder, scope).await;
-                }
+                self.refresh_folder(&folder).await;
             }
+        }
+    }
+
+    /// Reads a folder again for every scope a tab shows it in.
+    async fn refresh_folder(&self, folder: &str) {
+        let scopes: HashSet<DiffScope> = {
+            let mut inner = self.lock();
+            let scopes: HashSet<DiffScope> = inner
+                .state
+                .topics()
+                .filter(|t| t.worktree().is_some_and(|w| w.path == folder))
+                .flat_map(|t| t.diffs.iter().map(|d| d.scope.clone()))
+                .collect();
+            // A scope nobody shows would go stale unseen, so it's read again when asked.
+            inner
+                .diffs
+                .cache
+                .retain(|(f, scope), _| f != folder || scopes.contains(scope));
+            scopes
+        };
+        for scope in scopes {
+            // A failure is kept as the answer, which the tab shows.
+            let _ = self.read_folder(folder, scope).await;
         }
     }
 

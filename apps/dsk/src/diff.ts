@@ -9,7 +9,9 @@ export type LineKind = "context" | "added" | "removed";
  * line is in the highlighted text of its side: the new side for context and added lines, the
  * old one for removed lines. */
 export type DiffRow =
-  | { kind: "hunk"; text: string }
+  /** `range` is the lines it covers on each side, `context` the line git found above it, such
+   * as a function's signature. `hunk` is which of the file's hunks it starts. */
+  | { kind: "hunk"; range: string; context: string; hunk: number }
   | {
       kind: "line";
       line: LineKind;
@@ -34,11 +36,14 @@ export function fileRows(hunks: Hunk[]): FileRows {
   const rows: DiffRow[] = [];
   const oldText: string[] = [];
   const newText: string[] = [];
-  for (const hunk of hunks) {
-    const context = hunk.context ? ` ${hunk.context}` : "";
+  hunks.forEach((hunk, index) => {
     rows.push({
       kind: "hunk",
-      text: `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@${context}`,
+      range: `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`,
+      // Copied from the file as it is, so a line that lines up comments with spaces would
+      // otherwise stretch the header.
+      context: (hunk.context ?? "").replace(/\s+/g, " ").trim(),
+      hunk: index,
     });
     let old = hunk.old_start;
     let next = hunk.new_start;
@@ -59,7 +64,7 @@ export function fileRows(hunks: Hunk[]): FileRows {
         newText.push(text);
       }
     }
-  }
+  });
   return { rows, oldText, newText };
 }
 
@@ -256,3 +261,24 @@ export function parseViewed(text: string | null): Record<string, string> {
     Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
   );
 }
+
+/** Which hunk the keys act on: the last one in the file at the top whose header has reached
+ * the top of the view, or that file's first. `hunks` are in the order shown. */
+export function hunkAt(
+  hunks: { file: number; hunk: number; top: number }[],
+  file: number,
+  at: number,
+): number | null {
+  const own = hunks.filter((h) => h.file === file);
+  if (own.length === 0) return null;
+  const reached = own.filter((h) => h.top <= at + 1);
+  return (reached.length > 0 ? reached[reached.length - 1] : own[0]).hunk;
+}
+
+/** The paths staging a file touches: a rename is its old path going and its new one coming. */
+export const pathsOf = (file: FileDiff): string[] =>
+  file.old_path ? [file.path, file.old_path] : [file.path];
+
+/** Only a modified file's hunks can be staged or discarded one at a time. Anything else, like a
+ * new or renamed file, goes whole. */
+export const hunksApart = (file: FileDiff) => file.status === "modified";

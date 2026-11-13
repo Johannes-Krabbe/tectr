@@ -1,6 +1,7 @@
 //! Plain `git` calls for worktrees and diffs. Whether the daemon should use twig instead
 //! is still an open question, and keeping this small leaves that open.
 
+pub mod actions;
 pub mod diff;
 
 use std::path::{Path, PathBuf};

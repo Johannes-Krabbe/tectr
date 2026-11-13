@@ -8,10 +8,12 @@ import {
   findMatches,
   fingerprint,
   firstMatchFrom,
+  hunkAt,
   languageOf,
   markSpans,
   nextStop,
   parseViewed,
+  pathsOf,
   spanLines,
   splitPath,
   totals,
@@ -34,12 +36,12 @@ test("rows number each side and point removed lines at the old text", () => {
       old_lines: 3,
       new_start: 3,
       new_lines: 3,
-      context: "fn main()",
+      context: "fn   main()\t",
       lines: [" keep\r", "-old", "+new", " end", "\\ No newline at end of file"],
     },
   ]);
   assert.deepEqual(rows, [
-    { kind: "hunk", text: "@@ -3,3 +3,3 @@ fn main()" },
+    { kind: "hunk", range: "@@ -3,3 +3,3 @@", context: "fn main()", hunk: 0 },
     { kind: "line", line: "context", old: 3, new: 3, text: "keep", at: 0 },
     { kind: "line", line: "removed", old: 4, new: null, text: "old", at: 1 },
     { kind: "line", line: "added", old: null, new: 4, text: "new", at: 1 },
@@ -182,4 +184,22 @@ test("viewed files read back from storage, and junk reads as none", () => {
   assert.deepEqual(parseViewed("[1]"), {});
   assert.deepEqual(parseViewed("{"), {});
   assert.deepEqual(parseViewed(null), {});
+});
+
+test("the hunk the keys act on stays in the file at the top", () => {
+  const hunks = [
+    { file: 0, hunk: 0, top: 0 },
+    { file: 0, hunk: 1, top: 200 },
+    { file: 1, hunk: 0, top: 500 },
+  ];
+  assert.equal(hunkAt(hunks, 0, 0), 0);
+  assert.equal(hunkAt(hunks, 0, 300), 1);
+  // The next file's header is at the top, but its first hunk hasn't reached it yet.
+  assert.equal(hunkAt(hunks, 1, 480), 0);
+  assert.equal(hunkAt(hunks, 2, 900), null);
+});
+
+test("a renamed file stages both its paths", () => {
+  assert.deepEqual(pathsOf({ ...file("new", true), old_path: "old" }), ["new", "old"]);
+  assert.deepEqual(pathsOf(file("a", false)), ["a"]);
 });

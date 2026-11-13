@@ -464,6 +464,41 @@ pub enum Command {
         diff_id: DiffId,
         scope: DiffScope,
     },
+    /// Stage or unstage whole files in a diff's folder. Unstaging a renamed file needs both
+    /// its paths.
+    StageFiles {
+        diff_id: DiffId,
+        paths: Vec<String>,
+        stage: bool,
+    },
+    /// Stage or unstage one hunk of a modified file, as [`Command::ReadDiff`] sent it from
+    /// the side it's on: not staged to stage it, staged to unstage it. Fails if the file no
+    /// longer has it, so an edit in between can't get a different hunk staged.
+    StageHunk {
+        diff_id: DiffId,
+        path: String,
+        hunk: Hunk,
+        stage: bool,
+    },
+    /// Throw away what isn't staged in these files. Untracked files are deleted.
+    DiscardFiles {
+        diff_id: DiffId,
+        paths: Vec<String>,
+    },
+    /// Throw away one hunk that isn't staged, checked like [`Command::StageHunk`].
+    DiscardHunk {
+        diff_id: DiffId,
+        path: String,
+        hunk: Hunk,
+    },
+    /// Commit what's staged in a diff's folder. Amending with an empty message keeps the last
+    /// commit's.
+    Commit {
+        diff_id: DiffId,
+        message: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        amend: bool,
+    },
     /// Answered with [`CommandOutput::DiffContent`], what the tab shows now. Its revision is
     /// the tab's [`Diff::revision`] by the time the answer arrives.
     ReadDiff {
@@ -1143,6 +1178,9 @@ pub struct DiffContent {
     /// What the branch scope compares with, like `main`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// The last commit's message, which amending starts from. Only in the uncommitted scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_message: Option<String>,
     /// In the uncommitted scope, the staged files come before the rest. A file can be in both.
     pub files: Vec<FileDiff>,
 }

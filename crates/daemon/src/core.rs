@@ -34,6 +34,9 @@ use crate::{acp, folders, git};
 
 mod diff;
 mod fork;
+
+use crate::git::actions::HunkAction;
+use diff::DiffAction;
 mod import;
 mod mcp;
 mod remote;
@@ -373,6 +376,49 @@ impl Core {
             Command::CloseDiff { diff_id } => self.close_diff(&diff_id),
             Command::SetDiffScope { diff_id, scope } => self.set_diff_scope(&diff_id, scope),
             Command::ReadDiff { diff_id } => self.read_diff(&diff_id).await,
+            Command::StageFiles {
+                diff_id,
+                paths,
+                stage,
+            } => {
+                self.diff_action(&diff_id, DiffAction::StageFiles { paths, stage })
+                    .await
+            }
+            Command::StageHunk {
+                diff_id,
+                path,
+                hunk,
+                stage,
+            } => {
+                let action = if stage {
+                    HunkAction::Stage
+                } else {
+                    HunkAction::Unstage
+                };
+                self.diff_action(&diff_id, DiffAction::Hunk { path, hunk, action })
+                    .await
+            }
+            Command::DiscardFiles { diff_id, paths } => {
+                self.diff_action(&diff_id, DiffAction::DiscardFiles { paths })
+                    .await
+            }
+            Command::DiscardHunk {
+                diff_id,
+                path,
+                hunk,
+            } => {
+                let action = HunkAction::Discard;
+                self.diff_action(&diff_id, DiffAction::Hunk { path, hunk, action })
+                    .await
+            }
+            Command::Commit {
+                diff_id,
+                message,
+                amend,
+            } => {
+                self.diff_action(&diff_id, DiffAction::Commit { message, amend })
+                    .await
+            }
             Command::SaveMcpServer {
                 id,
                 name,
@@ -2418,6 +2464,9 @@ mod tests {
             assert!(status.success());
         };
         git(&["init", "-q", "-b", "main"]);
+        // Committing through the daemon reads who from the repo, not from flags.
+        git(&["config", "user.name", "t"]);
+        git(&["config", "user.email", "t@t"]);
         std::fs::write(repo.join("a.txt"), "one\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-q", "-m", "init"]);
@@ -2488,6 +2537,29 @@ mod tests {
         assert_eq!(second.revision, revision());
         assert_eq!(second.files.len(), 1);
         assert_eq!(second.files[0].path, "a.txt");
+
+        // A git action answers once the tab has its result, without waiting for the watcher.
+        core.handle(Command::StageFiles {
+            diff_id: diff.id.clone(),
+            paths: vec!["a.txt".into()],
+            stage: true,
+        })
+        .await
+        .unwrap();
+        let staged = read().await;
+        assert_ne!(staged.revision, second.revision);
+        assert_eq!(staged.revision, revision());
+        assert!(staged.files[0].staged);
+        core.handle(Command::Commit {
+            diff_id: diff.id.clone(),
+            message: "Two".into(),
+            amend: false,
+        })
+        .await
+        .unwrap();
+        let committed = read().await;
+        assert!(committed.files.is_empty());
+        assert_eq!(committed.head_message.as_deref(), Some("Two"));
 
         core.handle(Command::SetDiffScope {
             diff_id: diff.id.clone(),

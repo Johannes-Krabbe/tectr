@@ -12,6 +12,7 @@ import { shownValue } from "./appearance";
 import { invoke } from "@tauri-apps/api/core";
 import {
   type ArchiveRisk,
+  type Command,
   type CommandOutput,
   errorText,
   type Folder,
@@ -50,7 +51,9 @@ export type SheetRequest =
     }
   | { kind: "move"; machineId: string; topic: Topic; choice: MoveChoice }
   | { kind: "pairing"; machineId: string; deviceName: string; code: string; expiresAtMs: number }
-  | { kind: "add_device" };
+  | { kind: "add_device" }
+  /** Something that can't be undone, which runs once confirmed. */
+  | { kind: "confirm"; machineId: string; where: string; action: string; command: Command };
 
 const CANCEL_KEY: [ActionId, string][] = [["sheet.cancel", "Escape"]];
 
@@ -406,6 +409,29 @@ function CloseSheet({
   );
 }
 
+function ConfirmSheet({
+  sheet,
+  onClose,
+  onDone,
+}: {
+  sheet: Extract<SheetRequest, { kind: "confirm" }>;
+  onClose: () => void;
+  onDone: (output: CommandOutput) => void;
+}) {
+  return (
+    <Sheet
+      where={sheet.where}
+      action={sheet.action}
+      canSubmit
+      confirmKey="sheet.confirm"
+      returnsFocus
+      run={() => request(sheet.machineId, sheet.command)}
+      onClose={onClose}
+      onDone={onDone}
+    />
+  );
+}
+
 function RenameSheet({
   sheet,
   onClose,
@@ -643,5 +669,7 @@ export function Sheets({
       return <PairingSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
     case "add_device":
       return <AddDeviceSheet onClose={onClose} onDone={onDone} />;
+    case "confirm":
+      return <ConfirmSheet sheet={sheet} onClose={onClose} onDone={onDone} />;
   }
 }

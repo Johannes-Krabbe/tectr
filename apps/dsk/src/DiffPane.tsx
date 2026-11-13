@@ -20,18 +20,29 @@ import {
   findMatches,
   fingerprint,
   firstMatchFrom,
+  hunkAt,
+  hunksApart,
   languageOf,
   markSpans,
   nextStop,
   otherScope,
   parseViewed,
+  pathsOf,
   spanLines,
   splitPath,
   STATUS_LETTER,
   STATUS_NAME,
   totals,
 } from "./diff";
-import { type Diff, type DiffContent, type FileDiff, errorText, request, type Topic } from "./engine";
+import {
+  type Command,
+  type Diff,
+  type DiffContent,
+  type FileDiff,
+  errorText,
+  request,
+  type Topic,
+} from "./engine";
 import {
   act,
   type ActionId,
@@ -51,9 +62,12 @@ import { diffItems, type Runnable, withRuns } from "./menus";
 import { topicWorktree } from "./model";
 import { newScroller } from "./motion";
 import { type PaletteItem, useScreenPaletteItems } from "./Palette";
+import type { SheetRequest } from "./Sheets";
 import { hint, useHints } from "./shortcuts";
 import { Icon } from "./ui/Icon";
 import { MenuButton } from "./ui/Menu";
+import { Keys } from "./ui/StatusIcon";
+import { useVim, VimModeLabel } from "./VimBox";
 
 const SCROLL_STEP = 90;
 /** A guess at a row's height, so files far off screen take about their room unrendered. */
@@ -62,6 +76,12 @@ const ROW_GUESS_PX = 20;
 const SCOPES: { kind: "uncommitted" | "branch"; label: string }[] = [
   { kind: "uncommitted", label: "Uncommitted" },
   { kind: "branch", label: "Branch" },
+];
+
+const COMMIT_HINTS = [
+  hint("Commit", "commit.send"),
+  hint("Amend or not", "commit.toggle_amend"),
+  hint("Close", "commit.cancel"),
 ];
 
 const SEARCH_HINTS = [
@@ -85,6 +105,8 @@ interface View {
   scrollTop: number;
   query: string;
   match: number | null;
+  /** The commit message being written. */
+  message: string;
 }
 
 const views = new Map<string, View>();
@@ -92,7 +114,14 @@ const views = new Map<string, View>();
 function viewOf(id: string): View {
   let view = views.get(id);
   if (!view) {
-    view = { folded: new Set(), unfolded: new Set(), scrollTop: 0, query: "", match: null };
+    view = {
+      folded: new Set(),
+      unfolded: new Set(),
+      scrollTop: 0,
+      query: "",
+      match: null,
+      message: "",
+    };
     views.set(id, view);
   }
   return view;
@@ -117,6 +146,7 @@ export function DiffPane({
   diff,
   online,
   onPicker,
+  onConfirm,
 }: {
   machineId: string;
   topic: Topic;
@@ -124,6 +154,8 @@ export function DiffPane({
   online: boolean;
   /** Opens a list to choose from, as the palette does. */
   onPicker: (picker: { placeholder: string; empty: string; items: PaletteItem[] }) => void;
+  /** Asks before something that can't be undone. */
+  onConfirm: (sheet: SheetRequest) => void;
 }) {
   useSettings();
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -135,6 +167,14 @@ export function DiffPane({
   );
   const [searching, setSearching] = useState(false);
   const [current, setCurrent] = useState(0);
+  // The hunk the keys act on, in the file at the top.
+  const [currentHunk, setCurrentHunk] = useState<number | null>(null);
+  // The commit box, open with whether it amends.
+  const [committing, setCommitting] = useState<{ amend: boolean } | null>(null);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [commitBusy, setCommitBusy] = useState(false);
+  const messageBox = useRef<HTMLTextAreaElement>(null);
+  const vim = useVim(messageBox);
   const body = useRef<HTMLDivElement>(null);
   const searchBox = useRef<HTMLInputElement>(null);
   const jump = useRef<Jump | null>(null);
@@ -416,6 +456,129 @@ export function DiffPane({
     body.current?.focus();
   };
 
+  // Only uncommitted changes have a staged side, so only they can be staged and committed.
+  const canEdit = scope === "uncommitted" && online;
+  const anyStaged = files.some((file) => file.staged);
+  const anyUnstaged = files.some((file) => !file.staged);
+
+  const send = (command: Command) => {
+    setFailure(null);
+    request(machineId, command).catch(saveFailed);
+  };
+
+  /** The hunk at the top of a file, which whole-file changes stand in for when its hunks
+   * can't go apart. */
+  const hunkOf = (index: number, hunk: number | null) => {
+    const file = files[index];
+    if (!file || hunk === null || file.body.kind !== "text") return null;
+    return file.body.hunks[hunk] ?? null;
+  };
+
+  const stageFile = (index: number) => {
+    const file = files[index];
+    if (!file || !canEdit) return;
+    send({ command: "stage_files", diff_id: diff.id, paths: pathsOf(file), stage: !file.staged });
+  };
+
+  const stageHunk = (index: number, hunkIndex: number | null) => {
+    const file = files[index];
+    if (!file || !canEdit) return;
+    const hunk = hunkOf(index, hunkIndex);
+    if (!hunksApart(file) || !hunk) {
+      stageFile(index);
+      return;
+    }
+    send({ command: "stage_hunk", diff_id: diff.id, path: file.path, hunk, stage: !file.staged });
+  };
+
+  const stageAll = () => {
+    if (!canEdit) return;
+    const stage = anyUnstaged;
+    const paths = files.filter((file) => file.staged !== stage).flatMap(pathsOf);
+    if (paths.length > 0) send({ command: "stage_files", diff_id: diff.id, paths, stage });
+  };
+
+  const discardFile = (index: number) => {
+    const file = files[index];
+    if (!file || !canEdit) return;
+    if (file.staged) {
+      setFailure("Unstage it first. Only what isn't staged can be discarded");
+      return;
+    }
+    const untracked = file.status === "untracked";
+    onConfirm({
+      kind: "confirm",
+      machineId,
+      where: untracked ? `Delete ${file.path}?` : `Discard the changes to ${file.path}?`,
+      action: untracked ? "Delete" : "Discard",
+      command: { command: "discard_files", diff_id: diff.id, paths: pathsOf(file) },
+    });
+  };
+
+  const discardHunk = (index: number, hunkIndex: number | null) => {
+    const file = files[index];
+    if (!file || !canEdit) return;
+    const hunk = hunkOf(index, hunkIndex);
+    if (file.staged || !hunksApart(file) || !hunk) {
+      discardFile(index);
+      return;
+    }
+    onConfirm({
+      kind: "confirm",
+      machineId,
+      where: `Discard this hunk of ${file.path}?`,
+      action: "Discard",
+      command: { command: "discard_hunk", diff_id: diff.id, path: file.path, hunk },
+    });
+  };
+
+  const openCommit = (amend: boolean) => {
+    if (!canEdit) return;
+    // Amending starts from the last message, unless something is already written.
+    if (amend && !view.message.trim() && content?.head_message) {
+      const message = content.head_message;
+      setView(() => ({ message }));
+    }
+    setCommitError(null);
+    setCommitting({ amend });
+    requestAnimationFrame(() => messageBox.current?.focus());
+  };
+
+  const closeCommit = () => {
+    setCommitting(null);
+    body.current?.focus();
+  };
+
+  const commit = async () => {
+    if (!committing || commitBusy) return;
+    const message = view.message.trim();
+    if (!committing.amend && !anyStaged) {
+      setCommitError("Nothing is staged");
+      return;
+    }
+    if (!committing.amend && !message) {
+      setCommitError("A commit needs a message");
+      return;
+    }
+    setCommitBusy(true);
+    setCommitError(null);
+    try {
+      await request(machineId, {
+        command: "commit",
+        diff_id: diff.id,
+        message,
+        amend: committing.amend,
+      });
+      setView(() => ({ message: "" }));
+      notify(committing.amend ? "Amended the last commit" : "Committed");
+      closeCommit();
+    } catch (reason) {
+      setCommitError(errorText(reason));
+    } finally {
+      setCommitBusy(false);
+    }
+  };
+
   const currentFile = files[current];
   const items: Runnable[][] = withRuns(
     diffItems({
@@ -428,6 +591,16 @@ export function DiffPane({
         folded: isFolded(current),
         viewed: isViewed(current),
       },
+      git: canEdit
+        ? {
+            file: currentFile && {
+              staged: currentFile.staged ?? false,
+              hunks: hunksApart(currentFile) && currentHunk !== null,
+            },
+            anyStaged,
+            anyUnstaged,
+          }
+        : undefined,
     }),
     {
       "diff-scope": switchScope,
@@ -436,6 +609,13 @@ export function DiffPane({
       "diff-fold": () => toggleFile(current),
       "diff-viewed": () => toggleViewed(current),
       "diff-copy": () => copyPath(current),
+      "diff-stage-hunk": () => stageHunk(current, currentHunk),
+      "diff-stage-file": () => stageFile(current),
+      "diff-stage-all": stageAll,
+      "diff-discard-hunk": () => discardHunk(current, currentHunk),
+      "diff-discard-file": () => discardFile(current),
+      "diff-commit": () => openCommit(false),
+      "diff-amend": () => openCommit(true),
       "diff-fold-all": toggleAll,
       "diff-files": () => void toggleDiffFiles().catch(saveFailed),
       "diff-wrap": () => void toggleDiffWrap().catch(saveFailed),
@@ -456,12 +636,18 @@ export function DiffPane({
     hint(view.query ? "Matches" : "Hunks", "diff.prev_match", "diff.next_match"),
     hint(currentFile && isFolded(current) ? "Unfold" : "Fold", "diff.toggle_file"),
     hint("Viewed", "diff.viewed"),
+    ...(canEdit
+      ? [
+          hint(currentFile?.staged ? "Unstage hunk" : "Stage hunk", "diff.stage_hunk"),
+          hint("Commit", "diff.commit"),
+        ]
+      : []),
     hint("Search", "diff.search"),
     hint("Go to file", "diff.jump_file"),
     hint("Scope", "diff.scope"),
     hint("Sidebar", "pane.back"),
   ]);
-  useHints("typing", searching ? SEARCH_HINTS : null);
+  useHints("typing", searching ? SEARCH_HINTS : committing ? COMMIT_HINTS : null);
 
   // The handler is added once, so it reaches the current state through a ref.
   const latest = {
@@ -478,12 +664,29 @@ export function DiffPane({
     go,
     tops,
     current,
+    currentHunk,
+    stageHunk,
+    stageFile,
+    stageAll,
+    discardHunk,
+    discardFile,
+    openCommit,
   };
   const actions = useRef(latest);
   actions.current = latest;
   const onToggle = useCallback((index: number) => actions.current.toggleFile(index), []);
   const onViewed = useCallback((index: number) => actions.current.toggleViewed(index), []);
   const onCopy = useCallback((index: number) => actions.current.copyPath(index), []);
+  const onStageHunk = useCallback(
+    (index: number, hunk: number) => actions.current.stageHunk(index, hunk),
+    [],
+  );
+  const onStageFile = useCallback((index: number) => actions.current.stageFile(index), []);
+  const onDiscardHunk = useCallback(
+    (index: number, hunk: number) => actions.current.discardHunk(index, hunk),
+    [],
+  );
+  const onDiscardFile = useCallback((index: number) => actions.current.discardFile(index), []);
 
   useEffect(() => {
     const now = () => actions.current;
@@ -518,6 +721,13 @@ export function DiffPane({
       ["diff.scope", () => now().switchScope()],
       ["diff.toggle_files", () => void toggleDiffFiles().catch(now().saveFailed)],
       ["diff.toggle_wrap", () => void toggleDiffWrap().catch(now().saveFailed)],
+      ["diff.stage_hunk", () => now().stageHunk(now().current, now().currentHunk)],
+      ["diff.stage_file", () => now().stageFile(now().current)],
+      ["diff.stage_all", () => now().stageAll()],
+      ["diff.discard_hunk", () => now().discardHunk(now().current, now().currentHunk)],
+      ["diff.discard_file", () => now().discardFile(now().current)],
+      ["diff.commit", () => now().openCommit(false)],
+      ["diff.amend", () => now().openCommit(true)],
     ];
     const onKey = (event: KeyboardEvent) => {
       // In the search box, Ctrl+D and the like edit the text.
@@ -546,9 +756,28 @@ export function DiffPane({
     if (reading.current) return;
     reading.current = requestAnimationFrame(() => {
       reading.current = 0;
-      if (body.current) setCurrent(currentIndex(tops("[data-file]"), body.current.scrollTop));
+      if (body.current) readCurrent(body.current);
     });
   };
+
+  /** Which file and hunk are at the top. A hunk counts once its header is below its file's
+   * header, which stays at the top while its file scrolls. */
+  const readCurrent = (el: HTMLElement) => {
+    const file = currentIndex(tops("[data-file]"), el.scrollTop);
+    const header = el.querySelector<HTMLElement>(".diff-file-head")?.offsetHeight ?? 0;
+    const hunkTops = tops("[data-hunk]");
+    const hunks = [...el.querySelectorAll<HTMLElement>("[data-hunk]")].map((node, at) => {
+      const [f, h] = (node.dataset.hunk ?? "").split(":").map(Number);
+      return { file: f, hunk: h, top: hunkTops[at] - header };
+    });
+    setCurrent(file);
+    setCurrentHunk(hunkAt(hunks, file, el.scrollTop));
+  };
+
+  // What's at the top changes when files move between staged and not, without a scroll.
+  useLayoutEffect(() => {
+    if (body.current) readCurrent(body.current);
+  }, [content]);
 
   const worktree = topicWorktree(topic);
   const against = scope === "branch" && content?.base ? `against ${content.base}` : null;
@@ -587,6 +816,17 @@ export function DiffPane({
             </>
           )}
         </span>
+        {canEdit && (
+          <button
+            className="button small"
+            tabIndex={-1}
+            disabled={!anyStaged}
+            title={titled("Commit what's staged", "diff.commit")}
+            onClick={() => openCommit(false)}
+          >
+            Commit
+          </button>
+        )}
         <button
           className="icon-button"
           tabIndex={-1}
@@ -631,6 +871,58 @@ export function DiffPane({
                 : `${match === null ? "-" : match + 1} of ${matches.length}`
               : ""}
           </span>
+        </div>
+      )}
+      {committing && (
+        <div className="diff-commit">
+          <div className="diff-commit-box">
+            <textarea
+              ref={messageBox}
+              className="diff-commit-message"
+              value={view.message}
+              rows={3}
+              placeholder={committing.amend ? "Message, or leave as it was" : "Commit message"}
+              aria-label="Commit message"
+              spellCheck={false}
+              onChange={(event) => setView(() => ({ message: event.target.value }))}
+              {...vim.props}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
+                if (vim.onKeyDown(event)) return;
+                if (act(event, "commit.send", () => void commit())) return;
+                if (act(event, "commit.toggle_amend", () => setCommitting({ amend: !committing.amend }))) {
+                  return;
+                }
+                act(event, "commit.cancel", closeCommit);
+              }}
+            />
+            <VimModeLabel mode={vim.shown} />
+          </div>
+          <div className="diff-commit-foot">
+            {commitError && <span className="error">{commitError}</span>}
+            <label className="diff-commit-amend" title={titled("Amend or not", "commit.toggle_amend")}>
+              <input
+                type="checkbox"
+                tabIndex={-1}
+                checked={committing.amend}
+                onChange={(event) => setCommitting({ amend: event.target.checked })}
+              />
+              Amend the last commit
+            </label>
+            <button className="button" tabIndex={-1} onClick={closeCommit}>
+              Cancel
+              <Keys action="commit.cancel" />
+            </button>
+            <button
+              className="button primary"
+              tabIndex={-1}
+              disabled={commitBusy}
+              onClick={() => void commit()}
+            >
+              {committing.amend ? "Amend" : "Commit"}
+              <Keys action="commit.send" />
+            </button>
+          </div>
         </div>
       )}
       {failure && <p className="error main-error">{failure}</p>}
@@ -698,9 +990,15 @@ export function DiffPane({
                         viewed={isViewed(fileIndex)}
                         marks={marks.get(fileIndex)}
                         root={body}
+                        canEdit={canEdit}
+                        currentHunk={fileIndex === current ? currentHunk : null}
                         onToggle={onToggle}
                         onViewed={onViewed}
                         onCopy={onCopy}
+                        onStageHunk={onStageHunk}
+                        onStageFile={onStageFile}
+                        onDiscardHunk={onDiscardHunk}
+                        onDiscardFile={onDiscardFile}
                       />
                     );
                   })}
@@ -728,9 +1026,15 @@ const FileView = memo(function FileView({
   viewed,
   marks,
   root,
+  canEdit,
+  currentHunk,
   onToggle,
   onViewed,
   onCopy,
+  onStageHunk,
+  onStageFile,
+  onDiscardHunk,
+  onDiscardFile,
 }: {
   file: FileDiff;
   index: number;
@@ -739,9 +1043,17 @@ const FileView = memo(function FileView({
   viewed: boolean;
   marks: Map<number, Mark[]> | undefined;
   root: RefObject<HTMLDivElement | null>;
+  /** Whether it can be staged and discarded. */
+  canEdit: boolean;
+  /** The hunk the keys act on, when this is the file at the top. */
+  currentHunk: number | null;
   onToggle: (index: number) => void;
   onViewed: (index: number) => void;
   onCopy: (index: number) => void;
+  onStageHunk: (index: number, hunk: number) => void;
+  onStageFile: (index: number) => void;
+  onDiscardHunk: (index: number, hunk: number) => void;
+  onDiscardFile: (index: number) => void;
 }) {
   const section = useRef<HTMLElement>(null);
   const near = useNear(section, root) && !folded;
@@ -786,6 +1098,34 @@ const FileView = memo(function FileView({
         >
           <Icon name="copy" />
         </button>
+        {canEdit && (
+          <span className="diff-file-git">
+            <button
+              className="button small"
+              tabIndex={-1}
+              title={titled(file.staged ? "Unstage the file" : "Stage the file", "diff.stage_file")}
+              onClick={(event) => {
+                event.stopPropagation();
+                onStageFile(index);
+              }}
+            >
+              {file.staged ? "Unstage" : "Stage"}
+            </button>
+            {!file.staged && (
+              <button
+                className="button small"
+                tabIndex={-1}
+                title={titled("Discard the file's changes", "diff.discard_file")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDiscardFile(index);
+                }}
+              >
+                {file.status === "untracked" ? "Delete" : "Discard"}
+              </button>
+            )}
+          </span>
+        )}
         <span className="diff-added diff-file-counts">+{file.added}</span>
         <span className="diff-removed">-{file.removed}</span>
         <button
@@ -807,16 +1147,58 @@ const FileView = memo(function FileView({
           <div className="diff-lines">
             <table className="diff-table">
               <tbody>
-                {rows.rows.map((row, at) => (
-                  <Row
-                    key={at}
-                    id={`${index}:${at}`}
-                    row={row}
-                    oldSpans={oldSpans}
-                    newSpans={newSpans}
-                    marks={marks?.get(at)}
-                  />
-                ))}
+                {rows.rows.map((row, at) =>
+                  row.kind === "hunk" ? (
+                    <tr
+                      key={at}
+                      className={`diff-hunk ${row.hunk === currentHunk ? "current" : ""}`}
+                      data-hunk={`${index}:${row.hunk}`}
+                    >
+                      <td colSpan={3}>
+                        <div className="diff-hunk-line">
+                          <span className="diff-hunk-text" title={row.context || undefined}>
+                            {row.range}
+                            {row.context && <span className="diff-hunk-context"> {row.context}</span>}
+                          </span>
+                          {canEdit && hunksApart(file) && (
+                            <span className="diff-hunk-git">
+                              <button
+                                className="button small"
+                                tabIndex={-1}
+                                title={titled(
+                                  file.staged ? "Unstage the hunk" : "Stage the hunk",
+                                  "diff.stage_hunk",
+                                )}
+                                onClick={() => onStageHunk(index, row.hunk)}
+                              >
+                                {file.staged ? "Unstage" : "Stage"}
+                              </button>
+                              {!file.staged && (
+                                <button
+                                  className="button small"
+                                  tabIndex={-1}
+                                  title={titled("Discard the hunk", "diff.discard_hunk")}
+                                  onClick={() => onDiscardHunk(index, row.hunk)}
+                                >
+                                  Discard
+                                </button>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    <Row
+                      key={at}
+                      id={`${index}:${at}`}
+                      row={row}
+                      oldSpans={oldSpans}
+                      newSpans={newSpans}
+                      marks={marks?.get(at)}
+                    />
+                  ),
+                )}
               </tbody>
             </table>
           </div>
@@ -843,13 +1225,8 @@ function Row({
   newSpans: SyntaxSpan[][] | null;
   marks: Mark[] | undefined;
 }) {
-  if (row.kind === "hunk") {
-    return (
-      <tr className="diff-hunk" data-hunk>
-        <td colSpan={3}>{row.text}</td>
-      </tr>
-    );
-  }
+  // Hunk headers are drawn by their file, which has what they need.
+  if (row.kind === "hunk") return null;
   if (row.kind === "no_newline") {
     return (
       <tr className="diff-meta">

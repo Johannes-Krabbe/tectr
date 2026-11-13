@@ -63,6 +63,8 @@ export interface DiffContent {
   revision: number;
   /** What the branch scope compares with, like `main`. */
   base?: string | null;
+  /** The last commit's message, which amending starts from. Only in the uncommitted scope. */
+  head_message?: string | null;
   /** In the uncommitted scope, the staged files come before the rest. A file can be in both. */
   files: FileDiff[];
 }
@@ -424,6 +426,15 @@ export type Command =
   | { command: "set_diff_scope"; diff_id: string; scope: DiffScope }
   /** Answered with `diff_content`. */
   | { command: "read_diff"; diff_id: string }
+  /** Unstaging a renamed file needs both its paths. */
+  | { command: "stage_files"; diff_id: string; paths: string[]; stage: boolean }
+  /** The hunk as `read_diff` sent it, from the side it's on now. Fails if the file changed. */
+  | { command: "stage_hunk"; diff_id: string; path: string; hunk: Hunk; stage: boolean }
+  /** Untracked files are deleted. */
+  | { command: "discard_files"; diff_id: string; paths: string[] }
+  | { command: "discard_hunk"; diff_id: string; path: string; hunk: Hunk }
+  /** Amending with an empty message keeps the last commit's. */
+  | { command: "commit"; diff_id: string; message: string; amend?: boolean }
   | {
       command: "save_mcp_server";
       /** Changes the server it names, or else adds one. */
