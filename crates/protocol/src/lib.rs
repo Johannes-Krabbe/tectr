@@ -64,6 +64,15 @@ impl Channel {
         }
     }
 
+    /// What agents call the CLI. Dev has its own name, so a release `tectr` earlier on an
+    /// agent's PATH can't send it to the wrong daemon.
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::Release => "tectr",
+            Self::Dev => "tectr-dev",
+        }
+    }
+
     /// The folder name for this channel's data and settings, such as
     /// `~/Library/Application Support/<dir_name>`.
     pub fn dir_name(self) -> &'static str {
@@ -475,6 +484,19 @@ pub enum Command {
     CloseTerminal {
         terminal_id: TerminalId,
     },
+    /// What a terminal shows as plain text, its last `lines` lines with wrapped lines joined.
+    /// Without `lines`, as many as it has rows. A terminal that isn't running starts its shell.
+    ReadTerminal {
+        terminal_id: TerminalId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lines: Option<u32>,
+    },
+    /// Type into a terminal, for clients that don't show it. A terminal that isn't running
+    /// starts its shell first.
+    WriteTerminal {
+        terminal_id: TerminalId,
+        text: String,
+    },
     /// Stop the agent and remove its tab. Fails with [`ErrorCode::Busy`] while the agent
     /// is starting, working or waiting, unless `force` says the person has confirmed.
     CloseSession {
@@ -590,6 +612,9 @@ pub enum CommandOutput {
     Terminal {
         topic_id: TopicId,
         terminal: Terminal,
+    },
+    TerminalText {
+        text: String,
     },
     ProviderCandidates {
         candidates: Vec<ProviderCandidate>,

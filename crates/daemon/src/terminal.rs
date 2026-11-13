@@ -153,6 +153,11 @@ enum Message {
         subscriber: u64,
         bytes: u32,
     },
+    /// What it shows as plain text, for clients that don't draw it.
+    Read {
+        lines: Option<u32>,
+        reply: tokio::sync::oneshot::Sender<String>,
+    },
     /// Ends the terminal. Kept history is saved first, and otherwise deleted.
     Stop {
         keep: bool,
@@ -208,6 +213,15 @@ impl Handle {
 
     pub fn ack(&self, subscriber: u64, bytes: u32) {
         let _ = self.messages.send(Message::Ack { subscriber, bytes });
+    }
+
+    /// Its last `lines` lines as plain text, or as many as it has rows. Fails only if the
+    /// terminal ended first.
+    /// The answer doesn't borrow the handle, so it can be awaited after letting go of it.
+    pub fn read(&self, lines: Option<u32>) -> impl Future<Output = Result<String>> + use<> {
+        let (reply, text) = tokio::sync::oneshot::channel();
+        let _ = self.messages.send(Message::Read { lines, reply });
+        async move { text.await.context("the terminal ended") }
     }
 
     /// Ends the shell, keeping what the terminal showed for next time or deleting it. Returns
@@ -444,6 +458,9 @@ impl Emulator {
                     }
                 }
             }
+            Message::Read { lines, reply } => {
+                let _ = reply.send(self.text(lines));
+            }
             Message::Stop { keep } => {
                 if keep {
                     self.save();
@@ -519,6 +536,27 @@ impl Emulator {
         if let Err(error) = result {
             tracing::warn!("a terminal didn't take the client's colors: {error:?}");
         }
+    }
+
+    /// The last `lines` lines of the screen and its history, with wrapped lines joined so a
+    /// long line reads as one.
+    fn text(&self, lines: Option<u32>) -> String {
+        let text = Formatter::new(&self.terminal)
+            .ok()
+            .and_then(|mut formatter| {
+                formatter
+                    .set_format(Format::Plain)
+                    .and_then(|f| f.set_unwrap(true))
+                    .and_then(|f| f.set_trim(true))
+                    .and_then(|f| f.set_extras(Extras::NONE))
+                    .ok()?;
+                Some(formatter.format_alloc(None).ok()?.to_vec())
+            })
+            .unwrap_or_default();
+        let text = String::from_utf8_lossy(&text);
+        let all: Vec<&str> = text.lines().collect();
+        let wanted = lines.map_or(usize::from(self.rows), |lines| lines as usize);
+        all[all.len().saturating_sub(wanted)..].join("\n")
     }
 
     /// Everything the terminal shows, modes and cursor included, at its size. The palette is
@@ -940,6 +978,38 @@ mod tests {
 
         terminal.type_text("echo one-$((40+2))\n");
         terminal.wait_for("one-42");
+        terminal.handle.stop(false).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn reading_gives_the_last_lines_as_text_with_wrapped_lines_joined() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut terminal = start(folder.path(), &folder.path().join("h.vt"), 20);
+        terminal.wait_for_event(&Event::Running);
+        terminal.type_text("i=1; while [ $i -le 60 ]; do echo line-$i; i=$((i+1)); done\n");
+        terminal.wait_for("line-60");
+        terminal.type_text("echo abcdefghij-abcdefghij-abcdefghij-end\n");
+        terminal.wait_for("-end");
+        terminal.read(true);
+        let read = |lines| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(terminal.handle.read(lines))
+                .unwrap()
+        };
+
+        // Older than the screen's 24 rows, so only history has it.
+        let long = read(Some(40));
+        assert!(long.contains("line-30\n"), "{long:?}");
+        assert!(!long.contains("line-10\n"), "{long:?}");
+        assert!(
+            long.contains("\nabcdefghij-abcdefghij-abcdefghij-end"),
+            "{long:?}"
+        );
+
+        let screen = read(None);
+        assert!(screen.lines().count() <= 24, "{screen:?}");
+        assert!(!screen.contains("line-30\n"), "{screen:?}");
         terminal.handle.stop(false).unwrap().join().unwrap();
     }
 

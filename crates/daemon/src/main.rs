@@ -62,6 +62,7 @@ async fn run() -> Result<()> {
     };
 
     let mut config = Config::new(data_dir, args.port);
+    config.cli = cli_beside_daemon();
     for agent in &args.agents {
         let (name, launcher) = parse_agent(agent)?;
         config.agents.insert(name, launcher);
@@ -78,6 +79,21 @@ async fn run() -> Result<()> {
     tracing::info!("shutting down");
     daemon.shutdown().await;
     Ok(())
+}
+
+/// The CLI built or installed with this daemon, so it's the same channel and version. Releases
+/// ship the two together, and `mise run daemon` builds both.
+fn cli_beside_daemon() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let cli = exe.with_file_name("tectr");
+    if cli.is_file() {
+        return Some(cli);
+    }
+    tracing::warn!(
+        "agents won't get the CLI: there's none at {}",
+        cli.display()
+    );
+    None
 }
 
 /// Ctrl-C in a terminal, or SIGTERM from launchd when the service stops or is upgraded.

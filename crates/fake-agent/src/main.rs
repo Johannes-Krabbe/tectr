@@ -18,6 +18,8 @@
 //! - `subagent`: says `main`, then has a subagent say something, marked the way
 //!   Claude's adapter marks it.
 //! - `mcp`: reports the MCP servers the session was opened with, and its `_meta`.
+//! - `context`: reports `$TECTR_SESSION`, `$TECTR_TOPIC`, the first folder on its PATH and
+//!   what the session's system prompt added, each on a line of its own.
 //! - `mcp-call NAME`: sends an MCP initialize request to the HTTP server NAME and
 //!   reports the status and body it got back.
 //! - `images`: reports each image in the prompt as the text before it, its type and its data.
@@ -43,10 +45,10 @@ use agent_client_protocol::v1::schema::{
     RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities,
     SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
     SessionForkCapabilities, SessionId, SessionInfoUpdate, SessionMode, SessionModeState,
-    SessionNotification, SessionResumeCapabilities, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
-    TextContent, ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-    UnstructuredCommandInput,
+    SessionNotification, SessionResumeCapabilities, SessionSystemPromptCapabilities, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
+    SetSessionModeResponse, StopReason, SystemPrompt, TextContent, ToolCall, ToolCallStatus,
+    ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
 };
 use agent_client_protocol::{
     Agent, Client, Error, Stdio, on_receive_notification, on_receive_request,
@@ -68,6 +70,16 @@ struct State {
     forked: Option<String>,
     mcp: Vec<McpServer>,
     meta: Option<serde_json::Map<String, serde_json::Value>>,
+    /// What the client added to the system prompt.
+    system_prompt: Option<String>,
+}
+
+fn prompt_text(prompt: Option<SystemPrompt>) -> Option<String> {
+    let blocks = prompt?.content.into_iter().filter_map(|block| match block {
+        ContentBlock::Text(text) => Some(text.text),
+        _ => None,
+    });
+    Some(blocks.collect::<Vec<_>>().join("\n\n"))
 }
 
 /// Like Claude's list: a default entry naming the real model, then the models.
@@ -150,6 +162,7 @@ async fn main() -> Result<(), Error> {
                                 .session_capabilities(
                                     SessionCapabilities::new()
                                         .resume(SessionResumeCapabilities::new())
+                                        .system_prompt(SessionSystemPromptCapabilities::new())
                                         .fork(fork.then(SessionForkCapabilities::new)),
                                 )
                                 .mcp_capabilities(McpCapabilities::new().http(true))
@@ -166,6 +179,7 @@ async fn main() -> Result<(), Error> {
                 state.cwd = request.cwd;
                 state.mcp = request.mcp_servers;
                 state.meta = request.meta;
+                state.system_prompt = prompt_text(request.system_prompt);
                 responder.respond(
                     NewSessionResponse::new("fake-session")
                         .modes(mode_state(&state.mode))
@@ -180,6 +194,7 @@ async fn main() -> Result<(), Error> {
                 state.cwd = request.cwd;
                 state.mcp = request.mcp_servers;
                 state.meta = request.meta;
+                state.system_prompt = prompt_text(request.system_prompt);
                 state.resumed = true;
                 state.resumed_id = Some(request.session_id.to_string());
                 responder.respond(
@@ -206,6 +221,7 @@ async fn main() -> Result<(), Error> {
                 state.cwd = request.cwd;
                 state.mcp = request.mcp_servers;
                 state.meta = request.meta;
+                state.system_prompt = prompt_text(request.system_prompt);
                 responder.respond(
                     ForkSessionResponse::new("fake-fork")
                         .modes(mode_state(&state.mode))
@@ -405,6 +421,19 @@ async fn run_turn(
                 )
             };
             speaker.say(&report)?;
+        }
+        "context" => {
+            let var = |name| std::env::var(name).unwrap_or_else(|_| "none".to_owned());
+            let first_folder = std::env::var_os("PATH")
+                .and_then(|path| std::env::split_paths(&path).next())
+                .map_or_else(|| "none".to_owned(), |folder| folder.display().to_string());
+            let prompt = state.lock().unwrap().system_prompt.clone();
+            speaker.say(&format!(
+                "session={}\ntopic={}\npath={first_folder}\nprompt={}",
+                var("TECTR_SESSION"),
+                var("TECTR_TOPIC"),
+                prompt.as_deref().unwrap_or("none"),
+            ))?;
         }
         "mcp" => {
             let report = {

@@ -23,6 +23,7 @@ use protocol::{
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::agent_context::{AgentCli, AgentContext};
 use crate::agents::AgentLauncher;
 use crate::awake::{KeepAwake, KeepAwakeCommand};
 use crate::images::{self, Images};
@@ -39,6 +40,9 @@ mod remote;
 
 pub(crate) use remote::PAIRING_WAIT;
 
+/// The size of a terminal no client shows yet, such as one an agent opened. The first client
+/// to show it gives it its own.
+const UNSHOWN_TERMINAL_SIZE: (u16, u16) = (120, 40);
 /// How often image files nothing names are looked for, besides at startup.
 const COLLECT_IMAGES_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
@@ -142,6 +146,8 @@ pub struct Core {
     token_refresh: tokio::sync::Mutex<()>,
     /// What starts in a new terminal.
     shell: Shell,
+    /// The CLI agents get on their PATH, if there is one.
+    agent_cli: Option<AgentCli>,
     /// Tells apart the clients showing a terminal.
     next_subscriber: AtomicU64,
     /// What this daemon proves to remote clients, and what they dial.
@@ -163,6 +169,7 @@ pub struct CoreOptions {
     pub port: u16,
     pub config_home: ConfigHome,
     pub shell: Shell,
+    pub agent_cli: Option<AgentCli>,
     pub network: Network,
     pub client_silence: Duration,
 }
@@ -177,6 +184,7 @@ impl Core {
             port,
             config_home,
             shell,
+            agent_cli,
             network,
             client_silence,
         } = options;
@@ -227,6 +235,7 @@ impl Core {
             logins: Mutex::new(HashMap::new()),
             token_refresh: tokio::sync::Mutex::new(()),
             shell,
+            agent_cli,
             next_subscriber: AtomicU64::new(1),
             remote_key,
             network,
@@ -367,6 +376,12 @@ impl Core {
                 rows,
             } => self.open_terminal(topic_id, cols, rows),
             Command::CloseTerminal { terminal_id } => self.close_terminal(&terminal_id),
+            Command::ReadTerminal { terminal_id, lines } => {
+                self.read_terminal(&terminal_id, lines).await
+            }
+            Command::WriteTerminal { terminal_id, text } => {
+                self.write_terminal(&terminal_id, text.into_bytes())
+            }
             Command::SaveMcpServer {
                 id,
                 name,
@@ -1095,6 +1110,7 @@ impl Core {
         let mcp_ids = topic_mcp.ids;
         let mcp_fingerprint = mcp::fingerprint(&inner.state, topic);
         let spawn = acp::AgentSpawn {
+            context: AgentContext::new(self.agent_cli.as_ref(), &session.id, &topic.id),
             run: proxy_secret.clone(),
             mcp: topic_mcp.servers,
             connectors: topic_mcp.connectors,
@@ -1612,26 +1628,73 @@ impl Core {
         colors: Option<TerminalColors>,
     ) -> Result<()> {
         let mut inner = self.lock();
-        if inner.state.terminal(id).is_none() {
-            anyhow::bail!("no terminal with ID {id}");
-        }
-        if !inner.terminals.contains_key(id) {
-            let folder = inner
-                .state
-                .topics()
-                .find(|topic| topic.terminals.iter().any(|t| &t.id == id))
-                .and_then(Topic::worktree)
-                .map(|worktree| PathBuf::from(&worktree.path))
-                .context("the terminal's topic has no folder")?;
-            let cwd = inner
-                .store
-                .terminal_cwd(id)?
-                .map_or_else(|| folder.clone(), PathBuf::from);
-            self.start_terminal(&mut inner, id, cwd, folder, (cols, rows))?;
-        }
+        self.ensure_terminal(&mut inner, id, (cols, rows))?;
         let live = inner.terminals.get(id).expect("started just above");
         live.handle.attach(subscriber, cols, rows, colors);
         Ok(())
+    }
+
+    /// Starts a terminal's shell where the last one was, unless it's running. A new thread
+    /// takes `size` until a client says otherwise.
+    fn ensure_terminal(
+        self: &Arc<Self>,
+        inner: &mut Inner,
+        id: &TerminalId,
+        size: (u16, u16),
+    ) -> Result<()> {
+        if inner.state.terminal(id).is_none() {
+            anyhow::bail!("no terminal with ID {id}");
+        }
+        if inner.terminals.contains_key(id) {
+            return Ok(());
+        }
+        let folder = inner
+            .state
+            .topics()
+            .find(|topic| topic.terminals.iter().any(|t| &t.id == id))
+            .and_then(Topic::worktree)
+            .map(|worktree| PathBuf::from(&worktree.path))
+            .context("the terminal's topic has no folder")?;
+        let cwd = inner
+            .store
+            .terminal_cwd(id)?
+            .map_or_else(|| folder.clone(), PathBuf::from);
+        self.start_terminal(inner, id, cwd, folder, size)
+    }
+
+    async fn read_terminal(
+        self: &Arc<Self>,
+        id: &TerminalId,
+        lines: Option<u32>,
+    ) -> Result<CommandOutput, CommandError> {
+        let read = {
+            let mut inner = self.lock();
+            if inner.state.terminal(id).is_none() {
+                return Err(not_found("terminal", id));
+            }
+            self.ensure_terminal(&mut inner, id, UNSHOWN_TERMINAL_SIZE)
+                .map_err(internal)?;
+            let live = inner.terminals.get(id).expect("started just above");
+            live.handle.read(lines)
+        };
+        let text = read.await.map_err(internal)?;
+        Ok(CommandOutput::TerminalText { text })
+    }
+
+    fn write_terminal(
+        self: &Arc<Self>,
+        id: &TerminalId,
+        data: Vec<u8>,
+    ) -> Result<CommandOutput, CommandError> {
+        let mut inner = self.lock();
+        if inner.state.terminal(id).is_none() {
+            return Err(not_found("terminal", id));
+        }
+        self.ensure_terminal(&mut inner, id, UNSHOWN_TERMINAL_SIZE)
+            .map_err(internal)?;
+        let live = inner.terminals.get(id).expect("started just above");
+        live.handle.input(data);
+        Ok(CommandOutput::Done)
     }
 
     pub fn detach_terminal(&self, id: &TerminalId, subscriber: u64) {
@@ -2246,6 +2309,7 @@ mod tests {
                 args: vec![],
                 launcher: None,
             },
+            agent_cli: None,
             config_home: ConfigHome {
                 home: None,
                 codex_home: None,

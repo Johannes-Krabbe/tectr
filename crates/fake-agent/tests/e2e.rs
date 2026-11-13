@@ -3024,6 +3024,185 @@ async fn closing_a_terminal_removes_its_tab_and_what_it_showed() {
     daemon.shutdown().await;
 }
 
+async fn open_terminal(engine: &Engine, machine: &MachineId, topic: &Topic) -> protocol::Terminal {
+    let command = Command::OpenTerminal {
+        topic_id: topic.id.clone(),
+        cols: 80,
+        rows: 24,
+    };
+    match engine.request(machine, command).await.unwrap() {
+        CommandOutput::Terminal { terminal, .. } => terminal,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+async fn read_terminal(engine: &Engine, machine: &MachineId, id: &protocol::TerminalId) -> String {
+    let command = Command::ReadTerminal {
+        terminal_id: id.clone(),
+        lines: Some(100),
+    };
+    match engine.request(machine, command).await.unwrap() {
+        CommandOutput::TerminalText { text } => text,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+async fn wait_for_terminal_text(
+    engine: &Engine,
+    machine: &MachineId,
+    id: &protocol::TerminalId,
+    wanted: &str,
+) {
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    loop {
+        let text = read_terminal(engine, machine, id).await;
+        if text.contains(wanted) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never read {wanted:?} in {text:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn write_terminal(
+    engine: &Engine,
+    machine: &MachineId,
+    id: &protocol::TerminalId,
+    text: &str,
+) {
+    let command = Command::WriteTerminal {
+        terminal_id: id.clone(),
+        text: text.to_owned(),
+    };
+    engine.request(machine, command).await.unwrap();
+}
+
+/// What the CLI does: no client shows the terminal, and it's read and typed into by command.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_terminal_nobody_shows_can_be_typed_into_and_read() {
+    let fixture = Fixture::new();
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let terminal = open_terminal(&engine, &machine, &topic).await;
+
+    write_terminal(&engine, &machine, &terminal.id, "echo typed-$((40+2))\r").await;
+    wait_for_terminal_text(&engine, &machine, &terminal.id, "typed-42").await;
+    daemon.shutdown().await;
+
+    // After a restart nothing runs it, and reading or typing starts it again.
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    assert_eq!(
+        terminal_state(&engine, &terminal.id).map(|t| t.status),
+        Some(protocol::TerminalStatus::Stopped)
+    );
+    write_terminal(&engine, &machine, &terminal.id, "echo again-$((1+1))\r").await;
+    wait_for_terminal_text(&engine, &machine, &terminal.id, "again-2").await;
+    assert!(
+        read_terminal(&engine, &machine, &terminal.id)
+            .await
+            .contains("typed-42")
+    );
+
+    let missing = engine
+        .request(
+            &machine,
+            Command::ReadTerminal {
+                terminal_id: protocol::TerminalId::from("nope"),
+                lines: None,
+            },
+        )
+        .await;
+    assert!(
+        matches!(&missing, Err(EngineError::Command(error)) if error.code == ErrorCode::NotFound),
+        "{missing:?}"
+    );
+    daemon.shutdown().await;
+}
+
+async fn agent_context(engine: &Engine, session: &SessionRef) -> String {
+    prompt(engine, session, "context").await.unwrap();
+    wait_for_status(engine, session, SessionStatus::Done).await;
+    agent_text(engine, session).last().unwrap().clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_knows_where_it_is_and_gets_the_cli_with_a_word_on_using_it() {
+    let fixture = Fixture::new();
+    let cli = fixture.root.join("built").join("tectr");
+    std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    std::fs::write(&cli, "").unwrap();
+    let daemon = Daemon::start(Config {
+        cli: Some(cli.clone()),
+        ..fixture.config("d", 0)
+    })
+    .await
+    .unwrap();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    let report = agent_context(&engine, &session).await;
+    let bin = fixture
+        .root
+        .join("Application Support")
+        .join("d")
+        .join("bin");
+    assert!(
+        report.contains(&format!("session={}\n", session.session_id)),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!("topic={}\n", topic.id)),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!("path={}\n", bin.display())),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!(
+            "You are session {} in topic {}",
+            session.session_id, topic.id
+        )),
+        "{report}"
+    );
+    assert!(report.contains("`tectr-dev help COMMAND`"), "{report}");
+    assert_eq!(std::fs::read_link(bin.join("tectr-dev")).unwrap(), cli);
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_cli_an_agent_still_knows_where_it_is() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    let report = agent_context(&engine, &session).await;
+    assert!(
+        report.contains(&format!(
+            "session={}\ntopic={}\n",
+            session.session_id, topic.id
+        )),
+        "{report}"
+    );
+    assert!(report.ends_with("prompt=none"), "{report}");
+    daemon.shutdown().await;
+}
+
 // Remote clients, over iroh on loopback: no relay, and addresses come from a lookup the test fills in.
 
 async fn remote_daemon(fixture: &Fixture, name: &str) -> Daemon {

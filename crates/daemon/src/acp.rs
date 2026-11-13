@@ -17,14 +17,15 @@ use agent_client_protocol::v1::schema::{
     SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelect,
     SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionModeState,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    StopReason, TextContent, ToolCall, ToolCallContent, ToolCallLocation, ToolCallStatus,
-    ToolCallUpdateFields, ToolKind,
+    StopReason, SystemPrompt, TextContent, ToolCall, ToolCallContent, ToolCallLocation,
+    ToolCallStatus, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
 use anyhow::{Result, anyhow, bail};
 use protocol as tp;
 use tokio::sync::mpsc;
 
+use crate::agent_context::AgentContext;
 use crate::agents::AgentLauncher;
 use crate::core::{Core, Prompt, SessionCommand, SessionSettings};
 use crate::mcp::{self, AgentConnector, AgentMcp, Isolation};
@@ -35,6 +36,8 @@ const SETTINGS_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct AgentSpawn {
     pub session_id: tp::SessionId,
+    /// Where the agent is and how it reaches tectr.
+    pub context: AgentContext,
     /// Tells this process apart from a later one for the same session.
     pub run: String,
     pub cwd: PathBuf,
@@ -134,13 +137,24 @@ async fn drive(
     spawn: AgentSpawn,
     mut commands: mpsc::UnboundedReceiver<SessionCommand>,
 ) -> Result<()> {
-    let isolation = mcp::isolation(
+    let mut isolation = mcp::isolation(
         &spawn.launcher,
         &spawn.cwd,
         &spawn.mcp,
         &spawn.connectors,
         core.config_home(),
     );
+    isolation.env.extend(spawn.context.env.iter().cloned());
+    // Codex has no system prompt over ACP, but takes developer instructions from its config,
+    // in place of any set there.
+    if let (AgentLauncher::CodexAdapter, Some(text)) =
+        (&spawn.launcher, &spawn.context.instructions)
+    {
+        isolation.args.extend([
+            "-c".to_owned(),
+            format!("developer_instructions={}", toml_string(text)),
+        ]);
+    }
     let agent = launch(core, &spawn.launcher, &isolation).await?;
 
     let id = spawn.session_id.clone();
@@ -197,7 +211,9 @@ async fn drive(
                 .await?;
             let servers = acp_servers(core, &id, &spawn.mcp, &init);
             let meta = isolation.meta.clone();
-            let mut agent_session = open_session(core, &spawn, &connection, &init, servers, meta)
+            let prompt = system_prompt(&spawn, &init);
+            let mut agent_session =
+                open_session(core, &spawn, &connection, &init, servers, meta, prompt)
                 .await
                 .map_err(|error| acp_error(&format!("{error:#}")))?;
 
@@ -462,6 +478,7 @@ async fn open_session(
     init: &InitializeResponse,
     servers: Vec<McpServer>,
     meta: Option<Meta>,
+    prompt: Option<SystemPrompt>,
 ) -> Result<OpenedSession> {
     let (id, modes, options): (SessionId, _, _) = match (&spawn.resume, &spawn.fork) {
         (Some(agent_id), _) => {
@@ -477,6 +494,7 @@ async fn open_session(
                 .send_request(
                     ResumeSessionRequest::new(agent_id.clone(), spawn.cwd.clone())
                         .mcp_servers(servers)
+                        .system_prompt(prompt)
                         .meta(meta),
                 )
                 .block_task()
@@ -496,6 +514,7 @@ async fn open_session(
                 .send_request(
                     ForkSessionRequest::new(fork.agent_session_id.clone(), spawn.cwd.clone())
                         .mcp_servers(servers)
+                        .system_prompt(prompt)
                         .meta(fork_meta(meta, &fork.message_id)),
                 )
                 .block_task()
@@ -513,6 +532,7 @@ async fn open_session(
                 .send_request(
                     NewSessionRequest::new(spawn.cwd.clone())
                         .mcp_servers(servers)
+                        .system_prompt(prompt)
                         .meta(meta),
                 )
                 .block_task()
@@ -544,6 +564,24 @@ async fn open_session(
         .apply(connection, &spawn.launcher, &spawn.settings)
         .await?;
     Ok(session)
+}
+
+/// The instructions as an addition to the agent's own system prompt, for an agent that takes
+/// one. Codex gets them through its config instead.
+fn system_prompt(spawn: &AgentSpawn, init: &InitializeResponse) -> Option<SystemPrompt> {
+    let text = spawn.context.instructions.clone()?;
+    let offered = init
+        .agent_capabilities
+        .session_capabilities
+        .system_prompt
+        .is_some();
+    (offered && !matches!(spawn.launcher, AgentLauncher::CodexAdapter))
+        .then(|| SystemPrompt::new(vec![ContentBlock::Text(TextContent::new(text))]))
+}
+
+/// A TOML string, as Codex's `-c` reads values. JSON's escapes are all valid in TOML.
+fn toml_string(text: &str) -> String {
+    serde_json::Value::String(text.to_owned()).to_string()
 }
 
 /// Asks for the copy to end at the answer. ACP's fork has no field for that yet, so it goes
