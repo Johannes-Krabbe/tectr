@@ -14,15 +14,7 @@ struct AgentTabView: View {
     /// The message box's attach panel and pickers, shown from here rather than the bottom bar.
     @State private var attaching: Attaching?
     @State private var picked: [PreparedImage] = []
-    @State private var position = ScrollPosition(edge: .bottom)
-    @State private var follow = Follow()
-    @State private var phase = ScrollPhase.idle
-    /// Whether the end is in view, give or take `endSlack`.
-    @State private var atEnd = true
-
-    /// How far from the end still counts as there, so coming to rest a little short of it
-    /// still follows.
-    private static let endSlack: CGFloat = 40
+    @State private var scroller = TranscriptScroller()
 
     var body: some View {
         let items = store.items(for: session.id)
@@ -51,7 +43,7 @@ struct AgentTabView: View {
                     } else {
                         Composer(session: session, topicID: topicID, attaching: $attaching, picked: $picked) {
                             // What you send is what you want to see answered.
-                            jumpToEnd()
+                            scroller.jumpToEnd()
                         }
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
@@ -88,7 +80,7 @@ struct AgentTabView: View {
                             .contextMenu { messageMenu(blocks, forkAfter: forkAfter) }
                     case .activity(let activity):
                         ActivityView(activity: activity, expanded: isExpanded(activity)) {
-                            follow.unfolded(last: activity.id == items.last?.id)
+                            scroller.unfolded(last: activity.id == items.last?.id)
                             toggled.formSymmetricDifference([activity.id])
                         }
                     case .note(_, let text, let failed):
@@ -102,42 +94,32 @@ struct AgentTabView: View {
             .padding(Tokens.Space.lg)
             .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
+            // On the stack rather than a row, which the lazy stack can let go of.
+            .background(ScrollViewFinder { scroller.attach($0) })
         }
-        .scrollPosition($position)
         // A short transcript sits at the top, so it stays still while a turn streams in under
-        // it. A long one opens at its end.
+        // it. Where a long one sits is up to `scroller`.
         .defaultScrollAnchor(.top, for: .alignment)
-        .defaultScrollAnchor(.bottom, for: .initialOffset)
-        // Following, it grows up from the end. Otherwise what's being read stays put while
-        // the turn streams in below it.
-        .defaultScrollAnchor(follow.isOn ? .bottom : .top, for: .sizeChanges)
-        .onScrollGeometryChange(for: EndDistance.self) { geometry in
-            EndDistance(geometry, slack: Self.endSlack)
-        } action: { _, distance in
-            if atEnd != distance.near { atEnd = distance.near }
-            // The anchor keeps the end in view as rows grow, and this catches anything it
-            // misses, such as a row below the screen settling on its real height. Never
-            // while the person is scrolling or a jump is under way.
-            if distance.behind, follow.isOn, phase == .idle {
-                position.scrollTo(edge: .bottom)
-            }
+        .opacity(scroller.isReady ? 1 : 0)
+        .animation(.easeOut(duration: Tokens.Motion.fast), value: scroller.isReady)
+        .task { await scroller.revealEventually() }
+        .onScrollGeometryChange(for: Container.self) { geometry in
+            Container(height: geometry.containerSize.height, insets: geometry.contentInsets)
+        } action: { _, _ in
+            scroller.containerChanged()
         }
-        .onScrollPhaseChange { _, new in
-            phase = new
-            switch new {
-            case .interacting:
-                follow.dragStarted()
-            case .idle:
-                if follow.cameToRest(atEnd: atEnd) { position.scrollTo(edge: .bottom) }
-            case .tracking, .decelerating, .animating:
-                break
+        .onScrollPhaseChange { _, phase in
+            switch phase {
+            case .interacting: scroller.dragStarted()
+            case .idle: scroller.cameToRest()
+            case .tracking, .decelerating, .animating: break
             }
         }
         .overlay(alignment: .bottom) {
-            let away = !follow.isOn && !atEnd
+            let away = scroller.isAway
             ZStack {
                 if away {
-                    Button("Scroll to the end", systemImage: "arrow.down", action: jumpToEnd)
+                    Button("Scroll to the end", systemImage: "arrow.down", action: scroller.jumpToEnd)
                         .labelStyle(.iconOnly)
                         .fontWeight(.semibold)
                         .buttonStyle(.glass)
@@ -151,13 +133,6 @@ struct AgentTabView: View {
             .animation(.snappy(duration: Tokens.Motion.fast), value: away)
         }
         .scrollDismissesKeyboard(.interactively)
-    }
-
-    private func jumpToEnd() {
-        follow.resume()
-        withAnimation(.smooth(duration: Tokens.Motion.normal)) {
-            position.scrollTo(edge: .bottom)
-        }
     }
 
     /// The request being shown. When it changes from one, that one was answered.
@@ -195,19 +170,10 @@ private extension MessageBlock {
     }
 }
 
-/// How far the transcript is from its end, in the two ways that matter.
-private struct EndDistance: Equatable {
-    /// Within the slack of the end, which counts as there.
-    let near: Bool
-    /// Short of the very end, by more than rounding.
-    let behind: Bool
-
-    init(_ geometry: ScrollGeometry, slack: CGFloat) {
-        let end = geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
-        let distance = end - geometry.contentOffset.y
-        near = distance <= slack
-        behind = distance > 1
-    }
+/// The scroll view's size and insets, whose changes can move its end.
+private struct Container: Equatable {
+    let height: CGFloat
+    let insets: EdgeInsets
 }
 
 /// Stands in for a transcript whose history is on its way. Nothing at first, so a quick one
