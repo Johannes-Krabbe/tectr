@@ -1,6 +1,7 @@
 //! Logging in to HTTP MCP servers, following the MCP authorization spec: OAuth 2.1 with PKCE,
-//! the server and its authorization server found through their metadata, and tectr registered
-//! as a client by itself where the server allows it.
+//! the server and its authorization server found through their metadata, and tectr known to
+//! the server through its client metadata document or registered by itself, whichever the
+//! server allows.
 //!
 //! This module only talks HTTP. The daemon keeps the logins and decides when to use them.
 
@@ -16,6 +17,15 @@ use sha2::{Digest, Sha256};
 /// A token this close to expiring is refreshed before use, so a request doesn't carry one that
 /// runs out on its way.
 const REFRESH_MARGIN: Duration = Duration::from_secs(60);
+
+/// Where tectr's client metadata document is served. A server that supports client ID
+/// metadata documents takes this address as the client ID and reads the rest from it.
+const CLIENT_METADATA_URL: &str = "https://tectr.jk0.cc/client-metadata.json";
+
+/// The document served at [`CLIENT_METADATA_URL`]. The daemon reads its redirect addresses, so
+/// a daemon on a port the document doesn't list doesn't offer a client ID the server would
+/// turn away.
+const CLIENT_METADATA: &str = include_str!("../../../client-metadata.json");
 
 /// What the daemon keeps for one server after a login. It never leaves the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,8 +66,75 @@ struct Endpoints {
     authorization: String,
     token: String,
     registration: Option<String>,
+    /// Whether the authorization server takes a client metadata document's address as a
+    /// client ID.
+    client_id_metadata_document: bool,
     scope: Option<String>,
     resource: String,
+}
+
+/// How tectr gets a client ID for a login.
+#[derive(Debug, PartialEq, Eq)]
+enum Client {
+    Known { id: String, secret: Option<String> },
+    Register(String),
+}
+
+fn metadata_document_lists(redirect_uri: &str) -> bool {
+    serde_json::from_str::<Value>(CLIENT_METADATA)
+        .ok()
+        .and_then(|document| {
+            document
+                .get("redirect_uris")?
+                .as_array()?
+                .iter()
+                .any(|uri| uri.as_str() == Some(redirect_uri))
+                .then_some(())
+        })
+        .is_some()
+}
+
+/// A client ID registered by hand comes first, then an earlier login's, then the metadata
+/// document, which the MCP spec prefers to registering.
+fn choose_client(
+    endpoints: &Endpoints,
+    client_id: Option<&str>,
+    previous: Option<&Login>,
+    redirect_uri: &str,
+) -> Result<Client> {
+    if let Some(id) = client_id {
+        return Ok(Client::Known {
+            id: id.to_owned(),
+            secret: None,
+        });
+    }
+    if let Some(previous) = previous
+        && previous.redirect_uri == redirect_uri
+        && previous.token_endpoint == endpoints.token
+    {
+        return Ok(Client::Known {
+            id: previous.client_id.clone(),
+            secret: previous.client_secret.clone(),
+        });
+    }
+    let listed = metadata_document_lists(redirect_uri);
+    if endpoints.client_id_metadata_document && listed {
+        return Ok(Client::Known {
+            id: CLIENT_METADATA_URL.to_owned(),
+            secret: None,
+        });
+    }
+    if let Some(registration) = &endpoints.registration {
+        return Ok(Client::Register(registration.clone()));
+    }
+    if endpoints.client_id_metadata_document {
+        bail!(
+            "this server takes tectr's client metadata, but that only lists the default daemon ports, and it doesn't register clients by itself. Register tectr with it, with {redirect_uri} as the redirect address, and set the client ID"
+        );
+    }
+    bail!(
+        "this server doesn't register clients by itself. Register tectr with it, with {redirect_uri} as the redirect address, and set the client ID"
+    )
 }
 
 /// Finds where to log in, registers tectr if needed, and returns the address to open in the
@@ -73,23 +150,11 @@ pub async fn start(
     state: &str,
 ) -> Result<(String, Pending)> {
     let endpoints = discover(http, server_url, headers).await?;
-    let (client_id, client_secret) = match (client_id, previous) {
-        (Some(id), _) => (id.to_owned(), None),
-        (None, Some(previous))
-            if previous.redirect_uri == redirect_uri
-                && previous.token_endpoint == endpoints.token =>
-        {
-            (previous.client_id.clone(), previous.client_secret.clone())
-        }
-        (None, _) => {
-            let Some(registration) = &endpoints.registration else {
-                bail!(
-                    "this server doesn't register clients by itself. Register tectr with it, with {redirect_uri} as the redirect address, and set the client ID"
-                );
-            };
-            register(http, registration, redirect_uri).await?
-        }
-    };
+    let (client_id, client_secret) =
+        match choose_client(&endpoints, client_id, previous, redirect_uri)? {
+            Client::Known { id, secret } => (id, secret),
+            Client::Register(endpoint) => register(http, &endpoint, redirect_uri).await?,
+        };
 
     let verifier = format!("{}{}", crate::new_id(), crate::new_id());
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -443,6 +508,10 @@ async fn discover(
                 authorization,
                 token,
                 registration: text("registration_endpoint"),
+                client_id_metadata_document: found
+                    .get("client_id_metadata_document_supported")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 scope,
                 resource,
             });
@@ -456,6 +525,7 @@ async fn discover(
         authorization: format!("{origin}/authorize"),
         token: format!("{origin}/token"),
         registration: Some(format!("{origin}/register")),
+        client_id_metadata_document: false,
         scope,
         resource,
     })
@@ -504,6 +574,101 @@ mod tests {
                 "https://auth.example/.well-known/openid-configuration/tenant",
                 "https://auth.example/tenant/.well-known/openid-configuration",
             ]
+        );
+    }
+
+    #[test]
+    fn the_client_metadata_document_names_itself_and_every_channel_s_callback() {
+        let document: Value = serde_json::from_str(CLIENT_METADATA).unwrap();
+        assert_eq!(document["client_id"], CLIENT_METADATA_URL);
+        assert_eq!(document["token_endpoint_auth_method"], "none");
+        for channel in [protocol::Channel::Release, protocol::Channel::Dev] {
+            let callback = format!("http://localhost:{}/oauth/callback", channel.default_port());
+            assert!(metadata_document_lists(&callback), "{callback}");
+        }
+        assert!(!metadata_document_lists(
+            "http://localhost:1/oauth/callback"
+        ));
+    }
+
+    fn endpoints(registration: Option<&str>, client_id_metadata_document: bool) -> Endpoints {
+        Endpoints {
+            authorization: "https://auth.example/authorize".into(),
+            token: "https://auth.example/token".into(),
+            registration: registration.map(str::to_owned),
+            client_id_metadata_document,
+            scope: None,
+            resource: "https://mcp.example/mcp".into(),
+        }
+    }
+
+    const CALLBACK: &str = "http://localhost:7767/oauth/callback";
+
+    fn known(id: &str) -> Client {
+        Client::Known {
+            id: id.into(),
+            secret: None,
+        }
+    }
+
+    #[test]
+    fn the_metadata_document_is_preferred_to_registering() {
+        let both = endpoints(Some("https://auth.example/register"), true);
+        assert_eq!(
+            choose_client(&both, None, None, CALLBACK).unwrap(),
+            known(CLIENT_METADATA_URL)
+        );
+        assert_eq!(
+            choose_client(&both, None, None, "http://localhost:1/oauth/callback").unwrap(),
+            Client::Register("https://auth.example/register".into())
+        );
+        assert_eq!(
+            choose_client(&endpoints(None, true), None, None, CALLBACK).unwrap(),
+            known(CLIENT_METADATA_URL)
+        );
+    }
+
+    #[test]
+    fn a_client_id_by_hand_or_from_an_earlier_login_comes_first() {
+        let both = endpoints(Some("https://auth.example/register"), true);
+        assert_eq!(
+            choose_client(&both, Some("by-hand"), None, CALLBACK).unwrap(),
+            known("by-hand")
+        );
+        let previous = Login {
+            token_endpoint: "https://auth.example/token".into(),
+            client_id: "registered".into(),
+            client_secret: Some("secret".into()),
+            resource: String::new(),
+            redirect_uri: CALLBACK.into(),
+            access_token: None,
+            refresh_token: None,
+            expires_at_ms: None,
+        };
+        assert_eq!(
+            choose_client(&both, None, Some(&previous), CALLBACK).unwrap(),
+            Client::Known {
+                id: "registered".into(),
+                secret: Some("secret".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_server_with_neither_way_asks_for_a_client_id() {
+        let error = choose_client(&endpoints(None, false), None, None, CALLBACK).unwrap_err();
+        assert!(error.to_string().contains("set the client ID"));
+        let error = choose_client(
+            &endpoints(None, true),
+            None,
+            None,
+            "http://localhost:1/oauth/callback",
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only lists the default daemon ports")
         );
     }
 

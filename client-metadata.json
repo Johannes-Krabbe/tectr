@@ -1,0 +1,12 @@
+{
+  "client_id": "https://tectr.jk0.cc/client-metadata.json",
+  "client_name": "tectr",
+  "client_uri": "https://tectr.jk0.cc",
+  "redirect_uris": [
+    "http://localhost:7767/oauth/callback",
+    "http://localhost:7769/oauth/callback"
+  ],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}
