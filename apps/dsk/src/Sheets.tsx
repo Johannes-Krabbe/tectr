@@ -29,8 +29,11 @@ import { act, type ActionId, keysLabel, remapNative } from "./keybinds";
 import { archiveLosses, archiveSummary, type MoveChoice, sessionLabel } from "./model";
 import {
   afterPaste,
+  canCreate,
+  completesOnEnter,
   highlightWhileTyping,
   moveHighlight,
+  type PathGoal,
   splitPath,
   STARTING_PATH,
   suggest,
@@ -237,11 +240,20 @@ const WORKSPACE_HINTS = [
   keyHint("Complete", "sheet.complete"),
 ];
 
+const GOAL_HINTS = [keyHint("Move", "sheet.up", "sheet.down")];
+
+const GOALS: { goal: PathGoal; label: string; meta: string }[] = [
+  { goal: "open", label: "Open folder", meta: "Existing git repository" },
+  { goal: "create", label: "New folder", meta: "Runs git init" },
+];
+
 const remoteDelay = () => {
   const delay = shownValue("general.remote_path_delay");
   return typeof delay === "number" ? delay : 150;
 };
 
+/** Asks first whether the workspace is a repository that's already there or a new folder, then
+ * takes a path for either. One sheet throughout, so the step change doesn't reopen it. */
 function WorkspaceSheet({
   sheet,
   workspaces,
@@ -253,14 +265,20 @@ function WorkspaceSheet({
   onClose: () => void;
   onDone: (output: CommandOutput) => void;
 }) {
+  const [goal, setGoal] = useState<PathGoal | null>(null);
   const [path, setPath] = useState(STARTING_PATH);
   const [highlight, setHighlight] = useState<number | null>(null);
+  const [goalHighlight, setGoalHighlight] = useState(0);
   const caretPlaced = useRef(false);
   const list = useRef<HTMLDivElement>(null);
   const listId = useId();
 
   const split = splitPath(path);
-  const listing = useListing(sheet.machineId, split?.parent, sheet.local ? 0 : remoteDelay());
+  const listing = useListing(
+    sheet.machineId,
+    goal === null ? undefined : split?.parent,
+    sheet.local ? 0 : remoteDelay(),
+  );
   const rows =
     split && listing && "folders" in listing
       ? suggest(
@@ -276,29 +294,89 @@ function WorkspaceSheet({
     if (highlight !== null) list.current?.children[highlight]?.scrollIntoView({ block: "nearest" });
   }, [highlight]);
 
+  if (goal === null) {
+    const picked = GOALS[goalHighlight] ?? GOALS[0];
+    return (
+      <Sheet
+        where={`New workspace on ${sheet.deviceName}`}
+        action={picked.label}
+        canSubmit
+        run={async () => {
+          setGoal(picked.goal);
+          return null;
+        }}
+        onClose={onClose}
+        onDone={onDone}
+        hints={GOAL_HINTS}
+        onKeyDown={(event) => {
+          const move = (step: 1 | -1) =>
+            setGoalHighlight((current) => (current + step + GOALS.length) % GOALS.length);
+          if (act(event, "sheet.up", () => move(-1))) return;
+          act(event, "sheet.down", () => move(1));
+        }}
+        list={
+          // Focusable itself, so the sheet's keys reach the form with nothing to type in.
+          <div
+            className="palette-list"
+            role="listbox"
+            tabIndex={0}
+            aria-label="Workspace from"
+            aria-activedescendant={`${listId}-goal-${goalHighlight}`}
+          >
+            {GOALS.map((row, index) => (
+              <div
+                key={row.goal}
+                id={`${listId}-goal-${index}`}
+                className="palette-item"
+                role="option"
+                aria-selected={index === goalHighlight}
+                data-highlighted={index === goalHighlight ? "" : undefined}
+                onMouseMove={() => setGoalHighlight(index)}
+                onClick={() => setGoal(row.goal)}
+              >
+                <span className="name">{row.label}</span>
+                <span className="meta">{row.meta}</span>
+              </div>
+            ))}
+          </div>
+        }
+      />
+    );
+  }
+
+  const creating = goal === "create";
+
   const edit = (next: string) => {
     setPath(next);
-    setHighlight(highlightWhileTyping(splitPath(next)?.partial));
+    setHighlight(highlightWhileTyping(splitPath(next)?.partial, goal));
   };
 
   const complete = (row: Suggestion | undefined) => {
     if (row) edit(row.typed);
   };
 
-  // There's nothing to go on to with a folder that's already a workspace, so Enter goes there.
-  // Going further in is still what the complete key does.
-  const completesOnEnter = chosen !== undefined && chosen.tag !== "added";
+  const entersFolder = completesOnEnter(goal, chosen);
 
   return (
     <Sheet
-      where={`New workspace on ${sheet.deviceName}`}
-      action={completesOnEnter ? "Complete" : chosen ? "Open workspace" : "Add workspace"}
-      canSubmit={path.trim() !== ""}
+      where={`${creating ? "New folder" : "Open folder"} on ${sheet.deviceName}`}
+      action={
+        entersFolder
+          ? "Complete"
+          : creating
+            ? "Create workspace"
+            : chosen
+              ? "Open workspace"
+              : "Add workspace"
+      }
+      canSubmit={creating ? canCreate(path) || entersFolder : path.trim() !== ""}
       run={() =>
-        request(sheet.machineId, {
-          command: "add_workspace",
-          path: chosen ? chosen.path : path.trim(),
-        })
+        creating
+          ? request(sheet.machineId, { command: "create_workspace", path: path.trim() })
+          : request(sheet.machineId, {
+              command: "add_workspace",
+              path: chosen ? chosen.path : path.trim(),
+            })
       }
       onClose={onClose}
       onDone={onDone}
@@ -325,8 +403,8 @@ function WorkspaceSheet({
                 }}
                 onMouseMove={() => setHighlight(index)}
                 onClick={(event) => {
-                  if (row.tag === "added") event.currentTarget.closest("form")?.requestSubmit();
-                  else complete(row);
+                  if (completesOnEnter(goal, row)) complete(row);
+                  else event.currentTarget.closest("form")?.requestSubmit();
                 }}
               >
                 <span className="name code">{row.typed}</span>
@@ -341,8 +419,8 @@ function WorkspaceSheet({
         className="sheet-name code"
         autoFocus
         value={path}
-        placeholder="/path/to/repo"
-        aria-label="Repository path"
+        placeholder={creating ? "/path/to/new-folder" : "/path/to/repo"}
+        aria-label={creating ? "New folder path" : "Repository path"}
         role="combobox"
         aria-autocomplete="list"
         aria-expanded={rows.length > 0}
@@ -373,7 +451,7 @@ function WorkspaceSheet({
           if (act(event, "sheet.down", () => move(1))) return;
           if (act(event, "sheet.complete", () => complete(chosen ?? rows[0]))) return;
           // Anything else reaches the form, where this key submits.
-          if (completesOnEnter) act(event, "sheet.submit", () => complete(chosen));
+          if (entersFolder) act(event, "sheet.submit", () => complete(chosen));
         }}
       />
     </Sheet>

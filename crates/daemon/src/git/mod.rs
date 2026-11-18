@@ -29,6 +29,34 @@ pub async fn repo_root(path: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(root))
 }
 
+/// Makes `path`, which mustn't exist yet, a new repository. Topics branch from `HEAD`, so
+/// it gets an empty first commit, by whoever the machine's git config says. Anything that
+/// fails takes the folder away again, so trying again starts clean.
+pub async fn create_repo(path: &Path) -> Result<()> {
+    tokio::fs::create_dir_all(path.parent().context("a new folder needs a parent")?).await?;
+    tokio::fs::create_dir(path).await?;
+    let made = async {
+        git(path, &["init".as_ref(), "-q".as_ref()]).await?;
+        git(
+            path,
+            &[
+                "commit".as_ref(),
+                "-q".as_ref(),
+                "--allow-empty".as_ref(),
+                "-m".as_ref(),
+                "Initial commit".as_ref(),
+            ],
+        )
+        .await
+        .context("couldn't make the first commit")
+    }
+    .await;
+    if made.is_err() {
+        let _ = tokio::fs::remove_dir_all(path).await;
+    }
+    made.map(drop)
+}
+
 /// The branch checked out in `repo`, or `HEAD` when it's detached.
 pub async fn current_branch(repo: &Path) -> Result<String> {
     let branch = git(repo, &["branch".as_ref(), "--show-current".as_ref()]).await?;
@@ -259,6 +287,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(branch, "tectr/new");
+    }
+
+    #[tokio::test]
+    async fn create_repo_refuses_a_folder_that_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(create_repo(dir.path()).await.is_err());
+        assert!(dir.path().exists());
     }
 
     #[tokio::test]

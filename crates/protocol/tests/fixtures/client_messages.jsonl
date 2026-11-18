@@ -2,6 +2,7 @@
 {"type":"subscribe","session_id":"s1","after_seq":12}
 {"type":"unsubscribe","session_id":"s1"}
 {"type":"request","id":1,"command":{"command":"add_workspace","path":"/repo"}}
+{"type":"request","id":1,"command":{"command":"create_workspace","path":"~/Developer/new"}}
 {"type":"request","id":1,"command":{"command":"list_folders","path":"~/Developer/"}}
 {"type":"request","id":2,"command":{"command":"create_topic","workspace_id":"w1","name":"Fix login"}}
 {"type":"request","id":3,"command":{"command":"start_session","topic_id":"t1","agent":"claude","mode":"auto","model":null}}

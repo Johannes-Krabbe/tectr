@@ -46,10 +46,25 @@ export function suggest(
     }));
 }
 
+/** Whether the path names a repository to add or a folder to make for a new one. */
+export type PathGoal = "open" | "create";
+
 /** Typing part of a name offers the first match. A finished folder offers nothing, which is
- * what lets the next Enter add it. */
-export const highlightWhileTyping = (partial: string | undefined): number | null =>
-  partial ? 0 : null;
+ * what lets the next Enter add it. A new folder's name is usually the start of no folder, or
+ * of one it mustn't be confused with, so typing it offers nothing either. */
+export const highlightWhileTyping = (
+  partial: string | undefined,
+  goal: PathGoal = "open",
+): number | null => (partial && goal === "open" ? 0 : null);
+
+/** Whether Enter goes into the highlighted folder rather than submitting. A folder that's
+ * already a workspace has nothing further in to open, so Enter opens it. Making a folder
+ * always goes in, since the new one goes inside whatever folder was picked. */
+export const completesOnEnter = (goal: PathGoal, chosen: Suggestion | undefined): boolean =>
+  chosen !== undefined && (goal === "create" || chosen.tag !== "added");
+
+/** A new folder needs a name after the folder it goes in. */
+export const canCreate = (typed: string): boolean => Boolean(splitPath(typed)?.partial);
 
 /** Moves through the rows, with "nothing highlighted" as one more stop between the last and
  * the first, so what's typed can always be submitted as it is. */

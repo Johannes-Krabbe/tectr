@@ -339,6 +339,11 @@ pub enum Command {
     AddWorkspace {
         path: String,
     },
+    /// Make a new folder at a path that doesn't exist yet, turn it into a git repository with
+    /// an empty first commit, and add it. The path works as in [`Command::AddWorkspace`].
+    CreateWorkspace {
+        path: String,
+    },
     /// List the folders directly inside a folder on the daemon's machine, for completing
     /// a path as it's typed. The path works as in [`Command::AddWorkspace`]. A folder that
     /// doesn't exist has no folders in it, because that's normal halfway through typing.

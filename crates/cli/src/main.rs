@@ -44,6 +44,9 @@ enum Cmd {
     /// Add an existing git repository as a workspace.
     AddWorkspace {
         path: String,
+        /// Make a new folder there instead, with a fresh git repository in it.
+        #[arg(long)]
+        new: bool,
         /// The machine to add it on, by name or ID prefix. Needed only with
         /// more than one daemon.
         #[arg(long)]
@@ -232,16 +235,15 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Cmd::Status => print_status(&engine),
-        Cmd::AddWorkspace { path, on } => {
+        Cmd::AddWorkspace { path, new, on } => {
             let machine = choose_machine(&engine, on.as_deref())?;
-            let output = engine
-                .request(
-                    &machine,
-                    Command::AddWorkspace {
-                        path: absolute(&path)?,
-                    },
-                )
-                .await?;
+            let path = absolute(&path)?;
+            let command = if new {
+                Command::CreateWorkspace { path }
+            } else {
+                Command::AddWorkspace { path }
+            };
+            let output = engine.request(&machine, command).await?;
             if let CommandOutput::Workspace { workspace } = output {
                 println!("workspace {} {}", short(&workspace.id.0), workspace.path);
             }

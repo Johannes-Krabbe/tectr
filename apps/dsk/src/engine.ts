@@ -388,6 +388,7 @@ export type SessionEvent = { seq: number; at_ms: number; kind: SessionEventKind 
 
 export type Command =
   | { command: "add_workspace"; path: string }
+  | { command: "create_workspace"; path: string }
   | { command: "list_folders"; path: string }
   | { command: "create_topic"; workspace_id: string; name: string | null; at_root: boolean }
   | { command: "rename_topic"; topic_id: string; name: string }

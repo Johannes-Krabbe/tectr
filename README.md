@@ -46,6 +46,7 @@ In another terminal, add a repo and start a session. Commands that return an ID 
 alias tectr="cargo run -q -p cli --"
 
 tectr add-workspace /path/to/repo      # prints the workspace ID
+tectr add-workspace --new ~/new-thing  # makes the folder and runs git init
 tectr new-topic <workspace> "Fix login" # creates a branch and worktree
 tectr new-session <topic> --mode manual --model haiku
 tectr chat <session>

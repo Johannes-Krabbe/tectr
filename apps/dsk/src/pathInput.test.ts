@@ -3,6 +3,8 @@ import { test } from "node:test";
 import type { Folder } from "./engine";
 import {
   afterPaste,
+  canCreate,
+  completesOnEnter,
   highlightWhileTyping,
   isLoopback,
   moveHighlight,
@@ -76,6 +78,28 @@ test("typing part of a name highlights the first match, and a finished folder no
   assert.equal(highlightWhileTyping("D"), 0);
   assert.equal(highlightWhileTyping(""), null);
   assert.equal(highlightWhileTyping(undefined), null);
+});
+
+test("typing a new folder's name highlights nothing, so Enter makes it", () => {
+  assert.equal(highlightWhileTyping("D", "create"), null);
+});
+
+test("Enter goes into a folder, except one that's already a workspace when opening", () => {
+  const row = (tag: "added" | "git" | null) => ({ typed: "~/a/", path: "/home/me/a", tag });
+  assert.equal(completesOnEnter("open", row(null)), true);
+  assert.equal(completesOnEnter("open", row("git")), true);
+  assert.equal(completesOnEnter("open", row("added")), false);
+  assert.equal(completesOnEnter("create", row("added")), true);
+  assert.equal(completesOnEnter("open", undefined), false);
+  assert.equal(completesOnEnter("create", undefined), false);
+});
+
+test("a new folder needs a name after its parent", () => {
+  assert.equal(canCreate("~/Developer/new"), true);
+  assert.equal(canCreate("/srv/new "), true);
+  assert.equal(canCreate("~/Developer/"), false);
+  assert.equal(canCreate("~/"), false);
+  assert.equal(canCreate("new"), false);
 });
 
 test("moving passes through having nothing highlighted", () => {

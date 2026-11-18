@@ -294,6 +294,7 @@ impl Core {
     pub async fn handle(self: &Arc<Self>, command: Command) -> Result<CommandOutput, CommandError> {
         match command {
             Command::AddWorkspace { path } => self.add_workspace(&path).await,
+            Command::CreateWorkspace { path } => self.create_workspace(&path).await,
             Command::ListFolders { path } => list_folders(&path).await,
             Command::CreateTopic {
                 workspace_id,
@@ -514,6 +515,17 @@ impl Core {
             workspace: workspace.clone(),
         });
         Ok(CommandOutput::Workspace { workspace })
+    }
+
+    async fn create_workspace(&self, path: &str) -> Result<CommandOutput, CommandError> {
+        let resolved = resolve_path(path)?;
+        if tokio::fs::symlink_metadata(&resolved).await.is_ok() {
+            return Err(invalid(format!("{} already exists", resolved.display())));
+        }
+        git::create_repo(&resolved)
+            .await
+            .map_err(|error| invalid(format!("Can't create {}: {error:#}", resolved.display())))?;
+        self.add_workspace(path).await
     }
 
     async fn create_topic(
@@ -2578,6 +2590,37 @@ mod tests {
         assert_eq!(name(&core), "Desk");
         core.handle(rename(" ")).await.unwrap();
         assert_eq!(name(&core), "host");
+    }
+
+    #[tokio::test]
+    async fn a_new_workspace_gets_a_folder_and_a_commit_to_branch_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        let core = Core::open(&data, options("host", None)).unwrap();
+        let path = dir.path().join("nested/fresh").display().to_string();
+        let create = || Command::CreateWorkspace { path: path.clone() };
+
+        let Ok(CommandOutput::Workspace { workspace }) = core.handle(create()).await else {
+            panic!("no workspace");
+        };
+        assert_eq!(workspace.name, "fresh");
+        assert!(
+            core.handle(Command::CreateTopic {
+                workspace_id: workspace.id,
+                name: None,
+                at_root: false,
+            })
+            .await
+            .is_ok()
+        );
+
+        let again = core.handle(create()).await.unwrap_err();
+        assert!(
+            again.message.contains("already exists"),
+            "{}",
+            again.message
+        );
     }
 
     #[tokio::test]
