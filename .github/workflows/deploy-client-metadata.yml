@@ -1,0 +1,66 @@
+name: Deploy client metadata
+
+# Publishes client-metadata.json (the OAuth client ID metadata document) to
+# https://tectr.jk0.cc/client-metadata.json on piplup whenever it changes on main.
+# The deploy key (secret PIPLUP_DEPLOY_KEY) can only trigger that one deploy: it is forced to
+# `deploy-app tectr site` in the deploy user's authorized_keys on piplup, which pulls main and
+# copies the file into Caddy's web root. Nothing is uploaded from here.
+on:
+  push:
+    branches: [main]
+    paths:
+      - client-metadata.json
+      - .github/workflows/deploy-client-metadata.yml
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-client-metadata
+  cancel-in-progress: false
+
+env:
+  URL: https://tectr.jk0.cc/client-metadata.json
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: client-metadata.json
+          sparse-checkout-cone-mode: false
+
+      - name: Validate
+        run: |
+          f=client-metadata.json
+          jq -e . "$f" > /dev/null || { echo "::error::$f is not valid JSON"; exit 1; }
+          id=$(jq -r .client_id "$f")
+          [ "$id" = "$URL" ] || { echo "::error::client_id is \"$id\", must be exactly $URL"; exit 1; }
+          size=$(wc -c < "$f")
+          [ "$size" -lt 5120 ] || { echo "::error::$f is $size bytes, keep it under 5 KB"; exit 1; }
+          [ "$(head -c3 "$f" | od -An -tx1 | tr -d ' ')" != "efbbbf" ] || { echo "::error::$f starts with a BOM"; exit 1; }
+
+      - name: Deploy to piplup
+        env:
+          SSH_KEY: ${{ secrets.PIPLUP_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ vars.PIPLUP_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/piplup
+          chmod 600 ~/.ssh/piplup
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/piplup -o IdentitiesOnly=yes deploy@piplup.jk0.cc "$GITHUB_SHA"
+
+      - name: Verify live document
+        run: |
+          # No -L: the URL must answer 200 directly, without redirects.
+          for i in 1 2 3 4 5; do
+            out=$(curl -sS -A "oauth-server/1.0" -o live.json -w '%{http_code} %{content_type}' "$URL" || true)
+            echo "attempt $i: $out"
+            case "$out" in
+              "200 application/json"*) cmp live.json client-metadata.json && { echo "Live document matches $GITHUB_SHA"; exit 0; } ;;
+            esac
+            sleep 5
+          done
+          echo "::error::$URL does not serve this commit's client-metadata.json with 200 application/json"
+          exit 1
