@@ -9,12 +9,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use protocol::{DaemonState, McpServer, McpServerId, McpTransport, Topic};
+use protocol::{DaemonState, McpProfileId, McpServer, McpServerId, McpTransport, Topic};
 use serde_json::{Map, Value, json};
 
 use crate::agents::AgentLauncher;
 
-/// A connector a topic turns on, which only its own agent can use.
+/// A connector a workspace adds, which only its own agent can use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentConnector {
     Claude { url: String },
@@ -45,19 +45,23 @@ impl AgentMcp {
 /// What a topic's agents get from tectr.
 #[derive(Debug, Default)]
 pub struct TopicMcp {
-    /// The servers passed over ACP, and the IDs of the ones among them the proxy serves.
-    pub ids: Vec<McpServerId>,
+    /// The servers passed over ACP, and the IDs of the ones among them the proxy serves, with
+    /// the profile each uses.
+    pub ids: Vec<(McpServerId, Option<McpProfileId>)>,
     pub servers: Vec<AgentMcp>,
     pub connectors: Vec<AgentConnector>,
 }
 
-/// The servers a topic's agents get. `proxy` is the address the daemon proxies a session's
-/// HTTP servers at, which the server's ID is added to.
+/// The servers a topic's agents get, which are its workspace's. `proxy` is the address the
+/// daemon proxies a session's HTTP servers at, which the server's ID is added to.
 pub fn agent_servers(state: &DaemonState, topic: &Topic, proxy: &str) -> TopicMcp {
     let mut ids = vec![];
     let mut servers = vec![];
     let mut connectors = vec![];
-    for server in state.topic_mcp_servers(topic) {
+    let Some(workspace) = state.topic_workspace(&topic.id) else {
+        return TopicMcp::default();
+    };
+    for (server, profile) in state.workspace_mcp_servers(workspace) {
         let agent = match &server.transport {
             McpTransport::ClaudeConnector { url } => {
                 connectors.push(AgentConnector::Claude { url: url.clone() });
@@ -67,22 +71,28 @@ pub fn agent_servers(state: &DaemonState, topic: &Topic, proxy: &str) -> TopicMc
                 connectors.push(AgentConnector::Codex { id: id.clone() });
                 continue;
             }
-            McpTransport::Stdio { command, args, env } => AgentMcp::Stdio {
-                name: server.name.clone(),
-                command: expand(command),
-                args: args.iter().map(|arg| expand(arg)).collect(),
-                env: env
-                    .iter()
-                    .map(|(key, value)| (key.clone(), expand(value)))
-                    .collect(),
-            },
+            McpTransport::Stdio { command, args, env } => {
+                let mut env = env.clone();
+                if let Some(profile) = profile {
+                    env.extend(profile.values.clone());
+                }
+                AgentMcp::Stdio {
+                    name: server.name.clone(),
+                    command: expand(command),
+                    args: args.iter().map(|arg| expand(arg)).collect(),
+                    env: env
+                        .iter()
+                        .map(|(key, value)| (key.clone(), expand(value)))
+                        .collect(),
+                }
+            }
             McpTransport::Http { .. } => AgentMcp::Http {
                 name: server.name.clone(),
                 url: format!("{proxy}/{}", server.id),
             },
             McpTransport::Unknown => continue,
         };
-        ids.push(server.id.clone());
+        ids.push((server.id.clone(), profile.map(|p| p.id.clone())));
         servers.push(agent);
     }
     TopicMcp {
@@ -512,7 +522,6 @@ fn remove_trailing_commas(text: &str) -> String {
 pub struct Found {
     pub name: String,
     pub transport: McpTransport,
-    pub enabled: bool,
 }
 
 /// Every server configured for Claude Code, Codex and OpenCode on this device, with why each
@@ -583,7 +592,7 @@ fn claude_servers(path: &Path, found: &mut Vec<Found>, skipped: &mut Vec<String>
                 }),
             _ => None,
         };
-        push(found, skipped, "Claude Code", name, transport, kind, true);
+        push(found, skipped, "Claude Code", name, transport, kind);
     }
 }
 
@@ -607,10 +616,6 @@ fn codex_servers(path: &Path, found: &mut Vec<Found>, skipped: &mut Vec<String>)
                 })
                 .unwrap_or_default()
         };
-        let enabled = server
-            .get("enabled")
-            .and_then(|i| i.as_bool())
-            .unwrap_or(true);
         let transport = if let Some(command) = text("command") {
             let args = server
                 .get("args")
@@ -652,7 +657,6 @@ fn codex_servers(path: &Path, found: &mut Vec<Found>, skipped: &mut Vec<String>)
             name.to_owned(),
             transport,
             "unknown",
-            enabled,
         );
     }
 }
@@ -666,10 +670,6 @@ fn opencode_servers(path: &Path, found: &mut Vec<Found>, skipped: &mut Vec<Strin
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("local");
-        let enabled = server
-            .get("enabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
         let transport = match kind {
             "local" => {
                 let mut command = strings(server.get("command")).into_iter();
@@ -689,7 +689,7 @@ fn opencode_servers(path: &Path, found: &mut Vec<Found>, skipped: &mut Vec<Strin
                 }),
             _ => None,
         };
-        push(found, skipped, "OpenCode", name, transport, kind, enabled);
+        push(found, skipped, "OpenCode", name, transport, kind);
     }
 }
 
@@ -700,7 +700,6 @@ fn push(
     name: String,
     transport: Option<McpTransport>,
     kind: &str,
-    enabled: bool,
 ) {
     if !valid_name(&name) {
         skipped.push(format!(
@@ -709,11 +708,7 @@ fn push(
         return;
     }
     match transport {
-        Some(transport) => found.push(Found {
-            name,
-            transport,
-            enabled,
-        }),
+        Some(transport) => found.push(Found { name, transport }),
         None if kind == "sse" => skipped.push(format!(
             "{name} ({source}): SSE servers aren't supported, only stdio and streamable HTTP"
         )),
@@ -823,8 +818,7 @@ pub struct ConnectorSync {
     pub removed: Vec<String>,
 }
 
-/// A new connector starts off, because each one brings many tools. One that's still there
-/// keeps its own on or off and every topic's.
+/// A connector that's still there keeps its ID, so workspaces that added it keep it.
 pub fn sync_connectors(
     existing: &[McpServer],
     kind: ConnectorKind,
@@ -851,10 +845,9 @@ pub fn sync_connectors(
                 sync.put.push(McpServer {
                     id: new_id(),
                     name: found.name.clone(),
-                    topic_id: None,
                     transport: found.transport.clone(),
-                    enabled: false,
-                    auth: protocol::McpAuth::None,
+                    profiles: vec![],
+                    needs_login: false,
                 });
             }
         }
@@ -871,17 +864,11 @@ pub fn sync_connectors(
     sync
 }
 
-/// Why a server can't be saved under this name, if it can't. A device-wide name has to be
-/// unique on the device, and a topic's own name among the device's and that topic's.
-/// Connectors have names no other server can, so they're left out.
+/// Whether another server on the device already has this name. Connectors have names no
+/// other server can, so they're left out.
 pub fn name_taken(servers: &[McpServer], candidate: &McpServer) -> bool {
     servers.iter().any(|other| {
-        other.id != candidate.id
-            && !other.transport.is_connector()
-            && other.name == candidate.name
-            && (other.topic_id.is_none()
-                || candidate.topic_id.is_none()
-                || other.topic_id == candidate.topic_id)
+        other.id != candidate.id && !other.transport.is_connector() && other.name == candidate.name
     })
 }
 
@@ -927,30 +914,39 @@ mod tests {
     }
 
     #[test]
-    fn connectors_a_topic_turns_on_go_to_isolation_rather_than_over_acp() {
+    fn connectors_a_workspace_adds_go_to_isolation_rather_than_over_acp() {
+        let topic = json!({
+            "id": "t", "name": "t", "worktree_id": "w", "worktrees": [], "sessions": [],
+        });
         let state: DaemonState = serde_json::from_value(json!({
             "machine": { "id": "m", "name": "m" },
-            "workspaces": [],
+            "workspaces": [{
+                "id": "w", "name": "w", "path": "/w", "topics": [topic],
+                "mcp": {
+                    "files": { "enabled": true },
+                    "slack": { "enabled": true },
+                    "drive": { "enabled": true },
+                    "notion": { "enabled": false },
+                },
+            }],
             "approvals": [],
             "mcp_servers": [
-                { "id": "files", "name": "files", "enabled": true,
+                { "id": "files", "name": "files",
                   "transport": { "type": "stdio", "command": "x" } },
-                { "id": "slack", "name": "claude.ai Slack", "enabled": false,
+                { "id": "slack", "name": "claude.ai Slack",
                   "transport": { "type": "claude_connector", "url": "https://mcp.slack.com/mcp" } },
-                { "id": "drive", "name": "ChatGPT Google Drive", "enabled": true,
+                { "id": "drive", "name": "ChatGPT Google Drive",
                   "transport": { "type": "codex_app", "id": "connector_2" } },
-                { "id": "notion", "name": "claude.ai Notion", "enabled": false,
+                { "id": "notion", "name": "claude.ai Notion",
                   "transport": { "type": "claude_connector", "url": "https://mcp.notion.com/mcp" } },
+                { "id": "unused", "name": "unused",
+                  "transport": { "type": "stdio", "command": "y" } },
             ],
         }))
         .unwrap();
-        let topic: Topic = serde_json::from_value(json!({
-            "id": "t", "name": "t", "worktree_id": "w", "worktrees": [], "sessions": [],
-            "mcp": { "slack": true },
-        }))
-        .unwrap();
+        let topic: Topic = serde_json::from_value(topic).unwrap();
         let got = agent_servers(&state, &topic, "http://proxy");
-        assert_eq!(got.ids, [McpServerId::from("files")]);
+        assert_eq!(got.ids, [(McpServerId::from("files"), None)]);
         assert_eq!(got.servers.len(), 1);
         assert_eq!(
             got.connectors,
@@ -1223,27 +1219,25 @@ mod tests {
     }
 
     #[test]
-    fn syncing_adds_new_connectors_off_renames_and_removes_only_that_agents() {
-        let server = |id: &str, name: &str, transport: McpTransport, enabled| McpServer {
+    fn syncing_adds_new_connectors_renames_and_removes_only_that_agents() {
+        let server = |id: &str, name: &str, transport: McpTransport| McpServer {
             id: id.into(),
             name: name.into(),
-            topic_id: None,
             transport,
-            enabled,
-            auth: protocol::McpAuth::None,
+            profiles: vec![],
+            needs_login: false,
         };
         let claude = |url: &str| McpTransport::ClaudeConnector { url: url.into() };
         let existing = [
-            server("a", "claude.ai Slack", claude("https://slack"), true),
-            server("b", "claude.ai Old", claude("https://old"), true),
-            server("c", "claude.ai Linear", claude("https://linear"), true),
+            server("a", "claude.ai Slack", claude("https://slack")),
+            server("b", "claude.ai Old", claude("https://old")),
+            server("c", "claude.ai Linear", claude("https://linear")),
             server(
                 "d",
                 "ChatGPT Slack",
                 McpTransport::CodexApp { id: "s".into() },
-                false,
             ),
-            server("e", "files", McpTransport::Unknown, true),
+            server("e", "files", McpTransport::Unknown),
         ];
         let listed = [
             Listed {
@@ -1264,8 +1258,8 @@ mod tests {
             sync,
             ConnectorSync {
                 put: vec![
-                    server("c", "claude.ai Linear (2)", claude("https://linear"), true),
-                    server("new", "claude.ai Notion", claude("https://notion"), false),
+                    server("c", "claude.ai Linear (2)", claude("https://linear")),
+                    server("new", "claude.ai Notion", claude("https://notion")),
                 ],
                 remove: vec!["b".into()],
                 added: vec!["claude.ai Notion".into()],
@@ -1314,7 +1308,6 @@ mod tests {
                     headers: BTreeMap::from([("Authorization".into(), "Bearer ${SENTRY}".into())]),
                     oauth_client_id: None,
                 },
-                enabled: false,
             }
         );
         assert_eq!(
@@ -1346,21 +1339,29 @@ mod tests {
     }
 
     #[test]
-    fn a_topic_can_reuse_a_name_only_another_topic_has() {
-        let server = |id: &str, topic: Option<&str>| McpServer {
+    fn names_are_unique_on_the_device_apart_from_connectors() {
+        let server = |id: &str, name: &str, transport: McpTransport| McpServer {
             id: id.into(),
-            name: "db".into(),
-            topic_id: topic.map(Into::into),
-            transport: McpTransport::Unknown,
-            enabled: true,
-            auth: protocol::McpAuth::None,
+            name: name.into(),
+            transport,
+            profiles: vec![],
+            needs_login: false,
         };
-        let existing = [server("a", Some("t1"))];
-        assert!(!name_taken(&existing, &server("b", Some("t2"))));
-        assert!(name_taken(&existing, &server("b", Some("t1"))));
-        assert!(name_taken(&existing, &server("b", None)));
+        let connector = McpTransport::CodexApp { id: "x".into() };
+        let existing = [
+            server("a", "db", McpTransport::Unknown),
+            server("c", "ChatGPT Slack", connector),
+        ];
+        assert!(name_taken(
+            &existing,
+            &server("b", "db", McpTransport::Unknown)
+        ));
+        assert!(!name_taken(
+            &existing,
+            &server("b", "ChatGPT Slack", McpTransport::Unknown)
+        ));
         assert!(
-            !name_taken(&existing, &server("a", Some("t1"))),
+            !name_taken(&existing, &server("a", "db", McpTransport::Unknown)),
             "a server keeps its own name"
         );
     }

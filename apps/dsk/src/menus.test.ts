@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { appItems, topicItems, withRuns } from "./menus.ts";
 
-const topic = { name: "Login", toggle: { unread: true, count: 1 }, onNewTab: false };
+const topic = { name: "Login", workspace: "tectr", toggle: { unread: true, count: 1 }, onNewTab: false };
 const ids = (groups: { id: string }[][]) => groups.map((group) => group.map((item) => item.id));
 
 test("a topic's menu groups what's safe, and keeps archiving apart at the end", () => {
   assert.deepEqual(ids(topicItems(topic)), [
     ["rename-topic", "toggle-unread", "move-topic"],
-    ["topic-mcp", "import-conversation"],
+    ["open-workspace", "import-conversation"],
     ["archive-topic"],
   ]);
 });
@@ -32,6 +32,13 @@ test("importing shows the key that works where you are", () => {
   const key = (onNewTab: boolean) => topicItems({ ...topic, onNewTab })[1][1].key;
   assert.equal(key(false), "global.import_conversation");
   assert.equal(key(true), "new_tab.import");
+});
+
+test("a topic's menu goes to its workspace, where its MCP servers are", () => {
+  const open = topicItems(topic)[1][0];
+  assert.equal(open.label, "Workspace");
+  assert.equal(open.inPalette, "Open tectr");
+  assert.equal(open.key, "global.open_workspace");
 });
 
 test("moving shows the branch the topic is on", () => {

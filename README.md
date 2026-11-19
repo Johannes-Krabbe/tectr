@@ -68,13 +68,15 @@ tectr archive-topic <topic> [--force]  # stop its agents, remove its worktrees, 
 tectr archived                         # list archived topics
 tectr restore-topic <topic>            # bring one back with its folder
 tectr rename-device "..." [--on <device>]  # name a device, "" goes back to its hostname
-tectr mcp ls                           # MCP servers, and which ones each topic gets
+tectr mcp ls                           # the MCP library, profiles, and what each workspace uses
 tectr mcp add github --env 'TOKEN=${TOKEN}' -- npx -y some-server  # a stdio server
-tectr mcp add linear --url https://mcp.linear.app/mcp [--topic <topic>]  # an HTTP server
-tectr mcp off github --topic <topic>   # also: on, default, rm, login, logout, import
+tectr mcp add notion --url https://mcp.notion.com/mcp  # an HTTP server
+tectr mcp login notion work            # log in a profile, adding it if it's new
+tectr mcp use notion --workspace <workspace> --profile work  # give a workspace's agents a server
+tectr mcp copy --from <workspace> --to <workspace>  # also: drop, profile, rm-profile, logout, rm, import
 ```
 
-Topics can be named by their exact name or an ID prefix. Single-quote `${VAR}` values so the daemon, not your shell, fills them in.
+Topics and workspaces can be named by their exact name or an ID prefix. Single-quote `${VAR}` values so the daemon, not your shell, fills them in.
 
 To reach a daemon on another machine, pair with it. No VPN or port forwarding is needed: connections go over [iroh](https://iroh.computer), directly when the network allows and otherwise through n0's public relays, end-to-end encrypted either way.
 

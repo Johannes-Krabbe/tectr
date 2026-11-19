@@ -17,6 +17,7 @@ import {
   errorText,
   finishPairing,
   type Folder,
+  type McpServer,
   pairDevice,
   type PairingRequest,
   request,
@@ -24,9 +25,22 @@ import {
   stopPairing,
   type Topic,
   type Workspace,
+  type WorkspaceMcp,
 } from "./engine";
 import { act, type ActionId, keysLabel, remapNative } from "./keybinds";
-import { archiveLosses, archiveSummary, type MoveChoice, sessionLabel } from "./model";
+import {
+  canHaveProfiles,
+  connectorAgent,
+  copiedMcp,
+  isConnector,
+  matchesServer,
+  mcpSummary,
+  newEntry,
+  NO_PROFILE,
+  nextProfile,
+  withServer,
+} from "./mcp";
+import { archiveLosses, archiveSummary, folderName, type MoveChoice, sessionLabel } from "./model";
 import {
   afterPaste,
   canCreate,
@@ -42,6 +56,7 @@ import {
 import { hint as keyHint, type Hint, useHints } from "./shortcuts";
 import { countdown, spacedDigits } from "./pairing";
 import { Icon } from "./ui/Icon";
+import { Choice, Picker } from "./ui/Picker";
 import { QrCode } from "./ui/QrCode";
 import { Keys } from "./ui/StatusIcon";
 import { showToast } from "./toast";
@@ -257,15 +272,19 @@ const remoteDelay = () => {
 function WorkspaceSheet({
   sheet,
   workspaces,
+  library,
   onClose,
   onDone,
 }: {
   sheet: Extract<SheetRequest, { kind: "workspace" }>;
   workspaces: Workspace[];
+  library: McpServer[];
   onClose: () => void;
   onDone: (output: CommandOutput) => void;
 }) {
   const [goal, setGoal] = useState<PathGoal | null>(null);
+  // The folder chosen, once the sheet has gone on to choosing its MCP servers.
+  const [target, setTarget] = useState<{ creating: boolean; path: string } | null>(null);
   const [path, setPath] = useState(STARTING_PATH);
   const [highlight, setHighlight] = useState<number | null>(null);
   const [goalHighlight, setGoalHighlight] = useState(0);
@@ -293,6 +312,19 @@ function WorkspaceSheet({
   useEffect(() => {
     if (highlight !== null) list.current?.children[highlight]?.scrollIntoView({ block: "nearest" });
   }, [highlight]);
+
+  if (target) {
+    return (
+      <WorkspaceServersStep
+        sheet={sheet}
+        target={target}
+        workspaces={workspaces}
+        library={library}
+        onClose={onClose}
+        onDone={onDone}
+      />
+    );
+  }
 
   if (goal === null) {
     const picked = GOALS[goalHighlight] ?? GOALS[0];
@@ -356,6 +388,8 @@ function WorkspaceSheet({
   };
 
   const entersFolder = completesOnEnter(goal, chosen);
+  // With servers in the library, choosing which ones the workspace gets comes next.
+  const asksForServers = library.length > 0;
 
   return (
     <Sheet
@@ -363,21 +397,26 @@ function WorkspaceSheet({
       action={
         entersFolder
           ? "Complete"
-          : creating
-            ? "Create workspace"
-            : chosen
-              ? "Open workspace"
-              : "Add workspace"
+          : asksForServers
+            ? "Next"
+            : creating
+              ? "Create workspace"
+              : chosen
+                ? "Open workspace"
+                : "Add workspace"
       }
       canSubmit={creating ? canCreate(path) || entersFolder : path.trim() !== ""}
-      run={() =>
-        creating
-          ? request(sheet.machineId, { command: "create_workspace", path: path.trim() })
-          : request(sheet.machineId, {
-              command: "add_workspace",
-              path: chosen ? chosen.path : path.trim(),
-            })
-      }
+      run={async () => {
+        const chosenPath = creating ? path.trim() : chosen ? chosen.path : path.trim();
+        if (asksForServers) {
+          setTarget({ creating, path: chosenPath });
+          return null;
+        }
+        return request(sheet.machineId, {
+          command: creating ? "create_workspace" : "add_workspace",
+          path: chosenPath,
+        });
+      }}
       onClose={onClose}
       onDone={onDone}
       hints={WORKSPACE_HINTS}
@@ -454,6 +493,216 @@ function WorkspaceSheet({
           if (entersFolder) act(event, "sheet.submit", () => complete(chosen));
         }}
       />
+    </Sheet>
+  );
+}
+
+const SERVER_HINTS = [
+  keyHint("Move", "sheet.up", "sheet.down"),
+  keyHint("Check", "new_workspace.check"),
+  keyHint("Next profile", "new_workspace.profile"),
+  keyHint("Copy from", "new_workspace.copy_from"),
+];
+
+const NO_PROFILE_VALUE = "none";
+
+/** The last step of adding a workspace: which of the library's servers its agents get, and
+ * with which profile. Typing filters them, and another workspace's can be copied. Nothing
+ * checked is fine too: the workspace's page can add them later. */
+function WorkspaceServersStep({
+  sheet,
+  target,
+  workspaces,
+  library,
+  onClose,
+  onDone,
+}: {
+  sheet: Extract<SheetRequest, { kind: "workspace" }>;
+  target: { creating: boolean; path: string };
+  workspaces: Workspace[];
+  library: McpServer[];
+  onClose: () => void;
+  onDone: (output: CommandOutput) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [selection, setSelection] = useState<Record<string, WorkspaceMcp>>({});
+  const [highlight, setHighlight] = useState(0);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [profileFor, setProfileFor] = useState<string | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+
+  // The same order as the library's page: servers, then connectors.
+  const ordered = [...library.filter((s) => !isConnector(s)), ...library.filter(isConnector)];
+  const shown = ordered.filter((server) => matchesServer(server, query));
+  const current = Math.max(Math.min(highlight, shown.length - 1), 0);
+  const sources = workspaces.filter((w) => Object.keys(w.mcp ?? {}).length > 0);
+  const checked = Object.keys(selection).length;
+
+  useEffect(() => {
+    list.current?.children[current]?.scrollIntoView({ block: "nearest" });
+  }, [current]);
+
+  const toggle = (server: McpServer) =>
+    setSelection((now) => withServer(now, server.id, now[server.id] ? null : newEntry(server)));
+
+  const setProfile = (server: McpServer, profileId: string | null) =>
+    setSelection((now) => {
+      const entry = now[server.id] ?? newEntry(server);
+      return withServer(now, server.id, { ...entry, profile_id: profileId ?? undefined });
+    });
+
+  const cycleProfile = (server: McpServer) =>
+    setProfile(server, nextProfile(server, selection[server.id]?.profile_id));
+
+  const copyFrom = (workspaceId: string) => {
+    const source = workspaces.find((w) => w.id === workspaceId);
+    if (source) setSelection((now) => copiedMcp(now, source.mcp, library));
+  };
+
+  const run = async (): Promise<CommandOutput> => {
+    const output = await request(sheet.machineId, {
+      command: target.creating ? "create_workspace" : "add_workspace",
+      path: target.path,
+    });
+    if (output.output === "workspace" && checked > 0) {
+      try {
+        await request(sheet.machineId, {
+          command: "set_workspace_mcp",
+          workspace_id: output.workspace.id,
+          servers: selection,
+        });
+      } catch (reason) {
+        // The workspace is there either way, so this sheet's job is done. Its page can try again.
+        showToast(`${output.workspace.name} is added, but not its MCP servers: ${errorText(reason)}`);
+      }
+    }
+    return output;
+  };
+
+  return (
+    <Sheet
+      where={`MCP servers for ${folderName(target.path)}`}
+      action={target.creating ? "Create workspace" : "Add workspace"}
+      hint={checked > 0 ? `${checked} checked` : "None checked: add them on its page later"}
+      canSubmit
+      run={run}
+      onClose={onClose}
+      onDone={onDone}
+      hints={SERVER_HINTS}
+      input={query}
+    >
+      <input
+        ref={input}
+        className="sheet-name"
+        autoFocus
+        value={query}
+        placeholder="Filter the library's servers"
+        aria-label="Filter MCP servers"
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setHighlight(0);
+        }}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          const server = shown[current];
+          const move = (step: 1 | -1) =>
+            setHighlight(shown.length === 0 ? 0 : (current + step + shown.length) % shown.length);
+          if (act(event, "sheet.up", () => move(-1))) return;
+          if (act(event, "sheet.down", () => move(1))) return;
+          if (act(event, "new_workspace.copy_from", () => sources.length > 0 && setCopyOpen(true))) {
+            return;
+          }
+          if (!server) return;
+          if (act(event, "new_workspace.check", () => toggle(server))) return;
+          act(event, "new_workspace.profile", () => cycleProfile(server));
+        }}
+      />
+      {sources.length > 0 && (
+        <div className="sheet-fields">
+          <div className="sheet-field">
+            <span className="sheet-label">Copy</span>
+            <Picker
+              label="Copy another workspace's servers"
+              className="picker"
+              value={null}
+              open={copyOpen}
+              onOpenChange={setCopyOpen}
+              onChange={copyFrom}
+              finalFocus={input}
+              trigger={
+                <>
+                  Copy from workspace...
+                  <Keys action="new_workspace.copy_from" />
+                </>
+              }
+            >
+              {sources.map((w) => (
+                <Choice
+                  key={w.id}
+                  value={w.id}
+                  label={w.name}
+                  meta={`${Object.keys(w.mcp ?? {}).length} servers`}
+                />
+              ))}
+            </Picker>
+          </div>
+        </div>
+      )}
+      <div ref={list} className="palette-list" role="listbox" aria-multiselectable aria-label="MCP servers">
+        {shown.length === 0 && <p className="sheet-group-empty">No server matches</p>}
+        {shown.map((server, index) => {
+          const entry = selection[server.id];
+          const profiles = server.profiles ?? [];
+          return (
+            <div
+              key={server.id}
+              className="palette-item"
+              role="option"
+              aria-selected={entry !== undefined}
+              data-highlighted={index === current ? "" : undefined}
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseMove={() => setHighlight(index)}
+              onClick={() => toggle(server)}
+            >
+              <span className={`check ${entry ? "on" : ""}`}>{entry && <Icon name="check" />}</span>
+              <span className="server-name code">{server.name}</span>
+              <span className="server-summary">
+                {connectorAgent(server) ? `${connectorAgent(server)} connector` : mcpSummary(server.transport)}
+              </span>
+              {entry && canHaveProfiles(server) && profiles.length > 0 && (
+                // Its own clicks are the profile's, not the row's.
+                <span onClick={(event) => event.stopPropagation()}>
+                  <Picker
+                    label={`Profile for ${server.name}`}
+                    className="picker"
+                    value={entry.profile_id ?? NO_PROFILE_VALUE}
+                    open={profileFor === server.id}
+                    onOpenChange={(open) => setProfileFor(open ? server.id : null)}
+                    onChange={(value) => setProfile(server, value === NO_PROFILE_VALUE ? null : value)}
+                    finalFocus={input}
+                    trigger={
+                      <>
+                        {profiles.find((p) => p.id === entry.profile_id)?.name ?? NO_PROFILE}
+                        {index === current && <Keys action="new_workspace.profile" />}
+                      </>
+                    }
+                  >
+                    {profiles.map((p) => (
+                      <Choice key={p.id} value={p.id} label={p.name} />
+                    ))}
+                    <Choice value={NO_PROFILE_VALUE} label={NO_PROFILE} />
+                  </Picker>
+                </span>
+              )}
+              {index === current && <Keys action="new_workspace.check" />}
+            </div>
+          );
+        })}
+      </div>
     </Sheet>
   );
 }
@@ -840,6 +1089,7 @@ function AddDeviceSheet({
 export function Sheets({
   sheet,
   workspaces,
+  mcpServers,
   pairingRequests,
   onClose,
   onDone,
@@ -847,6 +1097,8 @@ export function Sheets({
   sheet: SheetRequest;
   /** What the sheet's device already has. */
   workspaces: Workspace[];
+  /** The sheet's device's library of MCP servers. */
+  mcpServers: McpServer[];
   /** The machines waiting on the sheet's device to type their digits. */
   pairingRequests: PairingRequest[];
   onClose: () => void;
@@ -855,7 +1107,13 @@ export function Sheets({
   switch (sheet.kind) {
     case "workspace":
       return (
-        <WorkspaceSheet sheet={sheet} workspaces={workspaces} onClose={onClose} onDone={onDone} />
+        <WorkspaceSheet
+          sheet={sheet}
+          workspaces={workspaces}
+          library={mcpServers}
+          onClose={onClose}
+          onDone={onDone}
+        />
       );
     case "close":
       return <CloseSheet sheet={sheet} onClose={onClose} onDone={onDone} />;

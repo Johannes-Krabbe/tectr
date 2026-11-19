@@ -33,7 +33,11 @@ struct Workspace: Identifiable, Hashable {
     var name: String
     var path: String
     var topics: [Topic]
+    /// The library's MCP servers its agents get.
+    var mcp: [McpServer.ID: WorkspaceMcp] = [:]
 }
+
+typealias WorkspaceMcp = Wire.WorkspaceMcp
 
 struct Topic: Identifiable, Hashable {
     let id: String
@@ -42,8 +46,6 @@ struct Topic: Identifiable, Hashable {
     var worktrees: [Worktree]
     /// Agents and terminals together, in the order they were opened.
     var tabs: [Tab]
-    /// The device's MCP servers this topic turns on or off, against their own `enabled`.
-    var mcp: [McpServer.ID: Bool] = [:]
 
     var worktree: Worktree? { worktrees.first { $0.id == worktreeID } }
 
@@ -258,13 +260,25 @@ struct McpServer: Identifiable, Hashable {
 
     enum Auth: Hashable { case none, needsLogin, loggedIn }
 
+    /// One way of using the server, like a personal or a work login.
+    struct Profile: Identifiable, Hashable {
+        let id: String
+        var name: String
+        /// Laid over the server's env for a stdio server, and its headers for an HTTP one.
+        var values: [String: String] = [:]
+        var auth: Auth = .none
+    }
+
     let id: String
     var name: String
-    /// The topic that has this server to itself. Nil is a device-wide server.
-    var topicID: Topic.ID?
     var transport: Transport
-    var enabled: Bool
-    var auth: Auth = .none
+    var profiles: [Profile] = []
+    /// It turned the daemon away without a login, so agents need a logged-in profile.
+    var needsLogin = false
+
+    var logsIn: Bool { if case .http = transport { true } else { false } }
+
+    func profile(_ id: Profile.ID?) -> Profile? { profiles.first { $0.id == id } }
 }
 
 struct PairedClient: Identifiable, Hashable {

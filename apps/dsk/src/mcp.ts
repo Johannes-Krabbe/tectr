@@ -1,14 +1,21 @@
 // What the MCP screens show and send, worked out from the daemon's state. No DOM or Tauri in
 // here, so it can be tested on its own.
 
-import type { Command, DaemonState, McpServer, McpTransport, Topic } from "./engine";
+import type {
+  DaemonState,
+  McpProfile,
+  McpServer,
+  McpTransport,
+  Workspace,
+  WorkspaceMcp,
+} from "./engine";
 
 export const isConnector = (server: McpServer) =>
   server.transport.type === "claude_connector" || server.transport.type === "codex_app";
 
-/** The servers every topic on the device can get, apart from connectors. */
-export function deviceServers(state: DaemonState): McpServer[] {
-  return (state.mcp_servers ?? []).filter((server) => !server.topic_id && !isConnector(server));
+/** The device's library of servers, apart from connectors. */
+export function libraryServers(state: DaemonState): McpServer[] {
+  return (state.mcp_servers ?? []).filter((server) => !isConnector(server));
 }
 
 /** The claude.ai connectors and ChatGPT apps, which only their own agent gets. */
@@ -28,49 +35,130 @@ export function connectorAgent(server: McpServer): string | null {
   }
 }
 
-/** The servers a topic has to itself. */
-export function ownServers(state: DaemonState, topicId: string): McpServer[] {
-  return (state.mcp_servers ?? []).filter((server) => server.topic_id === topicId);
+/** One of a workspace's servers, with how the workspace uses it. */
+export interface WorkspaceServer {
+  server: McpServer;
+  entry: WorkspaceMcp;
+  /** The profile it chose, while the server still has it. */
+  profile: McpProfile | undefined;
 }
 
-/** How a topic treats one of the device's servers: following the server's own default, or
- * turned on or off for itself. */
-export type TopicMcpChoice = "default" | "on" | "off";
-
-export function topicMcpChoice(topic: Topic, server: McpServer): TopicMcpChoice {
-  const set = topic.mcp?.[server.id];
-  return set === undefined ? "default" : set ? "on" : "off";
+/** A workspace's servers in the library's order, the ones turned off too. The daemon's
+ * `workspace_mcp_servers` gives agents the ones that are on. */
+export function workspaceServers(state: DaemonState, workspace: Workspace): WorkspaceServer[] {
+  return (state.mcp_servers ?? []).flatMap((server) => {
+    const entry = workspace.mcp?.[server.id];
+    if (!entry) return [];
+    const profile = server.profiles?.find((p) => p.id === entry.profile_id);
+    return [{ server, entry, profile }];
+  });
 }
 
-/** Whether the topic's agents get one of the device's servers. */
-export function topicGets(topic: Topic, server: McpServer): boolean {
-  return topic.mcp?.[server.id] ?? server.enabled;
+/** The library's servers a workspace doesn't have yet, connectors last. */
+export function addableServers(state: DaemonState, workspace: Workspace): McpServer[] {
+  const missing = (server: McpServer) => !workspace.mcp?.[server.id];
+  return [...libraryServers(state), ...connectors(state)].filter(missing);
 }
 
-/** The servers a topic's agents get, the same as the daemon's `topic_mcp_servers`: the
- * device's that are on for it, then its own that are on. */
-export function topicMcpServers(state: DaemonState, topic: Topic): McpServer[] {
-  return (state.mcp_servers ?? []).filter((server) =>
-    server.topic_id ? server.topic_id === topic.id && server.enabled : topicGets(topic, server),
+/** How a server starts out in a workspace: on, with its profile when there's only one to
+ * choose, so the common case needs no second step. */
+export function newEntry(server: McpServer): WorkspaceMcp {
+  const only = server.profiles?.length === 1 ? server.profiles[0].id : undefined;
+  return only ? { enabled: true, profile_id: only } : { enabled: true };
+}
+
+/** A workspace's list with one server added, changed, or taken out with null. */
+export function withServer(
+  mcp: Record<string, WorkspaceMcp> | undefined,
+  serverId: string,
+  entry: WorkspaceMcp | null,
+): Record<string, WorkspaceMcp> {
+  const { [serverId]: _old, ...rest } = mcp ?? {};
+  return entry ? { ...rest, [serverId]: entry } : rest;
+}
+
+/** What copying another workspace's servers leaves this one with: its own as they are, and
+ * each of the other's it doesn't have, with the same profile and on or off. A server gone from
+ * the library since is left out. */
+export function copiedMcp(
+  target: Record<string, WorkspaceMcp> | undefined,
+  source: Record<string, WorkspaceMcp> | undefined,
+  servers: McpServer[],
+): Record<string, WorkspaceMcp> {
+  const exists = new Set(servers.map((server) => server.id));
+  const copied = Object.entries(source ?? {}).filter(
+    ([id]) => exists.has(id) && !(id in (target ?? {})),
   );
+  return { ...(target ?? {}), ...Object.fromEntries(copied) };
 }
 
-export function topicMcpLabel(topic: Topic, server: McpServer): string {
-  switch (topicMcpChoice(topic, server)) {
-    case "default":
-      return server.enabled ? "On by default" : "Off by default";
-    case "on":
-      return "On here";
-    case "off":
-      return "Off here";
+/** The profile after this one, then none, then the first again. */
+export function nextProfile(server: McpServer, current: string | null | undefined): string | null {
+  const ids = (server.profiles ?? []).map((profile) => profile.id);
+  if (ids.length === 0) return null;
+  const index = current ? ids.indexOf(current) : -1;
+  if (index === -1) return current ? null : ids[0];
+  return ids[index + 1] ?? null;
+}
+
+export const NO_PROFILE = "No profile";
+
+export function profileLabel(server: McpServer, profileId: string | null | undefined): string {
+  return server.profiles?.find((p) => p.id === profileId)?.name ?? NO_PROFILE;
+}
+
+/** Whether a workspace's agents can reach a server as it's set up there. A server that wants a
+ * login needs a profile that has one. */
+export function entryAuth(server: McpServer, profile: McpProfile | undefined): McpAuthState {
+  if (server.transport.type !== "http") return null;
+  if (profile?.auth === "logged_in") return "logged_in";
+  if (profile?.auth === "needs_login" || server.needs_login) return "needs_login";
+  return null;
+}
+
+export type McpAuthState = "needs_login" | "logged_in" | null;
+
+export function authLabel(auth: McpAuthState): string | null {
+  switch (auth) {
+    case "needs_login":
+      return "Needs login";
+    case "logged_in":
+      return "Logged in";
+    default:
+      return null;
   }
 }
 
-/** What `set_topic_mcp` sends to flip whether the topic gets a device server. Ending up where
- * the default is means following it again, so a flip can always be undone by flipping. */
-export function flippedTopicMcp(topic: Topic, server: McpServer): boolean | null {
-  const next = !topicGets(topic, server);
-  return next === server.enabled ? null : next;
+/** The names of the workspaces that use a server, or one of its profiles. */
+export function usedBy(state: DaemonState, serverId: string, profileId?: string): string[] {
+  return state.workspaces
+    .filter((workspace) => {
+      const entry = workspace.mcp?.[serverId];
+      return entry !== undefined && (profileId === undefined || entry.profile_id === profileId);
+    })
+    .map((workspace) => workspace.name);
+}
+
+/** What the values of a profile are laid over. */
+export const valuesLabel = (server: McpServer) =>
+  server.transport.type === "http" ? "Headers" : "Environment";
+
+/** What's wrong with a profile's name, or null when it's fine. `id` is the profile being
+ * renamed, which may keep its own name. */
+export function profileNameProblem(name: string, server: McpServer, id?: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed === "") return "A profile needs a name";
+  const taken = server.profiles?.some((p) => p.name === trimmed && p.id !== id);
+  return taken ? `${server.name} already has a profile called ${trimmed}` : null;
+}
+
+/** Every word typed appears in the server's name or what it runs. */
+export function matchesServer(server: McpServer, query: string): boolean {
+  const text = `${server.name} ${mcpSummary(server.transport)}`.toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .every((word) => text.includes(word));
 }
 
 /** Quotes an argument only when it has to be, so it reads back as the same one. */
@@ -156,43 +244,22 @@ export function mcpSummary(transport: McpTransport): string {
   }
 }
 
-export function mcpAuthLabel(server: McpServer): string | null {
-  if (server.transport.type !== "http") return null;
-  switch (server.auth) {
-    case "needs_login":
-      return "Needs login";
-    case "logged_in":
-      return "Logged in";
-    default:
-      return null;
-  }
-}
-
-/** Saves a server as it is but on or off. Null for a kind of server this app can't send back. */
-export function withEnabled(server: McpServer, enabled: boolean): Command | null {
-  if (server.transport.type === "unknown") return null;
-  return {
-    command: "save_mcp_server",
-    id: server.id,
-    name: server.name,
-    ...(server.topic_id && { topic_id: server.topic_id }),
-    transport: server.transport,
-    enabled,
-  };
-}
-
-export const canToggle = (server: McpServer) => server.transport.type !== "unknown";
-
-/** A connector is its agent's, so it's only turned on or off. */
-export const canEdit = (server: McpServer) => canToggle(server) && !isConnector(server);
+/** A connector is its agent's, and a server this app doesn't know can't be sent back. */
+export const canEdit = (server: McpServer) =>
+  server.transport.type !== "unknown" && !isConnector(server);
 
 /** A removed connector would come back with the next refresh. */
 export const canRemove = (server: McpServer) => !isConnector(server);
 
+/** Only HTTP servers log in, and a connector's login is its agent's. */
 export const canLogIn = (server: McpServer) => server.transport.type === "http";
 
-export const canLogOut = (server: McpServer) =>
-  server.transport.type === "http" && server.auth === "logged_in";
+export const canLogOut = (server: McpServer, profile: McpProfile | undefined) =>
+  server.transport.type === "http" && profile?.auth === "logged_in";
+
+/** Profiles hold a login or values, and connectors have neither. */
+export const canHaveProfiles = (server: McpServer) =>
+  server.transport.type === "http" || server.transport.type === "stdio";
 
 /** A server as typed into the form. Both kinds keep their fields, so switching back and forth
  * loses nothing. */
@@ -205,7 +272,6 @@ export interface McpDraft {
   url: string;
   headers: string;
   oauthClientId: string;
-  enabled: boolean;
 }
 
 export function draftOf(server: McpServer | undefined): McpDraft {
@@ -218,7 +284,6 @@ export function draftOf(server: McpServer | undefined): McpDraft {
     url: "",
     headers: "",
     oauthClientId: "",
-    enabled: server?.enabled ?? true,
   };
   const transport = server?.transport;
   if (transport?.type === "stdio") {
@@ -649,12 +714,7 @@ export function blanksReady(server: Found, values: Record<string, string>): bool
   );
 }
 
-/** The names a new server can't have, as the daemon checks them: a device-wide name has to be
- * unique on the device, and a topic's own among the device's and that topic's. */
-export function takenNames(servers: McpServer[], topicId?: string): Set<string> {
-  return new Set(
-    servers
-      .filter((server) => !topicId || !server.topic_id || server.topic_id === topicId)
-      .map((server) => server.name),
-  );
+/** The names a new server can't have. Every name on a device is its own. */
+export function takenNames(servers: McpServer[]): Set<string> {
+  return new Set(servers.map((server) => server.name));
 }

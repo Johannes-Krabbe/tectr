@@ -3,9 +3,12 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use std::collections::BTreeMap;
+
 use protocol::{
-    CommandError, CommandOutput, DaemonState, McpAuth, McpServer, McpServerId, McpTransport,
-    SessionId, SessionStatus, StateChange, Topic, TopicId,
+    CommandError, CommandOutput, DaemonState, McpAuth, McpProfile, McpProfileId, McpServer,
+    McpServerId, McpTransport, SessionId, SessionStatus, StateChange, Topic, WorkspaceId,
+    WorkspaceMcp,
 };
 
 use super::{Core, Inner, internal, invalid, not_found};
@@ -22,6 +25,7 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// A login started in a browser and not finished yet.
 pub(super) struct PendingLogin {
     server_id: McpServerId,
+    profile_id: McpProfileId,
     pending: oauth::Pending,
     started: Instant,
 }
@@ -29,6 +33,8 @@ pub(super) struct PendingLogin {
 /// Where the proxy sends one session's requests for one server.
 pub struct ProxyTarget {
     pub server_id: McpServerId,
+    /// Whose login goes with the requests.
+    pub profile_id: Option<McpProfileId>,
     pub url: String,
     pub headers: Vec<(String, String)>,
 }
@@ -36,21 +42,86 @@ pub struct ProxyTarget {
 /// What a topic's agents would get, apart from logins. A running agent whose topic no longer
 /// matches it is out of date.
 pub(super) fn fingerprint(state: &DaemonState, topic: &Topic) -> String {
-    let servers: Vec<McpServer> = state
-        .topic_mcp_servers(topic)
-        .map(|server| McpServer {
-            auth: McpAuth::None,
-            ..server.clone()
+    let Some(workspace) = state.topic_workspace(&topic.id) else {
+        return String::new();
+    };
+    type Entry<'a> = (
+        &'a str,
+        &'a McpTransport,
+        Option<(&'a McpProfileId, &'a BTreeMap<String, String>)>,
+    );
+    let servers: Vec<Entry> = state
+        .workspace_mcp_servers(workspace)
+        .map(|(server, profile)| {
+            (
+                server.name.as_str(),
+                &server.transport,
+                profile.map(|p| (&p.id, &p.values)),
+            )
         })
         .collect();
     serde_json::to_string(&servers).unwrap_or_default()
 }
 
-fn expanded(headers: &std::collections::BTreeMap<String, String>) -> Vec<(String, String)> {
-    headers
+/// A server's headers with a profile's laid over them, filled in from the environment.
+fn expanded(
+    headers: &BTreeMap<String, String>,
+    profile: Option<&McpProfile>,
+) -> Vec<(String, String)> {
+    let mut merged = headers.clone();
+    if let Some(profile) = profile {
+        merged.extend(profile.values.clone());
+    }
+    merged
         .iter()
         .map(|(name, value)| (name.clone(), expand(value)))
         .collect()
+}
+
+/// Profile values have to make sense as what they're laid over.
+fn check_values(
+    transport: &McpTransport,
+    values: &BTreeMap<String, String>,
+) -> Result<(), CommandError> {
+    match transport {
+        McpTransport::Stdio { .. } => {
+            if values.keys().any(|key| key.is_empty() || key.contains('=')) {
+                return Err(invalid("an environment variable needs a name without ="));
+            }
+        }
+        McpTransport::Http { .. } => {
+            for name in values.keys() {
+                if reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+                    return Err(invalid(format!("{name} isn't a valid header name")));
+                }
+            }
+        }
+        _ => {
+            return Err(invalid(
+                "connectors have no profiles, their agent holds the login",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A server that turns the daemon away needs a login for each profile that has none.
+fn needing_login(server: McpServer) -> McpServer {
+    McpServer {
+        needs_login: true,
+        profiles: server
+            .profiles
+            .into_iter()
+            .map(|profile| McpProfile {
+                auth: match profile.auth {
+                    McpAuth::LoggedIn => McpAuth::LoggedIn,
+                    _ => McpAuth::NeedsLogin,
+                },
+                ..profile
+            })
+            .collect(),
+        ..server
+    }
 }
 
 fn check_transport(transport: &McpTransport) -> Result<(), CommandError> {
@@ -145,12 +216,10 @@ impl Core {
         self: &Arc<Self>,
         id: Option<McpServerId>,
         name: &str,
-        topic_id: Option<TopicId>,
         transport: McpTransport,
-        enabled: bool,
     ) -> Result<CommandOutput, CommandError> {
-        let server = self.store_mcp_server(id, name, topic_id, transport, enabled)?;
-        if http_url(&server.transport).is_none() || server.auth == McpAuth::LoggedIn {
+        let server = self.store_mcp_server(id, name, transport)?;
+        if http_url(&server.transport).is_none() || server.needs_login {
             return Ok(CommandOutput::McpServer { server });
         }
         let id = server.id.clone();
@@ -167,13 +236,8 @@ impl Core {
         &self,
         id: Option<McpServerId>,
         name: &str,
-        topic_id: Option<TopicId>,
         transport: McpTransport,
-        enabled: bool,
     ) -> Result<McpServer, CommandError> {
-        if transport.is_connector() {
-            return self.store_connector(id, topic_id, transport, enabled);
-        }
         let name = name.trim();
         if !mcp::valid_name(name) {
             return Err(invalid(
@@ -182,11 +246,6 @@ impl Core {
         }
         check_transport(&transport)?;
         let mut inner = self.lock();
-        if let Some(topic_id) = &topic_id
-            && inner.state.topic(topic_id).is_none()
-        {
-            return Err(not_found("topic", topic_id));
-        }
         let existing = match &id {
             Some(id) => Some(
                 inner
@@ -197,68 +256,195 @@ impl Core {
             ),
             None => None,
         };
-        if let Some(existing) = &existing
-            && existing.topic_id != topic_id
-        {
-            return Err(invalid(
-                "a server can't move between a topic and the whole device. Add a new one instead",
-            ));
-        }
-        // A login belongs to the address it was made for.
+        // Logins belong to the address they were made for.
         let same_address = existing.as_ref().is_some_and(|e| {
             http_url(&e.transport).is_some() && http_url(&e.transport) == http_url(&transport)
         });
+        let profiles = existing
+            .as_ref()
+            .map(|e| e.profiles.clone())
+            .unwrap_or_default();
         let server = McpServer {
             id: id.unwrap_or_else(|| McpServerId(crate::new_id())),
             name: name.to_owned(),
-            topic_id,
             transport,
-            enabled,
-            auth: match &existing {
-                Some(existing) if same_address => existing.auth,
-                _ => McpAuth::None,
+            needs_login: same_address && existing.as_ref().is_some_and(|e| e.needs_login),
+            profiles: if same_address {
+                profiles
+            } else {
+                profiles
+                    .into_iter()
+                    .map(|profile| McpProfile {
+                        auth: McpAuth::None,
+                        ..profile
+                    })
+                    .collect()
             },
         };
         if mcp::name_taken(&inner.state.mcp_servers, &server) {
             return Err(invalid(format!(
-                "there's already an MCP server called {} that the same topics would get",
+                "there's already an MCP server called {}",
                 server.name
             )));
         }
         if existing.is_some() && !same_address {
-            inner.store.remove_mcp_login(&server.id).map_err(internal)?;
+            inner
+                .store
+                .remove_mcp_logins(&server.id)
+                .map_err(internal)?;
         }
         inner.put_mcp_server(server.clone()).map_err(internal)?;
         inner.refresh_mcp_sessions(None);
         Ok(server)
     }
 
-    /// A connector is only turned on or off. Its name and address are its agent's.
-    fn store_connector(
+    pub(super) fn save_mcp_profile(
         &self,
-        id: Option<McpServerId>,
-        topic_id: Option<TopicId>,
-        transport: McpTransport,
-        enabled: bool,
-    ) -> Result<McpServer, CommandError> {
+        server_id: &McpServerId,
+        id: Option<McpProfileId>,
+        name: &str,
+        values: BTreeMap<String, String>,
+    ) -> Result<CommandOutput, CommandError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(invalid("a profile needs a name"));
+        }
         let mut inner = self.lock();
-        let existing = id
-            .as_ref()
-            .and_then(|id| inner.state.mcp_server(id))
-            .filter(|existing| existing.transport == transport && topic_id.is_none())
+        let server = inner
+            .state
+            .mcp_server(server_id)
             .cloned()
-            .ok_or_else(|| {
-                invalid("connectors come from refreshing them, and can only be turned on or off")
-            })?;
-        let server = McpServer {
-            enabled,
-            ..existing
+            .ok_or_else(|| not_found("MCP server", server_id))?;
+        check_values(&server.transport, &values)?;
+        let existing = match &id {
+            Some(id) => Some(
+                server
+                    .profile(id)
+                    .cloned()
+                    .ok_or_else(|| not_found("profile", id))?,
+            ),
+            None => None,
         };
-        inner.put_mcp_server(server.clone()).map_err(internal)?;
+        if server
+            .profiles
+            .iter()
+            .any(|p| p.name == name && Some(&p.id) != id.as_ref())
+        {
+            return Err(invalid(format!(
+                "{} already has a profile called {name}",
+                server.name
+            )));
+        }
+        let profile = McpProfile {
+            id: id.unwrap_or_else(|| McpProfileId(crate::new_id())),
+            name: name.to_owned(),
+            values,
+            auth: match existing {
+                Some(existing) => existing.auth,
+                None if server.needs_login => McpAuth::NeedsLogin,
+                None => McpAuth::None,
+            },
+        };
+        let mut profiles = server.profiles.clone();
+        match profiles.iter_mut().find(|p| p.id == profile.id) {
+            Some(slot) => *slot = profile.clone(),
+            None => profiles.push(profile.clone()),
+        }
+        inner
+            .put_mcp_server(McpServer { profiles, ..server })
+            .map_err(internal)?;
         inner.refresh_mcp_sessions(None);
-        Ok(server)
+        Ok(CommandOutput::McpProfile { profile })
     }
 
+    /// Workspaces that used it keep the server, without a profile.
+    pub(super) fn remove_mcp_profile(
+        &self,
+        server_id: &McpServerId,
+        id: &McpProfileId,
+    ) -> Result<CommandOutput, CommandError> {
+        let mut inner = self.lock();
+        let server = inner
+            .state
+            .mcp_server(server_id)
+            .cloned()
+            .ok_or_else(|| not_found("MCP server", server_id))?;
+        if server.profile(id).is_none() {
+            return Err(not_found("profile", id));
+        }
+        inner.store.remove_mcp_login(id).map_err(internal)?;
+        let profiles = server
+            .profiles
+            .iter()
+            .filter(|p| &p.id != id)
+            .cloned()
+            .collect();
+        inner
+            .put_mcp_server(McpServer { profiles, ..server })
+            .map_err(internal)?;
+        let using: Vec<(WorkspaceId, BTreeMap<McpServerId, WorkspaceMcp>)> = inner
+            .state
+            .workspaces
+            .iter()
+            .filter_map(|workspace| {
+                let entry = workspace.mcp.get(server_id)?;
+                (entry.profile_id.as_ref() == Some(id)).then(|| {
+                    let mut mcp = workspace.mcp.clone();
+                    mcp.insert(
+                        server_id.clone(),
+                        WorkspaceMcp {
+                            profile_id: None,
+                            ..entry.clone()
+                        },
+                    );
+                    (workspace.id.clone(), mcp)
+                })
+            })
+            .collect();
+        for (workspace_id, mcp) in using {
+            inner
+                .put_workspace_mcp(&workspace_id, mcp)
+                .map_err(internal)?;
+        }
+        inner.refresh_mcp_sessions(None);
+        Ok(CommandOutput::Done)
+    }
+
+    pub(super) fn set_workspace_mcp(
+        &self,
+        workspace_id: &WorkspaceId,
+        servers: BTreeMap<McpServerId, WorkspaceMcp>,
+    ) -> Result<CommandOutput, CommandError> {
+        let mut inner = self.lock();
+        let workspace = inner
+            .state
+            .workspaces
+            .iter()
+            .find(|w| &w.id == workspace_id)
+            .ok_or_else(|| not_found("workspace", workspace_id))?;
+        if workspace.mcp == servers {
+            return Ok(CommandOutput::Done);
+        }
+        for (server_id, entry) in &servers {
+            let server = inner
+                .state
+                .mcp_server(server_id)
+                .ok_or_else(|| not_found("MCP server", server_id))?;
+            if let Some(profile) = &entry.profile_id
+                && server.profile(profile).is_none()
+            {
+                return Err(invalid(format!(
+                    "{} has no profile with the ID {profile}",
+                    server.name
+                )));
+            }
+        }
+        inner
+            .put_workspace_mcp(workspace_id, servers)
+            .map_err(internal)?;
+        inner.refresh_mcp_sessions(None);
+        Ok(CommandOutput::Done)
+    }
     /// Lists the connectors of each added Claude and Codex agent, and keeps their servers in
     /// step with that.
     pub(super) async fn refresh_mcp_connectors(&self) -> Result<CommandOutput, CommandError> {
@@ -354,66 +540,12 @@ impl Core {
         Ok(CommandOutput::Done)
     }
 
-    pub(super) fn set_topic_mcp(
-        &self,
-        topic_id: &TopicId,
-        server_id: &McpServerId,
-        on: Option<bool>,
-    ) -> Result<CommandOutput, CommandError> {
-        let mut inner = self.lock();
-        let server = inner
-            .state
-            .mcp_server(server_id)
-            .ok_or_else(|| not_found("MCP server", server_id))?;
-        if server.topic_id.is_some() {
-            return Err(invalid(
-                "a topic's own server is turned on and off with its enabled setting",
-            ));
-        }
-        let topic = inner
-            .state
-            .topic(topic_id)
-            .ok_or_else(|| not_found("topic", topic_id))?;
-        let mut overrides = topic.mcp.clone();
-        match on {
-            Some(on) => overrides.insert(server_id.clone(), on),
-            None => overrides.remove(server_id),
-        };
-        if overrides == topic.mcp {
-            return Ok(CommandOutput::Done);
-        }
-        let candidate = McpServer {
-            enabled: true,
-            ..server.clone()
-        };
-        // Turning a device server on can't give a topic two servers with one name.
-        if on == Some(true)
-            && inner.state.mcp_servers.iter().any(|other| {
-                other.topic_id.as_ref() == Some(topic_id) && other.name == candidate.name
-            })
-        {
-            return Err(invalid(format!(
-                "this topic has its own server called {}",
-                candidate.name
-            )));
-        }
-        inner
-            .store
-            .set_topic_mcp(topic_id, &overrides)
-            .map_err(internal)?;
-        inner.emit(StateChange::TopicMcpChanged {
-            topic_id: topic_id.clone(),
-            mcp: overrides,
-        });
-        inner.refresh_mcp_sessions(None);
-        Ok(CommandOutput::Done)
-    }
-
     pub(super) async fn login_mcp_server(
         &self,
         id: &McpServerId,
+        profile_id: &McpProfileId,
     ) -> Result<CommandOutput, CommandError> {
-        let (url, headers, client_id, previous) = {
+        let (url, headers, client_id, previous, select_account) = {
             let inner = self.lock();
             let server = inner
                 .state
@@ -427,23 +559,39 @@ impl Core {
             else {
                 return Err(invalid("only HTTP servers log in"));
             };
-            let previous = inner.store.mcp_login(id).map_err(internal)?;
+            let profile = server
+                .profile(profile_id)
+                .ok_or_else(|| not_found("profile", profile_id))?;
+            // Another profile's login has a client registered with the server already.
+            let previous = match inner.store.mcp_login(profile_id).map_err(internal)? {
+                Some(login) => Some(login),
+                None => inner.store.any_mcp_login(id).map_err(internal)?,
+            };
+            let select_account = server
+                .profiles
+                .iter()
+                .any(|p| &p.id != profile_id && p.auth == McpAuth::LoggedIn);
             (
                 expand(url),
-                expanded(headers),
+                expanded(headers, Some(profile)),
                 oauth_client_id.clone(),
                 previous,
+                select_account,
             )
         };
         let state = crate::new_id();
+        let redirect_uri = self.redirect_uri();
         let (address, pending) = oauth::start(
             &self.http,
-            &url,
-            &headers,
-            client_id.as_deref(),
-            previous.as_ref(),
-            &self.redirect_uri(),
-            &state,
+            oauth::Start {
+                server_url: &url,
+                headers: &headers,
+                client_id: client_id.as_deref(),
+                previous: previous.as_ref(),
+                redirect_uri: &redirect_uri,
+                state: &state,
+                select_account,
+            },
         )
         .await
         .map_err(|error| invalid(format!("{error:#}")))?;
@@ -453,6 +601,7 @@ impl Core {
             state,
             PendingLogin {
                 server_id: id.clone(),
+                profile_id: profile_id.clone(),
                 pending,
                 started: Instant::now(),
             },
@@ -460,7 +609,8 @@ impl Core {
         Ok(CommandOutput::McpLogin { url: address })
     }
 
-    /// Finishes a login with what the server sent back, and returns the server's name.
+    /// Finishes a login with what the server sent back, and returns what was logged in, like
+    /// `notion (work)`.
     pub async fn complete_mcp_login(
         &self,
         state: &str,
@@ -475,19 +625,21 @@ impl Core {
             .await
             .map_err(|error| invalid(format!("{error:#}")))?;
         let mut inner = self.lock();
-        let name = inner
+        let server = inner
             .state
             .mcp_server(&login.server_id)
-            .ok_or_else(|| not_found("MCP server", &login.server_id))?
-            .name
-            .clone();
+            .ok_or_else(|| not_found("MCP server", &login.server_id))?;
+        let profile = server
+            .profile(&login.profile_id)
+            .ok_or_else(|| not_found("profile", &login.profile_id))?;
+        let name = format!("{} ({})", server.name, profile.name);
         inner
             .store
-            .set_mcp_login(&login.server_id, &tokens)
+            .set_mcp_login(&login.server_id, &login.profile_id, &tokens)
             .map_err(internal)?;
-        inner.set_mcp_auth(&login.server_id, McpAuth::LoggedIn);
+        inner.set_profile_auth(&login.server_id, &login.profile_id, McpAuth::LoggedIn);
         // Agents that already gave up on the server only try again when they start.
-        inner.refresh_mcp_sessions(Some(&login.server_id));
+        inner.refresh_mcp_sessions(Some(&login.profile_id));
         Ok(name)
     }
 
@@ -498,6 +650,7 @@ impl Core {
     pub(super) fn logout_mcp_server(
         &self,
         id: &McpServerId,
+        profile_id: &McpProfileId,
     ) -> Result<CommandOutput, CommandError> {
         let mut inner = self.lock();
         let server = inner
@@ -507,13 +660,16 @@ impl Core {
         if http_url(&server.transport).is_none() {
             return Err(invalid("only HTTP servers log in"));
         }
-        inner.store.remove_mcp_login(id).map_err(internal)?;
-        if server.auth == McpAuth::LoggedIn {
-            inner.set_mcp_auth(id, McpAuth::NeedsLogin);
+        let profile = server
+            .profile(profile_id)
+            .ok_or_else(|| not_found("profile", profile_id))?;
+        let was_logged_in = profile.auth == McpAuth::LoggedIn;
+        inner.store.remove_mcp_login(profile_id).map_err(internal)?;
+        if was_logged_in {
+            inner.set_profile_auth(id, profile_id, McpAuth::NeedsLogin);
         }
         Ok(CommandOutput::Done)
     }
-
     pub(super) async fn import_mcp_servers(
         self: &Arc<Self>,
     ) -> Result<CommandOutput, CommandError> {
@@ -529,10 +685,9 @@ impl Core {
                 let server = McpServer {
                     id: McpServerId(crate::new_id()),
                     name: found.name,
-                    topic_id: None,
                     transport: found.transport,
-                    enabled: found.enabled,
-                    auth: McpAuth::None,
+                    profiles: vec![],
+                    needs_login: false,
                 };
                 if mcp::name_taken(&inner.state.mcp_servers, &server) {
                     skipped.push(format!(
@@ -571,25 +726,13 @@ impl Core {
             let McpTransport::Http { url, headers, .. } = &server.transport else {
                 return;
             };
-            if server.auth == McpAuth::LoggedIn {
+            if server.needs_login {
                 return;
             }
-            (expand(url), expanded(headers))
+            (expand(url), expanded(headers, None))
         };
         match oauth::challenge(&self.http, &url, &headers).await {
-            // A login can finish while the server is being asked, and that answer is stale.
-            Ok(Some(_)) => {
-                let mut inner = self.lock();
-                let logged_in = inner
-                    .store
-                    .mcp_login(&id)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|login| login.access_token.is_some());
-                if !logged_in {
-                    inner.set_mcp_auth(&id, McpAuth::NeedsLogin);
-                }
-            }
+            Ok(Some(_)) => self.lock().set_needs_login(&id, None),
             Ok(None) => {}
             Err(error) => {
                 tracing::debug!(%id, "couldn't ask an MCP server about logins: {error:#}")
@@ -604,21 +747,28 @@ impl Core {
             .live
             .values()
             .find(|live| live.proxy_secret == secret)?;
-        let server_id = live.mcp.iter().find(|id| id.0 == server_id)?.clone();
+        let (server_id, profile_id) = live.mcp.iter().find(|(id, _)| id.0 == server_id)?.clone();
         let server = inner.state.mcp_server(&server_id)?;
         let McpTransport::Http { url, headers, .. } = &server.transport else {
             return None;
         };
+        let profile = profile_id.as_ref().and_then(|id| server.profile(id));
         Some(ProxyTarget {
             url: expand(url),
-            headers: expanded(headers),
+            headers: expanded(headers, profile),
             server_id,
+            profile_id,
         })
     }
 
     /// The token to send to a server, refreshed first if it's about to expire, or if `force`
     /// says the server just refused it.
-    pub async fn mcp_access_token(&self, id: &McpServerId, force: bool) -> Option<String> {
+    pub async fn mcp_access_token(
+        &self,
+        server_id: &McpServerId,
+        id: &McpProfileId,
+        force: bool,
+    ) -> Option<String> {
         let stored = || self.lock().store.mcp_login(id).ok().flatten();
         let refused = stored()?.access_token?;
         let usable = |login: &oauth::Login| {
@@ -639,7 +789,7 @@ impl Core {
             Ok(refreshed) => {
                 let token = refreshed.access_token.clone();
                 let inner = self.lock();
-                if let Err(error) = inner.store.set_mcp_login(id, &refreshed) {
+                if let Err(error) = inner.store.set_mcp_login(server_id, id, &refreshed) {
                     tracing::error!(%id, "failed to store a refreshed login: {error:#}");
                 }
                 token
@@ -652,10 +802,10 @@ impl Core {
                     expires_at_ms: None,
                     ..login
                 };
-                if let Err(error) = inner.store.set_mcp_login(id, &signed_out) {
+                if let Err(error) = inner.store.set_mcp_login(server_id, id, &signed_out) {
                     tracing::error!(%id, "failed to store an expired login: {error:#}");
                 }
-                inner.set_mcp_auth(id, McpAuth::NeedsLogin);
+                inner.set_profile_auth(server_id, id, McpAuth::NeedsLogin);
                 None
             }
             Err(oauth::RefreshError::Failed(message)) => {
@@ -666,10 +816,11 @@ impl Core {
         }
     }
 
-    pub fn mcp_needs_login(&self, id: &McpServerId) {
-        self.lock().set_mcp_auth(id, McpAuth::NeedsLogin);
+    /// The server turned a request away, so it needs a login, and so does the profile the
+    /// request went with.
+    pub fn mcp_needs_login(&self, id: &McpServerId, profile: Option<&McpProfileId>) {
+        self.lock().set_needs_login(id, profile);
     }
-
     fn lock_logins(
         &self,
     ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, PendingLogin>> {
@@ -692,33 +843,76 @@ impl Inner {
         Ok(())
     }
 
-    fn set_mcp_auth(&mut self, id: &McpServerId, auth: McpAuth) {
-        let Some(server) = self.state.mcp_server(id) else {
-            return;
-        };
-        if server.auth == auth {
+    fn put_workspace_mcp(
+        &mut self,
+        id: &WorkspaceId,
+        mcp: BTreeMap<McpServerId, WorkspaceMcp>,
+    ) -> anyhow::Result<()> {
+        self.store.set_workspace_mcp(id, &mcp)?;
+        self.emit(StateChange::WorkspaceMcpChanged {
+            workspace_id: id.clone(),
+            mcp,
+        });
+        Ok(())
+    }
+
+    fn put_changed_server(&mut self, before: &McpServer, after: McpServer) {
+        if before == &after {
             return;
         }
-        let server = McpServer {
-            auth,
-            ..server.clone()
-        };
-        if let Err(error) = self.put_mcp_server(server) {
+        let id = after.id.clone();
+        if let Err(error) = self.put_mcp_server(after) {
             tracing::error!(%id, "failed to store an MCP login state: {error:#}");
         }
     }
 
+    fn set_profile_auth(&mut self, id: &McpServerId, profile: &McpProfileId, auth: McpAuth) {
+        let Some(server) = self.state.mcp_server(id).cloned() else {
+            return;
+        };
+        let after = McpServer {
+            profiles: server
+                .profiles
+                .iter()
+                .map(|p| McpProfile {
+                    auth: if &p.id == profile { auth } else { p.auth },
+                    ..p.clone()
+                })
+                .collect(),
+            ..server.clone()
+        };
+        self.put_changed_server(&server, after);
+    }
+
+    /// `profile` was turned away even with its login, if it had one.
+    fn set_needs_login(&mut self, id: &McpServerId, profile: Option<&McpProfileId>) {
+        let Some(server) = self.state.mcp_server(id).cloned() else {
+            return;
+        };
+        let mut after = needing_login(server.clone());
+        if let Some(profile) = profile
+            && let Some(slot) = after.profiles.iter_mut().find(|p| &p.id == profile)
+        {
+            slot.auth = McpAuth::NeedsLogin;
+        }
+        self.put_changed_server(&server, after);
+    }
+
     /// Stops the agents whose MCP servers changed, so their next prompt starts them with the
     /// new ones. ACP can't change a running session's servers. An agent that's working or
-    /// waiting finishes first. `login` also counts agents that get that server.
-    pub(super) fn refresh_mcp_sessions(&mut self, login: Option<&McpServerId>) {
+    /// waiting finishes first. `login` also counts agents that use that profile.
+    pub(super) fn refresh_mcp_sessions(&mut self, login: Option<&McpProfileId>) {
         let mut outdated: Vec<SessionId> = vec![];
         for topic in self.state.topics() {
             let current = fingerprint(&self.state, topic);
             for session in &topic.sessions {
                 if let Some(live) = self.live.get(&session.id)
                     && (live.mcp_fingerprint != current
-                        || login.is_some_and(|id| live.mcp.contains(id)))
+                        || login.is_some_and(|id| {
+                            live.mcp
+                                .iter()
+                                .any(|(_, profile)| profile.as_ref() == Some(id))
+                        }))
                 {
                     outdated.push(session.id.clone());
                 }

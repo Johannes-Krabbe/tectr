@@ -6,7 +6,6 @@ import TectrDesign
 enum TopicAction: Identifiable, Hashable {
     case rename(Topic.ID)
     case move(Topic.ID)
-    case mcp(Topic.ID)
     case importConversation(Topic.ID)
     case archive(Topic.ID)
 
@@ -14,7 +13,7 @@ enum TopicAction: Identifiable, Hashable {
 
     var isSheet: Bool {
         switch self {
-        case .move, .mcp, .importConversation: true
+        case .move, .importConversation: true
         case .rename, .archive: false
         }
     }
@@ -37,7 +36,6 @@ struct TopicMenuItems: View {
             Button("Move to another folder", systemImage: "arrow.triangle.branch") { action = .move(topic.id) }
         }
         Section {
-            Button("MCP servers", systemImage: "puzzlepiece.extension") { action = .mcp(topic.id) }
             Button("Import a conversation", systemImage: "square.and.arrow.down") { action = .importConversation(topic.id) }
         }
         Section {
@@ -66,7 +64,6 @@ private struct TopicActionsModifier: ViewModifier {
                 Group {
                     switch action {
                     case .move(let id): MoveTopicSheet(topicID: id)
-                    case .mcp(let id): TopicMcpSheet(topicID: id)
                     case .importConversation(let id): ImportConversationSheet(topicID: id, onImported: onImported)
                     case .rename, .archive: EmptyView()
                     }

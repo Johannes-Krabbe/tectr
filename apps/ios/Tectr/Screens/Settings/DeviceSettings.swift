@@ -41,7 +41,7 @@ struct DeviceView: View {
                         LabeledContent("Providers", value: "\(device.providers.count)")
                     }
                     NavigationLink { McpServersView(deviceID: deviceID) } label: {
-                        LabeledContent("MCP servers", value: "\(device.mcpServers.filter { $0.topicID == nil }.count)")
+                        LabeledContent("MCP servers", value: "\(device.mcpServers.count)")
                     }
                     NavigationLink { PairedClientsView(deviceID: deviceID) } label: {
                         LabeledContent("Pairing", value: "\(device.pairedClients.count)")
@@ -195,24 +195,28 @@ private struct ProviderView: View {
     }
 }
 
+/// The device's library of servers. Workspaces choose which of them their agents get.
 struct McpServersView: View {
     @Environment(Store.self) private var store
     @Environment(Toasts.self) private var toasts
     let deviceID: Device.ID
-    @State private var editing: McpServer?
+    @State private var adding: McpServer?
 
     var body: some View {
         if let device = store.device(deviceID) {
-            let servers = device.mcpServers.filter { $0.topicID == nil }
+            let servers = device.mcpServers
             List {
                 Section("Servers") {
                     ForEach(servers.filter { !$0.transport.isConnector }) { server in
-                        Button { editing = server } label: {
+                        NavigationLink { McpServerView(serverID: server.id, deviceID: deviceID) } label: {
                             HStack {
-                                ServerLabel(server: server)
+                                ServerLabel(server: server, note: server.libraryNote)
                                 Spacer()
-                                if !server.enabled {
-                                    Text("Off").font(.subheadline).foregroundStyle(.secondary)
+                                if !server.profiles.isEmpty {
+                                    Text(server.profiles.map(\.name).joined(separator: ", "))
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
                                 }
                             }
                         }
@@ -227,17 +231,11 @@ struct McpServersView: View {
                 }
                 Section("Connectors") {
                     ForEach(servers.filter(\.transport.isConnector)) { server in
-                        Toggle(isOn: Binding { server.enabled } set: { on in
-                            var changed = server
-                            changed.enabled = on
-                            store.save(changed, isNew: false, on: deviceID)
-                        }) {
-                            VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
-                                Text(server.name)
-                                Text(server.transport.isClaude ? "Claude only" : "Codex only")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
+                        VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+                            Text(server.name)
+                            Text(server.transport.isClaude ? "Claude only" : "Codex only")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -246,7 +244,7 @@ struct McpServersView: View {
             .toolbar {
                 Menu("Add", systemImage: "plus") {
                     Button("Add a server", systemImage: "plus") {
-                        editing = McpServer(id: store.newServerID(), name: "", transport: .stdio(command: "", args: [], env: [:]), enabled: true)
+                        adding = McpServer(id: store.newServerID(), name: "", transport: .stdio(command: "", args: [], env: [:]))
                     }
                     Button("Import from Claude Code and Codex", systemImage: "square.and.arrow.down") {
                         Task {
@@ -260,8 +258,8 @@ struct McpServersView: View {
                     }
                 }
             }
-            .sheet(item: $editing) { server in
-                McpServerForm(server: server, deviceID: deviceID, isNew: !device.mcpServers.contains { $0.id == server.id })
+            .sheet(item: $adding) { server in
+                McpServerForm(server: server, deviceID: deviceID, isNew: true)
                     .toasts()
             }
         }
@@ -290,7 +288,6 @@ struct McpServerForm: View {
     @State private var oauthClientID = ""
     /// `KEY=VALUE`, one to a line: the environment for a command, headers for a URL.
     @State private var pairs = ""
-    @State private var login: LoginPage?
 
     init(server: McpServer, deviceID: Device.ID, isNew: Bool) {
         self.deviceID = deviceID
@@ -301,11 +298,11 @@ struct McpServerForm: View {
             _kind = State(initialValue: .command)
             _command = State(initialValue: command)
             _args = State(initialValue: args.joined(separator: " "))
-            _pairs = State(initialValue: Self.lines(env))
+            _pairs = State(initialValue: KeyValueLines.lines(env))
         case .http(let url, let headers, let oauthClientID):
             _kind = State(initialValue: .url)
             _url = State(initialValue: url)
-            _pairs = State(initialValue: Self.lines(headers))
+            _pairs = State(initialValue: KeyValueLines.lines(headers))
             _oauthClientID = State(initialValue: oauthClientID ?? "")
         case .claudeConnector, .codexApp:
             _kind = State(initialValue: .url)
@@ -345,25 +342,6 @@ struct McpServerForm: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
-                Section {
-                    Toggle(server.topicID == nil ? "On for every topic" : "On", isOn: $server.enabled)
-                }
-                if kind == .url && !isNew {
-                    Section("Login") {
-                        switch server.auth {
-                        case .loggedIn:
-                            LabeledContent("Status", value: "Logged in")
-                            Button("Log out", role: .destructive) { store.logout(server: server.id, on: deviceID) }
-                        case .needsLogin, .none:
-                            if server.auth == .needsLogin {
-                                Text("The server turned the daemon away").foregroundStyle(.statusWaiting)
-                            }
-                            Button("Log in") {
-                                Task { login = await store.login(server: server.id, on: deviceID).map(LoginPage.init) }
-                            }
-                        }
-                    }
-                }
                 if !isNew {
                     Section {
                         Button("Remove", role: .destructive) {
@@ -382,13 +360,6 @@ struct McpServerForm: View {
                     store.save(saved, isNew: isNew, on: deviceID)
                 }
             }
-            .sheet(item: $login) { page in
-                McpLoginView(url: page.url, deviceID: deviceID)
-            }
-        }
-        // The device says how the login went, so the form follows it.
-        .onChange(of: store.device(deviceID)?.mcpServers.first { $0.id == server.id }?.auth) { _, auth in
-            if let auth { server.auth = auth }
         }
     }
 
@@ -402,23 +373,10 @@ struct McpServerForm: View {
     private var transport: McpServer.Transport {
         switch kind {
         case .command:
-            .stdio(command: command, args: args.split(separator: " ").map(String.init), env: Self.parse(pairs))
+            .stdio(command: command, args: args.split(separator: " ").map(String.init), env: KeyValueLines.parse(pairs))
         case .url:
-            .http(url: url, headers: Self.parse(pairs), oauthClientID: oauthClientID.isEmpty ? nil : oauthClientID)
+            .http(url: url, headers: KeyValueLines.parse(pairs), oauthClientID: oauthClientID.isEmpty ? nil : oauthClientID)
         }
-    }
-
-    private static func lines(_ pairs: [String: String]) -> String {
-        pairs.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
-    }
-
-    private static func parse(_ text: String) -> [String: String] {
-        var result: [String: String] = [:]
-        for line in text.split(separator: "\n") {
-            let parts = line.split(separator: "=", maxSplits: 1)
-            if parts.count == 2 { result[String(parts[0]).trimmingCharacters(in: .whitespaces)] = String(parts[1]) }
-        }
-        return result
     }
 }
 

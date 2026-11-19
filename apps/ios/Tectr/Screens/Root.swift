@@ -5,6 +5,7 @@ import TectrDesign
 enum AppSheet: Identifiable, Hashable {
     case addWorkspace(Device.ID?)
     case device(Device.ID)
+    case workspaceMcp(Workspace.ID)
     case archived
     case settings
     case addDevice
@@ -58,6 +59,8 @@ struct RootView: View {
                             ToolbarItem(placement: .confirmationAction) { Button(role: .close) { self.sheet = nil } }
                         }
                     }
+                case .workspaceMcp(let workspaceID):
+                    WorkspaceMcpSheet(workspaceID: workspaceID)
                 case .archived:
                     ArchivedTopicsSheet()
                 case .settings:
@@ -176,6 +179,12 @@ struct HomeView: View {
         }
         .lineLimit(1)
         .sidebarRow()
+        .contextMenu {
+            if device.online {
+                Button("Create a topic", systemImage: "plus") { detail = .newTopic(workspace.id) }
+                Button("MCP servers", systemImage: "puzzlepiece.extension") { sheet = .workspaceMcp(workspace.id) }
+            }
+        }
     }
 
     private func topicRow(_ topic: Topic, online: Bool) -> some View {

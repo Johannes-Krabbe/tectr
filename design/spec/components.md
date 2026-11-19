@@ -46,7 +46,21 @@ The fixed section header that groups workspaces. It never collapses and isn't in
 
 - **Parts:** name, count of waiting sessions when folded.
 - **States:** open, folded, hover (desktop), selected.
+- **Desktop:** behaves like a TopicRow: reaching it with the keyboard shows the workspace's page, and Enter or a click goes into it. Its + adds a topic without opening the page.
 - **iOS:** a row in the tree, with its topics indented below and a button for a new topic.
+
+## WorkspacePage
+
+A workspace's own page in the main pane: its topics, and the MCP servers its agents get.
+
+- **Parts:** header (name in `text.title`, then the device and the path with `~` for the home folder, both in `text.tertiary`, and a menu button with every page action), then a Topics section and an MCP servers section. A section heading is its name in `text.secondary`, a count in `text.tertiary`, a line under it, and one quiet add button at the end. There's no bar at the bottom.
+- **Keys stay out of sight:** rows and buttons never show key chips. Tooltips and menus name the keys, and the shortcut bar shows them for whoever turned it on.
+- **Selection:** the selected row is only highlighted while the page has the keyboard, so landing on a workspace from the sidebar shows a calm page. Hover always highlights.
+- **Topic rows:** StatusIcon, name, and the number of tabs. Only waiting and failed get words, because idle is what the icon already says.
+- **Server rows:** name, what it runs in `text.code-small` and `text.tertiary`, a Log in button in `status.waiting` when it needs one, the profile as a quiet dropdown, a switch, and a menu button. The menu button, and the profile dropdown of a server without profiles, only show on the row in use. Right click opens the same menu. A server turned off has its name in `text.tertiary`.
+- **Empty sections:** a row in `text.tertiary` with an icon that does the obvious thing ("New topic", "Add an MCP server"), reachable with the keys like any row. "Copy from another workspace" is a second such row, and only shows when another workspace has servers to copy, which is the one time it matters. With servers in the list, copying is in the page menu and the palette.
+- **One add key:** `mcp.add` (`a`) adds to the section the cursor is in: the new topic screen in Topics, adding a server in MCP servers.
+- **Only its own servers:** the list shows what the workspace added. Adding searches the device's library, with "New server..." always last.
 
 ## TopicRow
 
@@ -130,7 +144,7 @@ Creates something with just a name, with defaults for the rest.
 - **Parts:** where it will be created, name input in `text.title`, footer.
 - **Surface:** `surface.overlay`, `line.strong` border, `shadow.sheet`, over `scrim`.
 - **With fields:** when there's more to fill in, like an MCP server, labelled fields follow the name in two columns: the label in `text.meta` and `text.tertiary`, the input in `text.code-body` on `surface.raised` with a `line.strong` border that turns `accent.text` while focused. A box of lines (`KEY=VALUE`) takes Enter as a new line, so a save key with a modifier works from every field. A choice between a few values is a row of small buttons, the chosen one on `surface.control`, with its key after them.
-- **As a list:** a sheet can hold a list instead, like a topic's MCP servers, with group headings in `text.meta`. What the highlighted row can do sits in a bar above the footer, the same as the settings actions bar, so the list itself doesn't move.
+- **As a list:** a sheet can hold a list instead, like the MCP servers to give a new workspace, filtered by what's typed. A list where several can be chosen marks each with a check box, `accent.solid` when checked, and keeps the footer's buttons.
 - **iOS:** a system `.sheet`, using our tokens only for content.
 
 ## Button

@@ -135,6 +135,50 @@ public enum Wire {
         public let name: String
         public let path: String
         public let topics: [Topic]
+        /// The library's MCP servers its agents get, by server ID.
+        public let mcp: [String: WorkspaceMcp]
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, path, topics, mcp
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            name = try c.decode(String.self, forKey: .name)
+            path = try c.decode(String.self, forKey: .path)
+            topics = try c.decode([Topic].self, forKey: .topics)
+            mcp = try c.decodeIfPresent([String: WorkspaceMcp].self, forKey: .mcp) ?? [:]
+        }
+    }
+
+    /// How a workspace uses one of the library's MCP servers.
+    public struct WorkspaceMcp: Codable, Sendable, Hashable {
+        public var enabled: Bool
+        /// Nil uses the server as it is, without one of its profiles.
+        public var profileId: String?
+
+        public init(enabled: Bool, profileId: String?) {
+            self.enabled = enabled
+            self.profileId = profileId
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case enabled
+            case profileId = "profile_id"
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            enabled = try c.decode(Bool.self, forKey: .enabled)
+            profileId = try c.decodeIfPresent(String.self, forKey: .profileId)
+        }
+
+        public func encode(to encoder: any Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(enabled, forKey: .enabled)
+            try c.encodeIfPresent(profileId, forKey: .profileId)
+        }
     }
 
     public struct Topic: Decodable, Sendable {
@@ -144,10 +188,9 @@ public enum Wire {
         public let worktrees: [Worktree]
         public let sessions: [Session]
         public let terminals: [Terminal]
-        public let mcp: [String: Bool]
 
         enum CodingKeys: String, CodingKey {
-            case id, name, worktrees, sessions, terminals, mcp
+            case id, name, worktrees, sessions, terminals
             case worktreeId = "worktree_id"
         }
 
@@ -159,7 +202,6 @@ public enum Wire {
             worktrees = try c.decode([Worktree].self, forKey: .worktrees)
             sessions = try c.decode([Session].self, forKey: .sessions)
             terminals = try c.decodeIfPresent([Terminal].self, forKey: .terminals) ?? []
-            mcp = try c.decodeIfPresent([String: Bool].self, forKey: .mcp) ?? [:]
         }
     }
 
@@ -402,26 +444,47 @@ public enum Wire {
         public let missing: String?
     }
 
+    /// A server in the device's library. Workspaces choose which of them their agents get.
     public struct McpServer: Decodable, Sendable {
         public let id: String
         public let name: String
-        public let topicId: String?
         public let transport: McpTransport
-        public let enabled: Bool
-        public let auth: McpAuth
+        public let profiles: [McpProfile]
+        /// It turned the daemon away without a login, so agents need a logged-in profile.
+        public let needsLogin: Bool
 
         enum CodingKeys: String, CodingKey {
-            case id, name, transport, enabled, auth
-            case topicId = "topic_id"
+            case id, name, transport, profiles
+            case needsLogin = "needs_login"
         }
 
         public init(from decoder: any Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = try c.decode(String.self, forKey: .id)
             name = try c.decode(String.self, forKey: .name)
-            topicId = try c.decodeIfPresent(String.self, forKey: .topicId)
             transport = try c.decode(McpTransport.self, forKey: .transport)
-            enabled = try c.decode(Bool.self, forKey: .enabled)
+            profiles = try c.decodeIfPresent([McpProfile].self, forKey: .profiles) ?? []
+            needsLogin = try c.decodeIfPresent(Bool.self, forKey: .needsLogin) ?? false
+        }
+    }
+
+    /// One way of using a server, like a personal or a work login.
+    public struct McpProfile: Decodable, Sendable {
+        public let id: String
+        public let name: String
+        /// Laid over the server's env for a stdio server, and its headers for an HTTP one.
+        public let values: [String: String]
+        public let auth: McpAuth
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, values, auth
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            name = try c.decode(String.self, forKey: .name)
+            values = try c.decodeIfPresent([String: String].self, forKey: .values) ?? [:]
             auth = try c.decodeIfPresent(McpAuth.self, forKey: .auth) ?? .none
         }
     }
@@ -652,6 +715,7 @@ public enum Wire {
         case folders([Folder])
         case archiveRisk(ArchiveRisk)
         case archivedTopics([ArchivedTopic])
+        case mcpProfile(McpProfile)
         case mcpLogin(url: String)
         case mcpImport(added: [String], skipped: [String])
         case mcpConnectors(added: [String], removed: [String], problems: [String])
@@ -663,7 +727,7 @@ public enum Wire {
 
         enum CodingKeys: String, CodingKey {
             case output, topic, session, terminal, candidates, folders, risk, topics, url, added, skipped, removed
-            case problems, conversations, id, data, mime
+            case problems, conversations, id, data, mime, profile
             case workspaceId = "workspace_id"
             case topicId = "topic_id"
         }
@@ -694,6 +758,7 @@ public enum Wire {
             case "folders": self = .folders(try c.decode([Folder].self, forKey: .folders))
             case "archive_risk": self = .archiveRisk(try c.decode(ArchiveRisk.self, forKey: .risk))
             case "archived_topics": self = .archivedTopics(try c.decode([ArchivedTopic].self, forKey: .topics))
+            case "mcp_profile": self = .mcpProfile(try c.decode(McpProfile.self, forKey: .profile))
             case "mcp_login": self = .mcpLogin(url: try c.decode(String.self, forKey: .url))
             case "mcp_import":
                 self = .mcpImport(added: try c.decode([String].self, forKey: .added), skipped: try c.decode([String].self, forKey: .skipped))

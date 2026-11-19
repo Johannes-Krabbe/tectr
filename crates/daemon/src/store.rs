@@ -7,10 +7,10 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use protocol::{
     AgentCommand, Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, Diff, DiffId,
-    DiffScope, ImageId, Machine, MachineId, McpServer, McpServerId, PairedClient, PermissionMode,
-    PromptImage, Provider, Session, SessionEvent, SessionEventKind, SessionId, SessionRef,
-    SessionStatus, Terminal, TerminalId, TerminalStatus, Topic, TopicId, Workspace, WorkspaceId,
-    Worktree, WorktreeId,
+    DiffScope, ImageId, Machine, MachineId, McpProfileId, McpServer, McpServerId, PairedClient,
+    PermissionMode, PromptImage, Provider, Session, SessionEvent, SessionEventKind, SessionId,
+    SessionRef, SessionStatus, Terminal, TerminalId, TerminalStatus, Topic, TopicId, Workspace,
+    WorkspaceId, WorkspaceMcp, Worktree, WorktreeId,
 };
 
 use crate::acp::ForkPoint;
@@ -144,6 +144,25 @@ const MIGRATIONS: &[&str] = &[
         closed_at_ms INTEGER
     );
 ",
+    // MCP servers became a library that workspaces add from, each with profiles, instead of
+    // device-wide servers that topics turned on or off. Logins belonged to servers and now
+    // belong to profiles, so they're all dropped and logged in again under a profile's name.
+    // `topics.mcp` stays, empty: dropping a column checks every foreign key again, and one
+    // dangling row would keep the daemon from starting.
+    "
+    DROP TABLE mcp_logins;
+    CREATE TABLE mcp_logins (
+        profile_id TEXT PRIMARY KEY,
+        server_id TEXT NOT NULL,
+        login TEXT NOT NULL
+    );
+    DELETE FROM mcp_servers WHERE json_extract(server, '$.topic_id') IS NOT NULL;
+    UPDATE mcp_servers SET server = json_set(server, '$.needs_login', json('true'))
+        WHERE json_extract(server, '$.auth') IN ('needs_login', 'logged_in');
+    UPDATE mcp_servers SET server = json_remove(server, '$.topic_id', '$.enabled', '$.auth');
+    UPDATE topics SET mcp = NULL;
+    ALTER TABLE workspaces ADD COLUMN mcp TEXT;
+",
 ];
 
 pub struct Store {
@@ -258,20 +277,25 @@ impl Store {
 
     pub fn load_state(&self, machine: Machine) -> Result<DaemonState> {
         let mut workspaces = self.collect(
-            "SELECT id, name, path FROM workspaces ORDER BY rowid",
+            "SELECT id, name, path, mcp FROM workspaces ORDER BY rowid",
             [],
             |row| {
+                let mcp: Option<String> = row.get(3)?;
                 Ok(Workspace {
                     id: WorkspaceId(row.get(0)?),
                     name: row.get(1)?,
                     path: row.get(2)?,
                     topics: vec![],
+                    // Like drafts, a value a newer version wrote that doesn't parse is lost.
+                    mcp: mcp
+                        .and_then(|text| serde_json::from_str(&text).ok())
+                        .unwrap_or_default(),
                 })
             },
         )?;
         for workspace in &mut workspaces {
             workspace.topics = self.collect(
-                "SELECT id, name, worktree_id, mcp FROM topics
+                "SELECT id, name, worktree_id FROM topics
                  WHERE workspace_id = ?1 AND archived_at_ms IS NULL ORDER BY rowid",
                 [&workspace.id.0],
                 topic_row,
@@ -434,7 +458,7 @@ impl Store {
         let found = self
             .conn
             .query_row(
-                "SELECT id, name, worktree_id, workspace_id, mcp FROM topics
+                "SELECT id, name, worktree_id, workspace_id FROM topics
                  WHERE id = ?1 AND archived_at_ms IS NOT NULL",
                 [&id.0],
                 |row| Ok((topic_row(row)?, WorkspaceId(row.get(3)?))),
@@ -798,23 +822,24 @@ impl Store {
         Ok(())
     }
 
-    /// Its login goes too.
+    /// Its logins go too, and workspaces that had it lose it.
     pub fn remove_mcp_server(&self, id: &McpServerId) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM mcp_servers WHERE id = ?1", [&id.0])?;
         tx.execute("DELETE FROM mcp_logins WHERE server_id = ?1", [&id.0])?;
-        let topics: Vec<(String, String)> = {
-            let mut statement = tx.prepare("SELECT id, mcp FROM topics WHERE mcp IS NOT NULL")?;
+        let workspaces: Vec<(String, String)> = {
+            let mut statement =
+                tx.prepare("SELECT id, mcp FROM workspaces WHERE mcp IS NOT NULL")?;
             let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
-        for (topic, text) in topics {
-            let mut mcp: BTreeMap<McpServerId, bool> =
+        for (workspace, text) in workspaces {
+            let mut mcp: BTreeMap<McpServerId, WorkspaceMcp> =
                 serde_json::from_str(&text).unwrap_or_default();
             if mcp.remove(id).is_some() {
                 tx.execute(
-                    "UPDATE topics SET mcp = ?2 WHERE id = ?1",
-                    params![topic, serde_json::to_string(&mcp)?],
+                    "UPDATE workspaces SET mcp = ?2 WHERE id = ?1",
+                    params![workspace, serde_json::to_string(&mcp)?],
                 )?;
             }
         }
@@ -822,38 +847,67 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_topic_mcp(&self, id: &TopicId, mcp: &BTreeMap<McpServerId, bool>) -> Result<()> {
+    pub fn set_workspace_mcp(
+        &self,
+        id: &WorkspaceId,
+        mcp: &BTreeMap<McpServerId, WorkspaceMcp>,
+    ) -> Result<()> {
         self.conn.execute(
-            "UPDATE topics SET mcp = ?2 WHERE id = ?1",
+            "UPDATE workspaces SET mcp = ?2 WHERE id = ?1",
             params![id.0, serde_json::to_string(mcp)?],
         )?;
         Ok(())
     }
 
-    pub fn mcp_login(&self, id: &McpServerId) -> Result<Option<Login>> {
+    pub fn mcp_login(&self, profile: &McpProfileId) -> Result<Option<Login>> {
         let stored: Option<String> = self
             .conn
             .query_row(
-                "SELECT login FROM mcp_logins WHERE server_id = ?1",
-                [&id.0],
+                "SELECT login FROM mcp_logins WHERE profile_id = ?1",
+                [&profile.0],
                 |row| row.get(0),
             )
             .optional()?;
         Ok(stored.and_then(|text| serde_json::from_str(&text).ok()))
     }
 
-    pub fn set_mcp_login(&self, id: &McpServerId, login: &Login) -> Result<()> {
+    /// Any login of the server's profiles, whose registered client a new profile can reuse.
+    pub fn any_mcp_login(&self, server: &McpServerId) -> Result<Option<Login>> {
+        let stored: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT login FROM mcp_logins WHERE server_id = ?1 ORDER BY rowid LIMIT 1",
+                [&server.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored.and_then(|text| serde_json::from_str(&text).ok()))
+    }
+
+    pub fn set_mcp_login(
+        &self,
+        server: &McpServerId,
+        profile: &McpProfileId,
+        login: &Login,
+    ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO mcp_logins (server_id, login) VALUES (?1, ?2)
-             ON CONFLICT (server_id) DO UPDATE SET login = excluded.login",
-            params![id.0, serde_json::to_string(login)?],
+            "INSERT INTO mcp_logins (profile_id, server_id, login) VALUES (?1, ?2, ?3)
+             ON CONFLICT (profile_id) DO UPDATE SET login = excluded.login",
+            params![profile.0, server.0, serde_json::to_string(login)?],
         )?;
         Ok(())
     }
 
-    pub fn remove_mcp_login(&self, id: &McpServerId) -> Result<()> {
+    pub fn remove_mcp_login(&self, profile: &McpProfileId) -> Result<()> {
         self.conn
-            .execute("DELETE FROM mcp_logins WHERE server_id = ?1", [&id.0])?;
+            .execute("DELETE FROM mcp_logins WHERE profile_id = ?1", [&profile.0])?;
+        Ok(())
+    }
+
+    /// Every login of a server, because they were made for an address it no longer has.
+    pub fn remove_mcp_logins(&self, server: &McpServerId) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM mcp_logins WHERE server_id = ?1", [&server.0])?;
         Ok(())
     }
 
@@ -1102,9 +1156,7 @@ impl Store {
     }
 }
 
-/// Every query using this selects `mcp` too, read by name because their other columns differ.
 fn topic_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Topic> {
-    let mcp: Option<String> = row.get("mcp")?;
     Ok(Topic {
         id: TopicId(row.get(0)?),
         name: row.get(1)?,
@@ -1113,10 +1165,6 @@ fn topic_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Topic> {
         sessions: vec![],
         terminals: vec![],
         diffs: vec![],
-        // Like drafts, a value a newer version wrote that doesn't parse is lost.
-        mcp: mcp
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default(),
     })
 }
 
@@ -1224,13 +1272,13 @@ mod tests {
             sessions: vec![],
             terminals: vec![],
             diffs: vec![],
-            mcp: BTreeMap::new(),
         };
         let workspace = Workspace {
             id: "w".into(),
             name: "repo".into(),
             path: "/repo".into(),
             topics: vec![],
+            mcp: BTreeMap::new(),
         };
         store.insert_workspace(&workspace).unwrap();
         store.insert_topic(&workspace.id, &topic, false).unwrap();
@@ -1249,6 +1297,7 @@ mod tests {
             name: "repo".into(),
             path: "/repo".into(),
             topics: vec![],
+            mcp: BTreeMap::new(),
         };
         let topic = Topic {
             id: "t".into(),
@@ -1262,7 +1311,6 @@ mod tests {
             sessions: vec![],
             terminals: vec![],
             diffs: vec![],
-            mcp: BTreeMap::new(),
         };
         store.insert_workspace(&workspace).unwrap();
         store.insert_topic(&workspace.id, &topic, false).unwrap();
@@ -1337,7 +1385,6 @@ mod tests {
             sessions: vec![],
             terminals: vec![],
             diffs: vec![],
-            mcp: BTreeMap::new(),
         };
         store.insert_topic(&"w".into(), &topic, auto_named).unwrap();
         topic
@@ -1351,6 +1398,7 @@ mod tests {
                 name: "repo".into(),
                 path: "/repo".into(),
                 topics: vec![],
+                mcp: BTreeMap::new(),
             })
             .unwrap();
         store
@@ -1460,47 +1508,101 @@ mod tests {
         assert!(!store.auto_name_topic(&"chosen".into(), "Later").unwrap());
     }
 
-    #[test]
-    fn mcp_servers_overrides_and_logins_survive_and_go_together() {
-        let store = with_workspace();
-        stored_topic(&store, "t", false);
-        let server = McpServer {
-            id: "x".into(),
-            name: "linear".into(),
-            topic_id: None,
-            transport: protocol::McpTransport::Http {
-                url: "https://l".into(),
-                headers: BTreeMap::new(),
-                oauth_client_id: None,
-            },
-            enabled: true,
-            auth: protocol::McpAuth::LoggedIn,
-        };
-        store.upsert_mcp_server(&server).unwrap();
-        let overrides = BTreeMap::from([(McpServerId::from("x"), false)]);
-        store.set_topic_mcp(&"t".into(), &overrides).unwrap();
-        let login = Login {
+    fn login(token: &str) -> Login {
+        Login {
             token_endpoint: "https://l/token".into(),
             client_id: "c".into(),
             client_secret: None,
             resource: "https://l".into(),
             redirect_uri: "http://localhost:1/oauth/callback".into(),
-            access_token: Some("a".into()),
+            access_token: Some(token.into()),
             refresh_token: Some("r".into()),
             expires_at_ms: Some(5),
+        }
+    }
+
+    #[test]
+    fn mcp_servers_workspaces_and_logins_survive_and_go_together() {
+        let store = with_workspace();
+        let server = McpServer {
+            id: "x".into(),
+            name: "linear".into(),
+            transport: protocol::McpTransport::Http {
+                url: "https://l".into(),
+                headers: BTreeMap::new(),
+                oauth_client_id: None,
+            },
+            profiles: vec![protocol::McpProfile {
+                id: "work".into(),
+                name: "work".into(),
+                values: BTreeMap::new(),
+                auth: protocol::McpAuth::LoggedIn,
+            }],
+            needs_login: true,
         };
-        store.set_mcp_login(&server.id, &login).unwrap();
+        store.upsert_mcp_server(&server).unwrap();
+        let mcp = BTreeMap::from([(
+            McpServerId::from("x"),
+            WorkspaceMcp {
+                enabled: true,
+                profile_id: Some("work".into()),
+            },
+        )]);
+        store.set_workspace_mcp(&"w".into(), &mcp).unwrap();
+        store
+            .set_mcp_login(&server.id, &"work".into(), &login("a"))
+            .unwrap();
+        store
+            .set_mcp_login(&server.id, &"home".into(), &login("b"))
+            .unwrap();
 
         let state = store.load_state(machine()).unwrap();
         assert_eq!(state.mcp_servers, std::slice::from_ref(&server));
-        assert_eq!(state.topics().next().unwrap().mcp, overrides);
-        assert_eq!(store.mcp_login(&server.id).unwrap(), Some(login));
+        assert_eq!(state.workspaces[0].mcp, mcp);
+        assert_eq!(store.mcp_login(&"work".into()).unwrap(), Some(login("a")));
+        assert_eq!(store.any_mcp_login(&server.id).unwrap(), Some(login("a")));
+
+        store.remove_mcp_login(&"work".into()).unwrap();
+        assert_eq!(store.mcp_login(&"work".into()).unwrap(), None);
+        assert_eq!(store.mcp_login(&"home".into()).unwrap(), Some(login("b")));
 
         store.remove_mcp_server(&server.id).unwrap();
         let state = store.load_state(machine()).unwrap();
         assert!(state.mcp_servers.is_empty());
-        assert!(state.topics().next().unwrap().mcp.is_empty());
-        assert_eq!(store.mcp_login(&server.id).unwrap(), None);
+        assert!(state.workspaces[0].mcp.is_empty());
+        assert_eq!(store.mcp_login(&"home".into()).unwrap(), None);
+    }
+
+    #[test]
+    fn upgrading_keeps_the_library_and_drops_logins_and_topic_servers() {
+        let conn = Connection::open_in_memory().unwrap();
+        let before = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("DROP TABLE mcp_logins"))
+            .unwrap();
+        for migration in &MIGRATIONS[..before] {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.pragma_update(None, "user_version", before).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO workspaces (id, name, path) VALUES ('w', 'repo', '/repo');
+             INSERT INTO mcp_servers (id, server) VALUES
+                 ('x', '{"id":"x","name":"notion","transport":{"type":"http","url":"https://n"},"enabled":true,"auth":"logged_in"}'),
+                 ('y', '{"id":"y","name":"files","transport":{"type":"stdio","command":"f"},"enabled":false}'),
+                 ('z', '{"id":"z","name":"mine","topic_id":"t","transport":{"type":"stdio","command":"m"},"enabled":true}');
+             INSERT INTO mcp_logins (server_id, login) VALUES ('x', '{}');"#,
+        )
+        .unwrap();
+        let store = Store::init(conn).unwrap();
+
+        let state = store.load_state(machine()).unwrap();
+        let names: Vec<_> = state.mcp_servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["notion", "files"]);
+        assert!(state.mcp_servers[0].needs_login);
+        assert!(!state.mcp_servers[1].needs_login);
+        assert!(state.mcp_servers.iter().all(|s| s.profiles.is_empty()));
+        assert!(state.workspaces[0].mcp.is_empty());
+        assert_eq!(store.any_mcp_login(&"x".into()).unwrap(), None);
     }
 
     #[test]
@@ -1511,6 +1613,7 @@ mod tests {
             name: "repo".into(),
             path: "/repo".into(),
             topics: vec![],
+            mcp: BTreeMap::new(),
         };
         store.insert_workspace(&workspace).unwrap();
         let topic = Topic {
@@ -1525,7 +1628,6 @@ mod tests {
             sessions: vec![],
             terminals: vec![],
             diffs: vec![],
-            mcp: BTreeMap::new(),
         };
         store.insert_topic(&workspace.id, &topic, false).unwrap();
         let session_id = SessionId::from("s");

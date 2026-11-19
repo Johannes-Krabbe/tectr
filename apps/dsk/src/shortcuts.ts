@@ -45,12 +45,12 @@ function sidebarHints(place: KeyboardPlace): Hint[] {
   switch (place) {
     case "sidebar-device":
       return [
-        hint("Device settings", "sidebar.confirm"),
         hint("Add workspace", "sidebar.add"),
         ...SIDEBAR_MOVES,
       ];
     case "sidebar-workspace":
       return [
+        hint("Open", "sidebar.confirm", "sidebar.open"),
         hint("Add topic", "sidebar.add"),
         hint("Device", "sidebar.parent"),
         ...SIDEBAR_MOVES,
@@ -128,7 +128,6 @@ export function globalHints(now: {
   tabs: number;
   closeTab: boolean;
   newTab: boolean;
-  topicMcp: boolean;
   newTopic: boolean;
   newWorkspace: boolean;
   topics: number;
@@ -144,7 +143,6 @@ export function globalHints(now: {
   }
   if (now.closeTab) hints.push(hint("Close tab", "global.close_tab"));
   if (now.newTab) hints.push(hint("New tab", "global.new_tab"));
-  if (now.topicMcp) hints.push(hint("MCP servers", "global.topic_mcp"));
   if (now.newTopic) hints.push(hint("New topic", "global.new_topic"));
   if (now.newWorkspace) hints.push(hint("Add workspace", "global.new_workspace"));
   if (now.topics > 1) hints.push(hint("Topic", "global.prev_topic", "global.next_topic"));

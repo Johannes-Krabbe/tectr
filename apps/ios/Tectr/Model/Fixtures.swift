@@ -119,13 +119,17 @@ extension Store {
 
     private static let servers: [McpServer] = [
         McpServer(id: "m1", name: "linear", transport: .http(url: "https://mcp.linear.app/mcp", headers: [:], oauthClientID: nil),
-                  enabled: true, auth: .loggedIn),
+                  profiles: [.init(id: "p-acme", name: "acme", auth: .loggedIn)], needsLogin: true),
         McpServer(id: "m2", name: "postgres", transport: .stdio(command: "npx", args: ["-y", "@modelcontextprotocol/server-postgres"],
-                                                                env: ["DATABASE_URL": "${DATABASE_URL}"]), enabled: false),
-        McpServer(id: "m3", name: "github", transport: .http(url: "https://api.githubcopilot.com/mcp", headers: [:], oauthClientID: nil),
-                  enabled: true, auth: .needsLogin),
-        McpServer(id: "m4", name: "claude.ai Slack", transport: .claudeConnector(url: "https://mcp.slack.com"), enabled: true),
-        McpServer(id: "m5", name: "Figma", transport: .codexApp(id: "figma"), enabled: false),
+                                                                env: ["DATABASE_URL": "${DATABASE_URL}"])),
+        McpServer(id: "m3", name: "notion", transport: .http(url: "https://mcp.notion.com/mcp", headers: [:], oauthClientID: nil),
+                  profiles: [
+                      .init(id: "p-personal", name: "personal", auth: .loggedIn),
+                      .init(id: "p-work", name: "work", auth: .needsLogin),
+                  ],
+                  needsLogin: true),
+        McpServer(id: "m4", name: "claude.ai Slack", transport: .claudeConnector(url: "https://mcp.slack.com")),
+        McpServer(id: "m5", name: "Figma", transport: .codexApp(id: "figma")),
     ]
 
     private static let laptop = Device(
@@ -166,8 +170,7 @@ extension Store {
                     status: .working
                 )),
                 .terminal(Terminal(id: "t1", title: "cargo test", status: .running)),
-            ],
-            mcp: ["m2": true]
+            ]
         ),
         Topic(
             id: "spawn", name: "Spawn sessions via ACP", worktreeID: "spawn-main",
@@ -182,7 +185,7 @@ extension Store {
             worktrees: [Worktree(id: "root", path: "~/Developer/tectr", branch: "main", isRepo: true)],
             tabs: [.agent(Session(id: "s7", title: "What ships in v0.4", agent: "claude", model: "opus", status: .done))]
         ),
-    ])
+    ], mcp: ["m1": WorkspaceMcp(enabled: true, profileId: "p-acme"), "m3": WorkspaceMcp(enabled: true, profileId: "p-work"), "m2": WorkspaceMcp(enabled: false, profileId: nil)])
 
     private static let tectrDesktop = Workspace(id: "tectr-desktop", deviceID: "desktop", name: "tectr", path: "~/src/tectr", topics: [
         Topic(

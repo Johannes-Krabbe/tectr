@@ -54,12 +54,14 @@ function deviceMeta(device: Device, now: number): { text: string; alert?: boolea
 
 /** The view a row shows as soon as the keyboard reaches it. */
 function viewOf(row: HTMLElement): View | null {
-  const { machine, topic } = row.dataset;
-  return machine && topic ? { kind: "topic", machineId: machine, topicId: topic } : null;
+  const { machine, topic, workspace } = row.dataset;
+  if (machine && topic) return { kind: "topic", machineId: machine, topicId: topic };
+  return machine && workspace ? { kind: "workspace", machineId: machine, workspaceId: workspace } : null;
 }
 
 /** Walks every row marked `data-nav`, opening what it lands on while the sidebar keeps the
- * keyboard. Confirming on a device opens its settings. Adding is handled in App. */
+ * keyboard. Confirming never opens settings, which only their own key does. Adding is handled
+ * in App. */
 function onSidebarKey(event: KeyboardEvent<HTMLElement>, onPreview: (view: View | null) => void) {
   // A menu opened from here is drawn elsewhere on the page, but its keys still come up
   // through here, and they're the menu's.
@@ -80,10 +82,6 @@ function onSidebarKey(event: KeyboardEvent<HTMLElement>, onPreview: (view: View 
       : row.matches(".workspace")
         ? row.closest("section")?.querySelector<HTMLElement>(".row.device[data-nav]")
         : null;
-  const confirm = () => {
-    if (row.matches(".device")) row.querySelector<HTMLElement>(".gear")?.click();
-    else row.click();
-  };
   // Half of however many rows fit, like Ctrl+D and Ctrl+U move half a screen in Vim.
   const halfScreen = () => {
     const shown = (row.closest(".tree")?.clientHeight ?? 0) / (row.offsetHeight || 1);
@@ -104,7 +102,9 @@ function onSidebarKey(event: KeyboardEvent<HTMLElement>, onPreview: (view: View 
     act(event, "sidebar.open", () => {
       if (viewOf(row)) row.click();
     }) ||
-    act(event, "sidebar.confirm", confirm);
+    act(event, "sidebar.confirm", () => {
+      if (viewOf(row) || row.matches(".empty")) row.click();
+    });
 }
 
 export function Sidebar({
@@ -189,13 +189,24 @@ export function Sidebar({
                   <Keys action="global.new_workspace" />
                 </button>
               )}
-              {device.state?.workspaces.map((workspace) => (
+              {device.state?.workspaces.map((workspace) => {
+                const shown =
+                  view?.kind === "workspace" &&
+                  view.machineId === machineId &&
+                  view.workspaceId === workspace.id;
+                return (
                 <div key={workspace.id}>
                   <div
-                    className="row workspace"
+                    className={`row workspace ${shown ? "current" : ""}`}
                     title={workspace.path}
                     data-nav={online ? "" : undefined}
-                    tabIndex={-1}
+                    data-machine={machineId}
+                    data-workspace={workspace.id}
+                    tabIndex={shown ? 0 : -1}
+                    onClick={() =>
+                      machineId &&
+                      onView({ kind: "workspace", machineId, workspaceId: workspace.id })
+                    }
                   >
                     <span className="name">{workspace.name}</span>
                     <button
@@ -204,7 +215,11 @@ export function Sidebar({
                       tabIndex={-1}
                       title={online ? "Create a topic" : refusal}
                       aria-label={`Create a topic in ${workspace.name}`}
-                      onClick={() => onNewTopic(device, workspace)}
+                      onClick={(event) => {
+                        // The row behind it opens the workspace's page.
+                        event.stopPropagation();
+                        onNewTopic(device, workspace);
+                      }}
                     >
                       <Icon name="add" />
                     </button>
@@ -249,7 +264,8 @@ export function Sidebar({
                     );
                   })}
                 </div>
-              ))}
+                );
+              })}
             </section>
           );
         })}

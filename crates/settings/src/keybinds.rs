@@ -31,6 +31,11 @@ pub const GROUPS: &[Group] = &[
         about: "While the main pane has the keyboard.",
     },
     Group {
+        id: "workspace",
+        title: "Workspace page",
+        about: "On a workspace's page, while it has the keyboard. Its MCP servers take the MCP servers keys.",
+    },
+    Group {
         id: "composer",
         title: "Message box",
         about: "While typing a message to an agent.",
@@ -76,6 +81,11 @@ pub const GROUPS: &[Group] = &[
         about: "In the sheets for adding a workspace, renaming and deleting.",
     },
     Group {
+        id: "new_workspace",
+        title: "Choosing a new workspace's MCP servers",
+        about: "In the last step of adding a workspace, where typing filters the servers.",
+    },
+    Group {
         id: "palette",
         title: "Command palette",
         about: "While the palette is open.",
@@ -93,7 +103,7 @@ pub const GROUPS: &[Group] = &[
     Group {
         id: "mcp",
         title: "MCP servers",
-        about: "In a device's MCP servers, and in the sheet with a topic's MCP servers.",
+        about: "In a device's MCP servers, and in a workspace's.",
     },
     Group {
         id: "pairing",
@@ -273,9 +283,9 @@ pub const ACTIONS: &[Action] = &[
         &["mod+shift+u"],
     ),
     once(
-        "global.topic_mcp",
-        "Choose the topic's MCP servers",
-        &["mod+shift+m"],
+        "global.open_workspace",
+        "Open the current topic's workspace",
+        &[],
     ),
     once("global.toggle_vim", "Turn vim keys on or off", &[]),
     once("global.move_topic", "Move the topic to another folder", &[]),
@@ -565,36 +575,39 @@ pub const ACTIONS: &[Action] = &[
         &["d d", "backspace"],
     ),
     once("pairing.forget", "Remove the device from this app", &[]),
-    follows("mcp.up", "Move up", "nav.up"),
-    follows("mcp.down", "Move down", "nav.down"),
-    follows("mcp.first", "Go to the first server", "nav.first"),
-    follows("mcp.last", "Go to the last server", "nav.last"),
-    follows("mcp.edit", "Edit the server", "nav.confirm"),
-    follows("mcp.back", "Close the topic's servers", "nav.back"),
-    once("mcp.add", "Add a server", &["a", "o"]),
-    once("mcp.remove", "Remove the server", &["d d", "backspace"]),
+    once("mcp.edit", "Edit the server or profile", &["e"]),
+    once(
+        "mcp.add",
+        "Add a server, or on a workspace's page, whatever the section with the cursor holds",
+        &["a", "o"],
+    ),
+    once(
+        "mcp.remove",
+        "Remove the server or profile, or take the server off the workspace",
+        &["d d", "backspace"],
+    ),
     once(
         "mcp.toggle",
-        "Turn the server on or off, for topics by default or for this topic",
+        "Turn the server on or off for the workspace",
         &["t", "space"],
     ),
     once(
-        "mcp.turn_on",
-        "Turn a device's server on for this topic",
-        &["y"],
+        "mcp.profile",
+        "Choose the profile the workspace uses",
+        &["p"],
     ),
     once(
-        "mcp.turn_off",
-        "Turn a device's server off for this topic",
+        "mcp.new_profile",
+        "Add a profile, and log in with it",
         &["n"],
     ),
     once(
-        "mcp.follow_default",
-        "Let this topic follow a device's server's default",
-        &["u"],
+        "mcp.copy_from",
+        "Copy the MCP servers of another workspace",
+        &["c"],
     ),
-    once("mcp.login", "Log in to the server", &["l"]),
-    once("mcp.logout", "Log out of the server", &["shift+l"]),
+    once("mcp.login", "Log in with the profile", &["l"]),
+    once("mcp.logout", "Log out of the profile", &["shift+l"]),
     once(
         "mcp.import",
         "Import the servers of Claude Code, Codex and OpenCode",
@@ -611,10 +624,29 @@ pub const ACTIONS: &[Action] = &[
         "Switch between stdio and HTTP",
         &["mod+t"],
     ),
+    follows("workspace.up", "Move up", "nav.up"),
+    follows("workspace.down", "Move down", "nav.down"),
+    follows("workspace.first", "Go to the first row", "nav.first"),
+    follows("workspace.last", "Go to the last row", "nav.last"),
+    follows(
+        "workspace.open",
+        "Open the topic, or choose the server's profile",
+        "nav.confirm",
+    ),
     once(
-        "mcp_form.toggle_enabled",
-        "Turn the server on or off",
-        &["mod+e"],
+        "new_workspace.check",
+        "Check or uncheck the server",
+        &["tab"],
+    ),
+    once(
+        "new_workspace.profile",
+        "Switch to the server's next profile",
+        &["mod+p"],
+    ),
+    once(
+        "new_workspace.copy_from",
+        "Check the servers of another workspace",
+        &["mod+shift+c"],
     ),
     follows("sections.up", "Previous section", "nav.up"),
     follows("sections.down", "Next section", "nav.down"),
@@ -686,11 +718,18 @@ const SHARED_WITH_GLOBAL: &[&str] = &[
     "new_topic",
     "device",
     "mcp",
+    "workspace",
     "pairing",
     "sections",
     "settings",
 ];
-const SHARED: &[(&str, &str)] = &[("pane", "permission"), ("sheet", "mcp_form")];
+// The new workspace step is only checked against itself: its Tab is the path step's Complete,
+// and the two steps are never on screen together.
+const SHARED: &[(&str, &str)] = &[
+    ("pane", "permission"),
+    ("sheet", "mcp_form"),
+    ("workspace", "mcp"),
+];
 
 /// macOS handles these through the app menu before the webview sees them.
 const MACOS_MENU_KEYS: &[&str] = &[
@@ -739,6 +778,7 @@ const TEXT_GROUPS: &[&str] = &[
     "sheet",
     "palette",
     "mcp_form",
+    "new_workspace",
     "diff_search",
     "commit",
 ];

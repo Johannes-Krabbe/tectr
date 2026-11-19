@@ -1,6 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import { Fragment, useState } from "react";
-import { type CommandOutput, errorText, request } from "./engine";
+import { Fragment, useRef, useState } from "react";
+import { type CommandOutput, errorText, type McpServer, request } from "./engine";
 import {
   blankId,
   blanksReady,
@@ -15,21 +14,23 @@ import { Sheet } from "./Sheets";
 
 const ASK = "A URL, a command, a claude or codex mcp add line, or JSON from the docs";
 
-/** Adds servers from whatever was pasted, then logs in to each one that asks for it. The full
- * form is only for changing a server later. `taken` are the names these servers can't have. */
+/** Adds servers to the library from whatever was pasted. The full form is only for changing a
+ * server later. `taken` are the names these servers can't have. `onAdded` gets them as saved,
+ * which says whether each wants a login, once they all are. */
 export function McpAddSheet({
   machineId,
-  topicId,
   taken,
   where,
+  onAdded,
   onClose,
 }: {
   machineId: string;
-  topicId?: string;
   taken: Set<string>;
   where: string;
+  onAdded?: (servers: McpServer[]) => void;
   onClose: () => void;
 }) {
+  const saved = useRef<McpServer[]>([]);
   const [text, setText] = useState("");
   // Kept by position: what was pasted decides the servers, and these only adjust them.
   const [names, setNames] = useState<Record<number, string>>({});
@@ -70,24 +71,20 @@ export function McpAddSheet({
   const add = async (): Promise<CommandOutput> => {
     let last: CommandOutput = { output: "done" };
     const added: string[] = [];
+    saved.current = [];
     for (const [index, server] of found.entries()) {
       try {
         last = await request(machineId, {
           command: "save_mcp_server",
           name: named[index].trim(),
-          ...(topicId && { topic_id: topicId }),
           transport: filledIn(server, valuesFor(index)),
-          enabled: true,
         });
       } catch (reason) {
         const before = added.length ? `Added ${added.join(", ")}, but ` : "";
         throw `${before}${named[index]}: ${errorText(reason)}`;
       }
       added.push(named[index]);
-      if (last.output === "mcp_server" && last.server.auth === "needs_login") {
-        const login = await request(machineId, { command: "login_mcp_server", id: last.server.id });
-        if (login.output === "mcp_login") await invoke("open_url", { url: login.url });
-      }
+      if (last.output === "mcp_server") saved.current.push(last.server);
     }
     return last;
   };
@@ -101,7 +98,7 @@ export function McpAddSheet({
       returnsFocus
       run={add}
       onClose={onClose}
-      onDone={() => {}}
+      onDone={() => onAdded?.(saved.current)}
       input={text}
     >
       <textarea

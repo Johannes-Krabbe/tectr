@@ -16,8 +16,8 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use protocol::{
-    Command, CommandOutput, DaemonState, MachineId, McpAuth, McpServer, McpTransport,
-    PermissionMode, SessionEventKind, SessionRef, SessionStatus, Topic,
+    Command, CommandOutput, DaemonState, MachineId, McpAuth, McpProfile, McpServer, McpTransport,
+    PermissionMode, SessionEventKind, SessionRef, SessionStatus, Topic, WorkspaceId, WorkspaceMcp,
 };
 use sha2::{Digest, Sha256};
 
@@ -121,20 +121,12 @@ impl Fixture {
             .unwrap_or_else(|| panic!("no server called {name}"))
     }
 
-    async fn save(
-        &self,
-        name: &str,
-        topic_id: Option<&Topic>,
-        transport: McpTransport,
-        enabled: bool,
-    ) -> Result<McpServer, String> {
+    async fn save(&self, name: &str, transport: McpTransport) -> Result<McpServer, String> {
         let output = self
             .run(Command::SaveMcpServer {
                 id: None,
                 name: name.to_owned(),
-                topic_id: topic_id.map(|t| t.id.clone()),
                 transport,
-                enabled,
             })
             .await?;
         match output {
@@ -143,7 +135,47 @@ impl Fixture {
         }
     }
 
-    async fn topic(&self) -> Topic {
+    async fn profile(&self, server: &McpServer, name: &str, values: &[(&str, &str)]) -> McpProfile {
+        let output = self
+            .run(Command::SaveMcpProfile {
+                server_id: server.id.clone(),
+                id: None,
+                name: name.to_owned(),
+                values: values
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            })
+            .await
+            .unwrap();
+        match output {
+            CommandOutput::McpProfile { profile } => profile,
+            other => panic!("unexpected output {other:?}"),
+        }
+    }
+
+    /// Replaces what the workspace's agents get with `servers`, each on, with its profile.
+    async fn uses(&self, workspace: &WorkspaceId, servers: &[(&McpServer, Option<&McpProfile>)]) {
+        self.run(Command::SetWorkspaceMcp {
+            workspace_id: workspace.clone(),
+            servers: servers
+                .iter()
+                .map(|(server, profile)| {
+                    (
+                        server.id.clone(),
+                        WorkspaceMcp {
+                            enabled: true,
+                            profile_id: profile.map(|p| p.id.clone()),
+                        },
+                    )
+                })
+                .collect(),
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn topic(&self) -> (WorkspaceId, Topic) {
         let workspace = match self
             .run(Command::AddWorkspace {
                 path: self.repo.display().to_string(),
@@ -156,14 +188,14 @@ impl Fixture {
         };
         match self
             .run(Command::CreateTopic {
-                workspace_id: workspace.id,
+                workspace_id: workspace.id.clone(),
                 name: None,
                 at_root: false,
             })
             .await
             .unwrap()
         {
-            CommandOutput::Topic { topic, .. } => topic,
+            CommandOutput::Topic { topic, .. } => (workspace.id, topic),
             other => panic!("unexpected output {other:?}"),
         }
     }
@@ -278,26 +310,26 @@ fn http(url: &str) -> McpTransport {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_topic_s_servers_reach_its_agent_and_a_change_restarts_it() {
+async fn a_workspace_s_servers_reach_its_agents_and_a_change_restarts_them() {
     let f = Fixture::new().await;
     let home = std::env::var("HOME").unwrap();
-    f.save(
-        "files",
-        None,
-        stdio(
-            "fake-mcp",
-            &["--root", "${HOME}"],
-            &[("TOKEN", "${TECTR_SURELY_UNSET}x")],
-        ),
-        true,
-    )
-    .await
-    .unwrap();
-    let remote = f
-        .save("remote", None, http("https://example.invalid/mcp"), false)
+    let files = f
+        .save(
+            "files",
+            stdio(
+                "fake-mcp",
+                &["--root", "${HOME}"],
+                &[("TOKEN", "${TECTR_SURELY_UNSET}x")],
+            ),
+        )
         .await
         .unwrap();
-    let topic = f.topic().await;
+    let remote = f
+        .save("remote", http("https://example.invalid/mcp"))
+        .await
+        .unwrap();
+    let (workspace, topic) = f.topic().await;
+    f.uses(&workspace, &[(&files, None)]).await;
     let session = f.session(&topic).await;
 
     let report = f.ask(&session, "mcp").await;
@@ -309,13 +341,7 @@ async fn a_topic_s_servers_reach_its_agent_and_a_change_restarts_it() {
     );
 
     // An idle agent stops, and its next prompt starts it with the new servers.
-    f.run(Command::SetTopicMcp {
-        topic_id: topic.id.clone(),
-        server_id: remote.id.clone(),
-        on: Some(true),
-    })
-    .await
-    .unwrap();
+    f.uses(&workspace, &[(&files, None), (&remote, None)]).await;
     f.wait_for_status(&session, SessionStatus::Stopped).await;
     let report = f.ask(&session, "mcp").await;
     let proxy = format!("http://127.0.0.1:{}/mcp/", f.daemon.addr().port());
@@ -326,6 +352,14 @@ async fn a_topic_s_servers_reach_its_agent_and_a_change_restarts_it() {
         "the proxy address names the server: {report}"
     );
 
+    // A profile's values are laid over the server's own.
+    let work = f.profile(&files, "work", &[("TOKEN", "work")]).await;
+    f.uses(&workspace, &[(&files, Some(&work)), (&remote, None)])
+        .await;
+    f.wait_for_status(&session, SessionStatus::Stopped).await;
+    let report = f.ask(&session, "mcp").await;
+    assert!(report.contains("TOKEN=work"), "{report}");
+
     // A working agent finishes its turn first.
     f.run(Command::SendPrompt {
         session_id: session.session_id.clone(),
@@ -335,16 +369,7 @@ async fn a_topic_s_servers_reach_its_agent_and_a_change_restarts_it() {
     .await
     .unwrap();
     f.wait_for_status(&session, SessionStatus::Working).await;
-    let files = f.server("files");
-    f.run(Command::SaveMcpServer {
-        id: Some(files.id.clone()),
-        name: "files".to_owned(),
-        topic_id: None,
-        transport: files.transport.clone(),
-        enabled: false,
-    })
-    .await
-    .unwrap();
+    f.uses(&workspace, &[(&remote, None)]).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(f.status(&session), Some(SessionStatus::Working));
     f.run(Command::CancelTurn {
@@ -359,63 +384,30 @@ async fn a_topic_s_servers_reach_its_agent_and_a_change_restarts_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn names_are_checked_and_an_archived_topic_keeps_its_own_servers() {
+async fn names_are_checked_and_unique_on_the_device() {
     let f = Fixture::new().await;
-    let topic = f.topic().await;
     let tool = stdio("x", &[], &[]);
 
-    let error = f
-        .save("has space", None, tool.clone(), true)
-        .await
-        .unwrap_err();
+    let error = f.save("has space", tool.clone()).await.unwrap_err();
     assert!(error.contains("letters, digits"), "{error}");
-    let error = f
-        .save("bad", None, http("ftp://x"), true)
-        .await
-        .unwrap_err();
+    let error = f.save("bad", http("ftp://x")).await.unwrap_err();
     assert!(error.contains("http://"), "{error}");
 
-    f.save("db", None, tool.clone(), true).await.unwrap();
-    let error = f
-        .save("db", Some(&topic), tool.clone(), true)
-        .await
-        .unwrap_err();
+    let db = f.save("db", tool.clone()).await.unwrap();
+    let error = f.save("db", tool.clone()).await.unwrap_err();
     assert!(error.contains("already"), "{error}");
-    let own = f
-        .save("own", Some(&topic), tool.clone(), true)
-        .await
-        .unwrap();
+
+    f.profile(&db, "work", &[]).await;
     let error = f
-        .run(Command::SaveMcpServer {
-            id: Some(own.id.clone()),
-            name: "own".to_owned(),
-            topic_id: None,
-            transport: tool.clone(),
-            enabled: true,
+        .run(Command::SaveMcpProfile {
+            server_id: db.id.clone(),
+            id: None,
+            name: "work".to_owned(),
+            values: BTreeMap::new(),
         })
         .await
         .unwrap_err();
-    assert!(error.contains("can't move"), "{error}");
-
-    let gets = |state: &DaemonState| -> Vec<String> {
-        let topic = state.topic(&topic.id).unwrap();
-        state
-            .topic_mcp_servers(topic)
-            .map(|s| s.name.clone())
-            .collect()
-    };
-    assert_eq!(gets(&f.state()), ["db", "own"]);
-
-    // An archived topic keeps its own servers, so restoring it brings them back.
-    f.run(Command::ArchiveTopic {
-        topic_id: topic.id.clone(),
-        force: true,
-    })
-    .await
-    .unwrap();
-    assert!(f.state().topic(&topic.id).is_none());
-    let names: Vec<_> = f.state().mcp_servers.into_iter().map(|s| s.name).collect();
-    assert_eq!(names, ["db", "own"]);
+    assert!(error.contains("already"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -441,7 +433,6 @@ async fn import_copies_other_agents_servers_once() {
     };
     assert_eq!(added, ["github", "sentry"]);
     assert_eq!(skipped.len(), 1, "{skipped:?}");
-    assert!(!f.server("sentry").enabled, "an off server stays off");
 
     let CommandOutput::McpImport { added, skipped } =
         f.run(Command::ImportMcpServers).await.unwrap()
@@ -458,6 +449,8 @@ struct Upstream {
     /// The only token the MCP endpoint accepts.
     valid_token: Option<String>,
     challenge: Option<String>,
+    /// What each login asked about choosing an account.
+    prompts: Vec<Option<String>>,
     seen: Vec<Option<String>>,
     refreshed: usize,
 }
@@ -548,7 +541,11 @@ async fn upstream(
             assert_eq!(params["code_challenge_method"], "S256");
             assert_eq!(params["resource"], format!("{base}/mcp"));
             assert_eq!(params["scope"], "read write");
-            state.lock().unwrap().challenge = Some(params["code_challenge"].clone());
+            {
+                let mut state = state.lock().unwrap();
+                state.challenge = Some(params["code_challenge"].clone());
+                state.prompts.push(params.get("prompt").cloned());
+            }
             let mut response = Response::new(Full::new(Bytes::new()));
             *response.status_mut() = StatusCode::FOUND;
             let location = format!(
@@ -633,23 +630,24 @@ async fn the_proxy_logs_in_refreshes_and_keeps_tokens_from_the_agent() {
     let f = Fixture::new().await;
     let (addr, upstream) = start_upstream().await;
     let server = f
-        .save("linear", None, http(&format!("http://{addr}/mcp")), true)
+        .save("linear", http(&format!("http://{addr}/mcp")))
         .await
         .unwrap();
-    assert_eq!(
-        server.auth,
-        McpAuth::NeedsLogin,
+    assert!(
+        server.needs_login,
         "saving waits to find out, so a client can log in straight away"
     );
+    let work = f.profile(&server, "work", &[]).await;
+    assert_eq!(work.auth, McpAuth::NeedsLogin);
 
     // Plays the browser: the authorization server sends it back to the daemon.
-    let CommandOutput::McpLogin { url } = f
-        .run(Command::LoginMcpServer {
+    let login = |profile: &McpProfile| {
+        f.run(Command::LoginMcpServer {
             id: server.id.clone(),
+            profile_id: profile.id.clone(),
         })
-        .await
-        .unwrap()
-    else {
+    };
+    let CommandOutput::McpLogin { url } = login(&work).await.unwrap() else {
         panic!("unexpected output");
     };
     let browser = reqwest::Client::builder()
@@ -669,17 +667,42 @@ async fn the_proxy_logs_in_refreshes_and_keeps_tokens_from_the_agent() {
     let back = back.replace("localhost", "127.0.0.1");
     let page = browser.get(&back).send().await.unwrap();
     assert_eq!(page.status(), reqwest::StatusCode::OK);
-    assert!(page.text().await.unwrap().contains("Logged in to linear"));
+    assert!(
+        page.text()
+            .await
+            .unwrap()
+            .contains("Logged in to linear (work)")
+    );
+    let auth = |name: &str| {
+        f.server("linear")
+            .profiles
+            .into_iter()
+            .find(|p| p.name == name)
+            .map(|p| p.auth)
+    };
     wait_for("the login to reach the client", || {
-        (f.server("linear").auth == McpAuth::LoggedIn).then_some(())
+        (auth("work") == Some(McpAuth::LoggedIn)).then_some(())
     })
     .await;
     let used_again = browser.get(&back).send().await.unwrap();
     assert_eq!(used_again.status(), reqwest::StatusCode::BAD_REQUEST);
 
+    // A second profile reuses the registered client, and asks the server to let the person
+    // choose another account rather than hand over the one the browser is signed in to.
+    let personal = f.profile(&server, "personal", &[]).await;
+    let CommandOutput::McpLogin { url } = login(&personal).await.unwrap() else {
+        panic!("unexpected output");
+    };
+    browser.get(&url).send().await.unwrap();
+    assert_eq!(
+        upstream.lock().unwrap().prompts,
+        [None, Some("select_account".to_owned())]
+    );
+
     // The server has since revoked the first token, so the proxy refreshes and goes again.
     upstream.lock().unwrap().valid_token = Some("a2".to_owned());
-    let topic = f.topic().await;
+    let (workspace, topic) = f.topic().await;
+    f.uses(&workspace, &[(&server, Some(&work))]).await;
     let session = f.session(&topic).await;
     let report = f.ask(&session, "mcp-call linear").await;
     assert!(
@@ -723,10 +746,11 @@ async fn the_proxy_logs_in_refreshes_and_keeps_tokens_from_the_agent() {
     // After logging out, the server turns the agent away and says it needs a login.
     f.run(Command::LogoutMcpServer {
         id: server.id.clone(),
+        profile_id: work.id.clone(),
     })
     .await
     .unwrap();
-    assert_eq!(f.server("linear").auth, McpAuth::NeedsLogin);
+    assert_eq!(auth("work"), Some(McpAuth::NeedsLogin));
     let report = f.ask(&session, "mcp-call linear").await;
     assert!(report.starts_with("status=401"), "{report}");
     assert!(report.contains("needs a login"), "{report}");
@@ -737,21 +761,31 @@ async fn a_server_without_a_login_is_proxied_with_its_own_headers() {
     let f = Fixture::new().await;
     let (addr, upstream) = start_upstream().await;
     upstream.lock().unwrap().valid_token = Some("static".to_owned());
-    f.save(
-        "keyed",
-        None,
-        McpTransport::Http {
-            url: format!("http://{addr}/mcp"),
-            headers: BTreeMap::from([("Authorization".to_owned(), "Bearer static".to_owned())]),
-            oauth_client_id: None,
-        },
-        true,
-    )
-    .await
-    .unwrap();
-    let topic = f.topic().await;
+    let keyed = f
+        .save(
+            "keyed",
+            McpTransport::Http {
+                url: format!("http://{addr}/mcp"),
+                headers: BTreeMap::from([("Authorization".to_owned(), "Bearer static".to_owned())]),
+                oauth_client_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    let (workspace, topic) = f.topic().await;
+    f.uses(&workspace, &[(&keyed, None)]).await;
     let session = f.session(&topic).await;
     let report = f.ask(&session, "mcp-call keyed").await;
     assert!(report.starts_with("status=200"), "{report}");
-    assert_eq!(f.server("keyed").auth, McpAuth::None);
+    assert!(!f.server("keyed").needs_login);
+
+    // A profile's headers replace the server's own.
+    let other = f
+        .profile(&keyed, "other", &[("Authorization", "Bearer other")])
+        .await;
+    upstream.lock().unwrap().valid_token = Some("other".to_owned());
+    f.uses(&workspace, &[(&keyed, Some(&other))]).await;
+    f.wait_for_status(&session, SessionStatus::Stopped).await;
+    let report = f.ask(&session, "mcp-call keyed").await;
+    assert!(report.starts_with("status=200"), "{report}");
 }

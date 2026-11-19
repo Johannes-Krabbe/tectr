@@ -30,14 +30,16 @@
 {"type":"request","id":42,"command":{"command":"move_topic","topic_id":"t1","to":{"kind":"new_worktree"}}}
 {"type":"request","id":43,"command":{"command":"move_topic","topic_id":"t1","to":{"kind":"root"},"force":true}}
 {"type":"request","id":44,"command":{"command":"move_topic","topic_id":"t1","to":{"kind":"worktree","worktree_id":"wt1"}}}
-{"type":"request","id":1,"command":{"command":"save_mcp_server","name":"github","transport":{"type":"stdio","command":"npx","args":["-y","gh-mcp"],"env":{"TOKEN":"${GITHUB_TOKEN}"}},"enabled":true}}
-{"type":"request","id":1,"command":{"command":"save_mcp_server","id":"x1","name":"linear","topic_id":"t1","transport":{"type":"http","url":"https://mcp.linear.app/mcp"},"enabled":false}}
+{"type":"request","id":1,"command":{"command":"save_mcp_server","name":"github","transport":{"type":"stdio","command":"npx","args":["-y","gh-mcp"],"env":{"TOKEN":"${GITHUB_TOKEN}"}}}}
+{"type":"request","id":1,"command":{"command":"save_mcp_server","id":"x1","name":"linear","transport":{"type":"http","url":"https://mcp.linear.app/mcp"}}}
 {"type":"request","id":1,"command":{"command":"remove_mcp_server","id":"x1"}}
-{"type":"request","id":1,"command":{"command":"set_topic_mcp","topic_id":"t1","server_id":"x1","on":false}}
-{"type":"request","id":1,"command":{"command":"set_topic_mcp","topic_id":"t1","server_id":"x1","on":null}}
-{"type":"request","id":1,"command":{"command":"login_mcp_server","id":"x1"}}
+{"type":"request","id":1,"command":{"command":"save_mcp_profile","server_id":"x1","name":"work","values":{"TOKEN":"${WORK_TOKEN}"}}}
+{"type":"request","id":1,"command":{"command":"save_mcp_profile","server_id":"x1","id":"p1","name":"personal"}}
+{"type":"request","id":1,"command":{"command":"remove_mcp_profile","server_id":"x1","id":"p1"}}
+{"type":"request","id":1,"command":{"command":"set_workspace_mcp","workspace_id":"w1","servers":{"x1":{"enabled":true,"profile_id":"p1"},"x2":{"enabled":false}}}}
+{"type":"request","id":1,"command":{"command":"login_mcp_server","id":"x1","profile_id":"p1"}}
 {"type":"request","id":1,"command":{"command":"complete_mcp_login","state":"s","code":"c"}}
-{"type":"request","id":1,"command":{"command":"logout_mcp_server","id":"x1"}}
+{"type":"request","id":1,"command":{"command":"logout_mcp_server","id":"x1","profile_id":"p1"}}
 {"type":"request","id":1,"command":{"command":"import_mcp_servers"}}
 {"type":"request","id":1,"command":{"command":"send_prompt","session_id":"s1","text":"see [Image #1]","images":[{"id":"ab12","number":1,"mime":"image/png","width":1440,"height":900}]}}
 {"type":"request","id":1,"command":{"command":"set_draft","session_id":"s1","text":"see [Image #1]","images":[{"id":"ab12","number":1,"mime":"image/png","width":1440,"height":900}]}}
@@ -51,7 +53,6 @@
 {"type":"resize_terminal","terminal_id":"x1","cols":100,"rows":30}
 {"type":"detach_terminal","terminal_id":"x1"}
 {"type":"request","id":1,"command":{"command":"refresh_mcp_connectors"}}
-{"type":"request","id":1,"command":{"command":"save_mcp_server","id":"c1","name":"claude.ai Slack","transport":{"type":"claude_connector","url":"https://mcp.slack.com/mcp"},"enabled":true}}
 {"type":"request","id":1,"command":{"command":"list_conversations"}}
 {"type":"request","id":1,"command":{"command":"import_conversation","topic_id":"t1","agent":"claude","id":"10c95b72-5e91-4c10-b6ab-32d05e963631"}}
 {"type":"request","id":1,"command":{"command":"fork_session","session_id":"s1","after_seq":42}}

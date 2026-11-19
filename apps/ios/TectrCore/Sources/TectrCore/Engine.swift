@@ -138,26 +138,39 @@ public extension Command {
         Command("close_session", ["session_id": sessionId, "force": force])
     }
 
-    static func saveMcpServer(id: String?, name: String, topicId: String?, transport: Wire.McpTransport, enabled: Bool) -> Command {
-        var fields: [String: any Encodable & Sendable] = ["name": name, "transport": transport, "enabled": enabled]
+    static func saveMcpServer(id: String?, name: String, transport: Wire.McpTransport) -> Command {
+        var fields: [String: any Encodable & Sendable] = ["name": name, "transport": transport]
         if let id { fields["id"] = id }
-        if let topicId { fields["topic_id"] = topicId }
         return Command("save_mcp_server", fields)
     }
 
     static func removeMcpServer(_ id: String) -> Command { Command("remove_mcp_server", ["id": id]) }
 
-    static func setTopicMcp(_ topicId: String, server: String, on: Bool?) -> Command {
-        Command("set_topic_mcp", ["topic_id": topicId, "server_id": server, "on": on])
+    static func saveMcpProfile(server: String, id: String?, name: String, values: [String: String]) -> Command {
+        var fields: [String: any Encodable & Sendable] = ["server_id": server, "name": name, "values": values]
+        if let id { fields["id"] = id }
+        return Command("save_mcp_profile", fields)
     }
 
-    static func loginMcpServer(_ id: String) -> Command { Command("login_mcp_server", ["id": id]) }
+    static func removeMcpProfile(server: String, id: String) -> Command {
+        Command("remove_mcp_profile", ["server_id": server, "id": id])
+    }
+
+    static func setWorkspaceMcp(_ workspaceId: String, servers: [String: Wire.WorkspaceMcp]) -> Command {
+        Command("set_workspace_mcp", ["workspace_id": workspaceId, "servers": servers])
+    }
+
+    static func loginMcpServer(_ id: String, profile: String) -> Command {
+        Command("login_mcp_server", ["id": id, "profile_id": profile])
+    }
 
     static func completeMcpLogin(state: String, code: String) -> Command {
         Command("complete_mcp_login", ["state": state, "code": code])
     }
 
-    static func logoutMcpServer(_ id: String) -> Command { Command("logout_mcp_server", ["id": id]) }
+    static func logoutMcpServer(_ id: String, profile: String) -> Command {
+        Command("logout_mcp_server", ["id": id, "profile_id": profile])
+    }
     static let importMcpServers = Command("import_mcp_servers")
     static let refreshMcpConnectors = Command("refresh_mcp_connectors")
     static let listConversations = Command("list_conversations")

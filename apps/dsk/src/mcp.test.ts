@@ -1,119 +1,231 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { DaemonState, McpServer, Topic } from "./engine";
+import type { DaemonState, McpProfile, McpServer, Workspace } from "./engine";
 import {
+  addableServers,
+  authLabel,
   canEdit,
+  canHaveProfiles,
   canLogOut,
   canRemove,
-  canToggle,
   connectorAgent,
   connectorSummary,
   connectors,
-  deviceServers,
+  copiedMcp,
   draftOf,
   draftReady,
-  flippedTopicMcp,
+  entryAuth,
   formatPairs,
   importSummary,
   joinArgs,
   leftOut,
-  mcpAuthLabel,
+  libraryServers,
+  matchesServer,
   mcpSummary,
   nameProblem,
-  ownServers,
+  newEntry,
+  nextProfile,
   parsePairs,
+  profileLabel,
+  profileNameProblem,
   splitArgs,
-  topicMcpChoice,
-  topicMcpLabel,
-  topicMcpServers,
+  takenNames,
   transportOf,
-  withEnabled,
+  usedBy,
+  valuesLabel,
+  withServer,
+  workspaceServers,
 } from "./mcp.ts";
 
-const server = (id: string, topic_id: string | undefined, enabled: boolean): McpServer => ({
+const profile = (id: string, auth?: McpProfile["auth"]): McpProfile => ({
   id,
   name: id,
-  topic_id,
-  transport: { type: "stdio", command: "x" },
-  enabled,
+  ...(auth && { auth }),
 });
 
-const topic = (id: string, mcp: Record<string, boolean> = {}): Topic => ({
+const server = (id: string, profiles: McpProfile[] = []): McpServer => ({
   id,
   name: id,
-  worktrees: [],
-  sessions: [],
+  transport: { type: "stdio", command: "x" },
+  ...(profiles.length > 0 && { profiles }),
+});
+
+const http = (id: string, profiles: McpProfile[] = [], needs_login = false): McpServer => ({
+  ...server(id, profiles),
+  transport: { type: "http", url: `https://${id}.example/mcp` },
+  ...(needs_login && { needs_login }),
+});
+
+const slack: McpServer = {
+  id: "c1",
+  name: "claude.ai Slack",
+  transport: { type: "claude_connector", url: "https://mcp.slack.com/mcp" },
+};
+
+const workspace = (id: string, mcp: Workspace["mcp"] = {}): Workspace => ({
+  id,
+  name: id,
+  path: `/${id}`,
+  topics: [],
   mcp,
 });
 
+const notion = http("notion", [profile("personal", "logged_in"), profile("work", "needs_login")], true);
+
 const state: DaemonState = {
   machine: { id: "m", name: "m" },
-  workspaces: [],
-  approvals: [],
-  mcp_servers: [
-    server("on", undefined, true),
-    server("off", undefined, false),
-    server("mine", "t", true),
-    server("mine-off", "t", false),
-    server("theirs", "other", true),
+  workspaces: [
+    workspace("tectr", { notion: { enabled: true, profile_id: "work" }, files: { enabled: false } }),
+    workspace("blog", { notion: { enabled: true, profile_id: "personal" } }),
   ],
+  approvals: [],
+  mcp_servers: [server("files"), notion, server("github"), slack],
 };
 
 const names = (servers: McpServer[]) => servers.map((s) => s.name);
 
-test("device servers are the ones without a topic, and a topic's own are only its", () => {
-  assert.deepEqual(names(deviceServers(state)), ["on", "off"]);
-  assert.deepEqual(names(ownServers(state, "t")), ["mine", "mine-off"]);
+test("the library lists servers and connectors apart", () => {
+  assert.deepEqual(names(libraryServers(state)), ["files", "notion", "github"]);
+  assert.deepEqual(names(connectors(state)), ["claude.ai Slack"]);
+  assert.deepEqual(names(libraryServers({ ...state, mcp_servers: undefined })), []);
 });
 
-// The same cases as the protocol's `a_topic_gets_the_device_servers_it_leaves_on_and_its_own`.
-test("a topic gets the device servers it leaves on and its own that are on", () => {
-  assert.deepEqual(names(topicMcpServers(state, topic("t"))), ["on", "mine"]);
-  assert.deepEqual(names(topicMcpServers(state, topic("t", { on: false, off: true }))), [
-    "off",
-    "mine",
+// The same cases as the protocol's `a_workspace_gets_the_servers_it_turns_on_with_their_profiles`,
+// plus the ones turned off, which the page still lists.
+test("a workspace lists its servers in the library's order, with their profiles", () => {
+  const [tectr] = state.workspaces;
+  const listed = workspaceServers(state, tectr).map(({ server, entry, profile }) => [
+    server.name,
+    entry.enabled,
+    profile?.name,
   ]);
-  assert.deepEqual(names(topicMcpServers(state, topic("other"))), ["on", "theirs"]);
-  assert.deepEqual(names(topicMcpServers({ ...state, mcp_servers: undefined }, topic("t"))), []);
+  assert.deepEqual(listed, [
+    ["files", false, undefined],
+    ["notion", true, "work"],
+  ]);
+  const gone = workspace("w", { notion: { enabled: true, profile_id: "deleted" } });
+  assert.equal(workspaceServers(state, gone)[0].profile, undefined);
 });
 
-test("connectors are listed apart, only turned on or off, and reach a topic like device servers", () => {
-  const slack: McpServer = {
-    id: "c1",
-    name: "claude.ai Slack",
-    transport: { type: "claude_connector", url: "https://mcp.slack.com/mcp" },
-    enabled: false,
-  };
-  const app: McpServer = {
-    id: "c2",
-    name: "ChatGPT Slack",
-    transport: { type: "codex_app", id: "asdk_app_1" },
-    enabled: true,
-  };
-  const withConnectors = { ...state, mcp_servers: [...(state.mcp_servers ?? []), slack, app] };
-  assert.deepEqual(names(deviceServers(withConnectors)), ["on", "off"]);
-  assert.deepEqual(names(connectors(withConnectors)), ["claude.ai Slack", "ChatGPT Slack"]);
-  assert.deepEqual(names(topicMcpServers(withConnectors, topic("t", { c1: true }))), [
-    "on",
-    "mine",
+test("adding offers what the workspace doesn't have yet, connectors last", () => {
+  assert.deepEqual(names(addableServers(state, state.workspaces[0])), ["github", "claude.ai Slack"]);
+  assert.deepEqual(names(addableServers(state, workspace("empty"))), [
+    "files",
+    "notion",
+    "github",
     "claude.ai Slack",
-    "ChatGPT Slack",
   ]);
+});
+
+test("a server starts on, with its profile when it has only one", () => {
+  assert.deepEqual(newEntry(server("a")), { enabled: true });
+  assert.deepEqual(newEntry(server("a", [profile("p")])), { enabled: true, profile_id: "p" });
+  assert.deepEqual(newEntry(notion), { enabled: true });
+});
+
+test("a workspace's list changes one server at a time", () => {
+  const list = { a: { enabled: true } };
+  assert.deepEqual(withServer(list, "b", { enabled: false }), {
+    a: { enabled: true },
+    b: { enabled: false },
+  });
+  assert.deepEqual(withServer(list, "a", null), {});
+  assert.deepEqual(withServer(undefined, "a", { enabled: true }), { a: { enabled: true } });
+});
+
+test("copying adds the other workspace's servers this one lacks, as they are there", () => {
+  const library = state.mcp_servers ?? [];
+  const target = { notion: { enabled: true, profile_id: "personal" } };
+  const source = {
+    notion: { enabled: true, profile_id: "work" },
+    github: { enabled: false },
+    removed: { enabled: true },
+  };
+  assert.deepEqual(copiedMcp(target, source, library), {
+    notion: { enabled: true, profile_id: "personal" },
+    github: { enabled: false },
+  });
+  assert.deepEqual(copiedMcp(undefined, undefined, library), {});
+});
+
+test("switching profiles goes through each, then none, then around", () => {
+  assert.equal(nextProfile(notion, undefined), "personal");
+  assert.equal(nextProfile(notion, "personal"), "work");
+  assert.equal(nextProfile(notion, "work"), null);
+  assert.equal(nextProfile(notion, "deleted"), null);
+  assert.equal(nextProfile(server("a"), null), null);
+});
+
+test("a profile shows by name, and a missing one as none", () => {
+  assert.equal(profileLabel(notion, "work"), "work");
+  assert.equal(profileLabel(notion, undefined), "No profile");
+  assert.equal(profileLabel(notion, "deleted"), "No profile");
+});
+
+test("a server that wants a login needs a profile that has one", () => {
+  const [personal, work] = notion.profiles ?? [];
+  assert.equal(entryAuth(notion, personal), "logged_in");
+  assert.equal(entryAuth(notion, work), "needs_login");
+  assert.equal(entryAuth(notion, undefined), "needs_login");
+  assert.equal(entryAuth(http("open"), undefined), null);
+  assert.equal(entryAuth(server("s", [profile("p", "needs_login")]), undefined), null);
+  assert.equal(authLabel("needs_login"), "Needs login");
+  assert.equal(authLabel("logged_in"), "Logged in");
+  assert.equal(authLabel(null), null);
+  assert.equal(entryAuth(http("open"), profile("p")), null);
+});
+
+test("the library says which workspaces use a server or one of its profiles", () => {
+  assert.deepEqual(usedBy(state, "notion"), ["tectr", "blog"]);
+  assert.deepEqual(usedBy(state, "notion", "work"), ["tectr"]);
+  assert.deepEqual(usedBy(state, "github"), []);
+});
+
+test("a profile's name is needed, and only once per server", () => {
+  assert.equal(profileNameProblem(" ", notion), "A profile needs a name");
+  assert.equal(profileNameProblem("work", notion), "notion already has a profile called work");
+  assert.equal(profileNameProblem("work", notion, "work"), null);
+  assert.equal(profileNameProblem("client", notion), null);
+  assert.equal(valuesLabel(notion), "Headers");
+  assert.equal(valuesLabel(server("s")), "Environment");
+});
+
+test("searching matches every word against the name and what it runs", () => {
+  assert.ok(matchesServer(notion, "not"));
+  assert.ok(matchesServer(notion, "notion example"));
+  assert.ok(!matchesServer(notion, "notion github"));
+  assert.ok(matchesServer(server("files"), ""));
+});
+
+test("connectors are their agent's: no profiles, no editing, no removing", () => {
+  const app: McpServer = { id: "c2", name: "ChatGPT Slack", transport: { type: "codex_app", id: "a" } };
   assert.equal(connectorAgent(slack), "Claude");
   assert.equal(connectorAgent(app), "Codex");
-  assert.equal(connectorAgent(server("x", undefined, true)), null);
+  assert.equal(connectorAgent(server("x")), null);
   assert.equal(mcpSummary(slack.transport), "https://mcp.slack.com/mcp");
-  assert.ok(canToggle(slack));
   assert.ok(!canEdit(slack));
   assert.ok(!canRemove(app));
-  assert.ok(canEdit(server("x", undefined, true)));
-  assert.deepEqual(withEnabled(slack, true), {
-    command: "save_mcp_server",
-    id: "c1",
-    name: "claude.ai Slack",
-    transport: slack.transport,
-    enabled: true,
-  });
+  assert.ok(!canHaveProfiles(slack));
+  assert.ok(canEdit(server("x")));
+  assert.ok(canHaveProfiles(server("x")));
+  assert.ok(!canEdit({ ...server("x"), transport: { type: "unknown" } }));
+});
+
+test("only a logged in profile of an http server can be logged out of", () => {
+  const [personal, work] = notion.profiles ?? [];
+  assert.equal(canLogOut(notion, personal), true);
+  assert.equal(canLogOut(notion, work), false);
+  assert.equal(canLogOut(notion, undefined), false);
+  assert.equal(canLogOut(server("s"), profile("p", "logged_in")), false);
+});
+
+test("every name on a device is taken once", () => {
+  assert.deepEqual([...takenNames(state.mcp_servers ?? [])].sort(), [
+    "claude.ai Slack",
+    "files",
+    "github",
+    "notion",
+  ]);
 });
 
 test("refreshing connectors says how many changed, not which", () => {
@@ -131,26 +243,6 @@ test("what couldn't be listed stays on screen instead of in a toast", () => {
   assert.equal(connectorSummary([], [], ["x"]), null);
   assert.equal(leftOut(["x", "y"], "Couldn't list"), "Couldn't list: x\nCouldn't list: y");
   assert.equal(leftOut([], "Couldn't list"), null);
-});
-
-test("a topic follows a device server's default until it turns it on or off", () => {
-  const [on, off] = deviceServers(state);
-  assert.equal(topicMcpChoice(topic("t"), on), "default");
-  assert.equal(topicMcpLabel(topic("t"), on), "On by default");
-  assert.equal(topicMcpLabel(topic("t"), off), "Off by default");
-  assert.equal(topicMcpChoice(topic("t", { on: true }), on), "on");
-  assert.equal(topicMcpLabel(topic("t", { on: true }), on), "On here");
-  assert.equal(topicMcpLabel(topic("t", { off: false }), off), "Off here");
-});
-
-test("flipping a device server for a topic goes back to the default when it lands there", () => {
-  const [on, off] = deviceServers(state);
-  assert.equal(flippedTopicMcp(topic("t"), on), false);
-  assert.equal(flippedTopicMcp(topic("t", { on: false }), on), null);
-  assert.equal(flippedTopicMcp(topic("t"), off), true);
-  assert.equal(flippedTopicMcp(topic("t", { off: true }), off), null);
-  // Turned on while the default is on too: flipping turns it off for this topic.
-  assert.equal(flippedTopicMcp(topic("t", { on: true }), on), false);
 });
 
 test("arguments split like a shell's and join back to the same ones", () => {
@@ -185,16 +277,6 @@ test("a summary is the command line for stdio and the address for http", () => {
   assert.equal(mcpSummary({ type: "http", url: "https://mcp.linear.app/mcp" }), "https://mcp.linear.app/mcp");
 });
 
-test("only http servers show a login, and only a held one can be logged out of", () => {
-  const http: McpServer = { ...server("h", undefined, true), transport: { type: "http", url: "u" } };
-  assert.equal(mcpAuthLabel(http), null);
-  assert.equal(mcpAuthLabel({ ...http, auth: "needs_login" }), "Needs login");
-  assert.equal(mcpAuthLabel({ ...http, auth: "logged_in" }), "Logged in");
-  assert.equal(mcpAuthLabel({ ...server("s", undefined, true), auth: "logged_in" }), null);
-  assert.equal(canLogOut(http), false);
-  assert.equal(canLogOut({ ...http, auth: "logged_in" }), true);
-});
-
 test("names use letters, digits, dashes and underscores", () => {
   assert.equal(nameProblem(""), null);
   assert.equal(nameProblem("git-hub_2"), null);
@@ -206,7 +288,6 @@ test("a server goes into the form and back out unchanged", () => {
     id: "x",
     name: "github",
     transport: { type: "stdio", command: "npx", args: ["-y", "gh-mcp"], env: { TOKEN: "${GITHUB_TOKEN}" } },
-    enabled: false,
   };
   const http: McpServer = {
     id: "y",
@@ -217,19 +298,16 @@ test("a server goes into the form and back out unchanged", () => {
       headers: { "X-Team": "core" },
       oauth_client_id: "abc",
     },
-    enabled: true,
   };
   for (const s of [stdio, http]) {
     const draft = draftOf(s);
-    assert.equal(draft.enabled, s.enabled);
     assert.ok(draftReady(draft));
     assert.deepEqual(transportOf(draft), { transport: s.transport });
   }
 });
 
-test("a new server starts on, and leaves out what's empty", () => {
+test("a new server leaves out what's empty", () => {
   const draft = draftOf(undefined);
-  assert.equal(draft.enabled, true);
   assert.equal(draftReady(draft), false);
   assert.equal(draftReady({ ...draft, name: "a b", command: "x" }), false);
   assert.equal(draftReady({ ...draft, name: "ok", command: " " }), false);
@@ -253,18 +331,4 @@ test("the import says how many were added, and why the rest wasn't stays on scre
   assert.equal(importSummary([], skipped), "Nothing added, 1 skipped");
   assert.equal(importSummary([], []), "Nothing new to import");
   assert.equal(leftOut(skipped, "Skipped"), "Skipped old: sse servers aren't supported");
-});
-
-test("turning a server on or off sends it back whole, keeping its topic", () => {
-  const own: McpServer = { ...server("mine", "t", true), transport: { type: "stdio", command: "x", args: ["a"] } };
-  assert.deepEqual(withEnabled(own, false), {
-    command: "save_mcp_server",
-    id: "mine",
-    name: "mine",
-    topic_id: "t",
-    transport: { type: "stdio", command: "x", args: ["a"] },
-    enabled: false,
-  });
-  assert.equal("topic_id" in (withEnabled(server("d", undefined, false), true) ?? {}), false);
-  assert.equal(withEnabled({ ...own, transport: { type: "unknown" } }, false), null);
 });

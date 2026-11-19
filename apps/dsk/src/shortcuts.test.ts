@@ -14,7 +14,6 @@ const nothing = {
   tabs: 0,
   closeTab: false,
   newTab: false,
-  topicMcp: false,
   newTopic: false,
   newWorkspace: false,
   topics: 0,
@@ -52,8 +51,8 @@ test("the sidebar shows its own keys, for the row that has the keyboard", () => 
   assert.ok(labels("sidebar-topic").includes("Archive"));
   assert.ok(!labels("sidebar-workspace").includes("Rename"));
   assert.ok(labels("sidebar-topic").includes("New topic"));
-  assert.ok(!labels("sidebar-workspace").includes("Open"));
-  assert.ok(labels("sidebar-device").includes("Device settings"));
+  assert.ok(labels("sidebar-workspace").includes("Open"));
+  assert.ok(!labels("sidebar-device").includes("Device settings"));
   assert.ok(!labels("sidebar-device").includes("Workspace"));
   assert.ok(labels("sidebar").includes("Move"));
 });

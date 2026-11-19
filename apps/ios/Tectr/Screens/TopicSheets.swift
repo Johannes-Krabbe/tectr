@@ -131,52 +131,6 @@ struct ImportConversationSheet: View {
 }
 
 /// Which of the device's servers this topic's agents get, and the servers it has to itself.
-struct TopicMcpSheet: View {
-    @Environment(Store.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let topicID: Topic.ID
-    @State private var editing: McpServer?
-
-    var body: some View {
-        let device = store.device(of: topicID)
-        let servers = device?.mcpServers ?? []
-        NavigationStack {
-            List {
-                if let topic = store.topic(topicID), let device {
-                    Section("This device") {
-                        ForEach(servers.filter { $0.topicID == nil }) { server in
-                            Toggle(isOn: Binding {
-                                topic.mcp[server.id] ?? server.enabled
-                            } set: {
-                                store.setMcp(server, on: $0, for: topicID)
-                            }) {
-                                ServerLabel(server: server)
-                            }
-                        }
-                    }
-                    Section("This topic") {
-                        ForEach(servers.filter { $0.topicID == topicID }) { server in
-                            Button { editing = server } label: { ServerLabel(server: server) }
-                        }
-                        Button("Add a server", systemImage: "plus") {
-                            editing = McpServer(id: store.newServerID(), name: "", topicID: topicID,
-                                                transport: .stdio(command: "", args: [], env: [:]), enabled: true)
-                        }
-                    }
-                    .sheet(item: $editing) { server in
-                        McpServerForm(server: server, deviceID: device.id, isNew: !servers.contains { $0.id == server.id })
-                    }
-                }
-            }
-            .navigationTitle("MCP servers")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button(role: .close) { dismiss() } }
-            }
-        }
-    }
-}
-
 struct ArchivedTopicsSheet: View {
     @Environment(Store.self) private var store
     @Environment(Toasts.self) private var toasts
@@ -234,27 +188,6 @@ struct ArchivedTopicsSheet: View {
     private func restore(_ topic: ArchivedTopic) {
         Task {
             if await store.restore(topic) { toasts.show("Restored \(topic.name)") }
-        }
-    }
-}
-
-/// A server's name, and how agents reach it.
-struct ServerLabel: View {
-    let server: McpServer
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
-            HStack(spacing: Tokens.Space.sm) {
-                Text(server.name.isEmpty ? "Unnamed" : server.name).foregroundStyle(.primary)
-                if server.auth == .needsLogin {
-                    Text("Needs login").font(.subheadline).foregroundStyle(.statusWaiting)
-                }
-            }
-            Text(server.transport.summary)
-                .font(Tokens.Text.codeSmall)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
         }
     }
 }

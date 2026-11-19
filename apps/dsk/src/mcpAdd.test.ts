@@ -8,9 +8,7 @@ import {
   nameFromCommand,
   nameFromUrl,
   readPasted,
-  takenNames,
 } from "./mcp.ts";
-import type { McpServer } from "./engine";
 
 const one = (text: string) => {
   const pasted = readPasted(text);
@@ -181,17 +179,4 @@ test("a blank env variable left empty reads from the daemon's environment", () =
 test("a taken name gets a number", () => {
   assert.equal(freeName("github", new Set()), "github");
   assert.equal(freeName("github", new Set(["github", "github-2"])), "github-3");
-});
-
-test("a topic can reuse a name only another topic has", () => {
-  const server = (name: string, topic_id?: string): McpServer => ({
-    id: name,
-    name,
-    ...(topic_id && { topic_id }),
-    transport: { type: "stdio", command: "x" },
-    enabled: true,
-  });
-  const servers = [server("device"), server("mine", "t1"), server("theirs", "t2")];
-  assert.deepEqual([...takenNames(servers)].sort(), ["device", "mine", "theirs"]);
-  assert.deepEqual([...takenNames(servers, "t1")].sort(), ["device", "mine"]);
 });

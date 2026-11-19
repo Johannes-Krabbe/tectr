@@ -12,6 +12,8 @@ export interface PaletteItem {
   detail?: string;
   keys?: string;
   state?: StatusState;
+  /** Shown whatever is typed, like a list's way to make something new. */
+  always?: boolean;
   run: () => void;
 }
 
@@ -50,6 +52,7 @@ export const screenPaletteItems = (): PaletteItem[] => [...screens].flatMap((ref
 
 /** Every word typed has to appear somewhere in the item. */
 function matches(item: PaletteItem, query: string): boolean {
+  if (item.always) return true;
   const text = `${item.label} ${item.detail ?? ""}`.toLowerCase();
   return query
     .toLowerCase()

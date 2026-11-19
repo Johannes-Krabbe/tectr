@@ -1,6 +1,8 @@
 /** A screen of the app. */
 export type View =
   | { kind: "topic"; machineId: string; topicId: string }
+  /** A workspace's page: its topics and its MCP servers. */
+  | { kind: "workspace"; machineId: string; workspaceId: string }
   | { kind: "new_topic"; machineId: string; workspaceId: string }
   | { kind: "device_settings"; machineId: string; section?: string }
   | { kind: "app_settings"; section: string };
@@ -10,7 +12,8 @@ export type View =
  * remembers: losing it only means opening on the empty state. */
 export interface Navigation {
   view: View | null;
-  /** The topic cancelling the new topic screen goes back to. Without one, it goes to the sidebar. */
+  /** The topic or workspace cancelling the new topic screen goes back to. Without one, it goes to
+   * the sidebar. */
   beforeNewTopic: View | null;
   /** Where closing goes from settings. */
   beforeSettings: View | null;
@@ -71,7 +74,7 @@ export function goTo(navigation: Navigation, next: View | null, workspaceId?: st
     // does a trip to settings and back.
     beforeNewTopic:
       next?.kind === "new_topic" && from?.kind !== "new_topic" && !isSettings(from)
-        ? from?.kind === "topic"
+        ? from?.kind === "topic" || from?.kind === "workspace"
           ? from
           : null
         : navigation.beforeNewTopic,

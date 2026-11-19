@@ -97,9 +97,9 @@ struct LiveSession {
     task: Option<JoinHandle<()>>,
     /// Lets the agent's requests through the MCP proxy. It dies with the agent.
     proxy_secret: String,
-    /// The MCP servers the agent was started with.
-    mcp: Vec<protocol::McpServerId>,
-    /// What its topic's servers were when it started, to tell when they've changed.
+    /// The MCP servers the agent was started with, and the profile of each.
+    mcp: Vec<(protocol::McpServerId, Option<protocol::McpProfileId>)>,
+    /// What its workspace's servers were when it started, to tell when they've changed.
     mcp_fingerprint: String,
     /// Its servers changed while it was busy, so it stops once it's done.
     mcp_stale: bool,
@@ -446,25 +446,28 @@ impl Core {
             Command::SaveMcpServer {
                 id,
                 name,
-                topic_id,
                 transport,
-                enabled,
-            } => {
-                self.save_mcp_server(id, &name, topic_id, transport, enabled)
-                    .await
-            }
+            } => self.save_mcp_server(id, &name, transport).await,
             Command::RemoveMcpServer { id } => self.remove_mcp_server(&id),
-            Command::SetTopicMcp {
-                topic_id,
+            Command::SaveMcpProfile {
                 server_id,
-                on,
-            } => self.set_topic_mcp(&topic_id, &server_id, on),
-            Command::LoginMcpServer { id } => self.login_mcp_server(&id).await,
+                id,
+                name,
+                values,
+            } => self.save_mcp_profile(&server_id, id, &name, values),
+            Command::RemoveMcpProfile { server_id, id } => self.remove_mcp_profile(&server_id, &id),
+            Command::SetWorkspaceMcp {
+                workspace_id,
+                servers,
+            } => self.set_workspace_mcp(&workspace_id, servers),
+            Command::LoginMcpServer { id, profile_id } => {
+                self.login_mcp_server(&id, &profile_id).await
+            }
             Command::CompleteMcpLogin { state, code } => self
                 .complete_mcp_login(&state, &code)
                 .await
                 .map(|_| CommandOutput::Done),
-            Command::LogoutMcpServer { id } => self.logout_mcp_server(&id),
+            Command::LogoutMcpServer { id, profile_id } => self.logout_mcp_server(&id, &profile_id),
             Command::ImportMcpServers => self.import_mcp_servers().await,
             Command::RefreshMcpConnectors => self.refresh_mcp_connectors().await,
             Command::ListConversations => self.list_conversations().await,
@@ -509,6 +512,7 @@ impl Core {
             ),
             path: root_text,
             topics: vec![],
+            mcp: BTreeMap::new(),
         };
         inner.store.insert_workspace(&workspace).map_err(internal)?;
         inner.emit(StateChange::WorkspaceAdded {
@@ -588,7 +592,6 @@ impl Core {
             sessions: vec![],
             terminals: vec![],
             diffs: vec![],
-            mcp: BTreeMap::new(),
         };
         let mut inner = self.lock();
         inner
@@ -2524,30 +2527,18 @@ mod tests {
         );
         assert!(removed.is_empty() && problems.is_empty(), "{problems:?}");
         let slack = server("claude.ai Slack").unwrap();
-        assert!(!slack.enabled, "a new connector starts off");
 
-        // Turning one on keeps its own name, whatever is sent.
-        core.handle(Command::SaveMcpServer {
-            id: Some(slack.id.clone()),
-            name: "renamed".to_owned(),
-            topic_id: None,
-            transport: slack.transport.clone(),
-            enabled: true,
-        })
-        .await
-        .unwrap();
-        assert!(server("claude.ai Slack").unwrap().enabled);
-        let made_up = protocol::McpTransport::ClaudeConnector {
-            url: "https://elsewhere".to_owned(),
-        };
-        for id in [None, Some(slack.id.clone())] {
+        // Connectors are their agent's, so nobody makes or changes one by hand.
+        for (id, transport) in [
+            (None, made_up_connector()),
+            (Some(slack.id.clone()), made_up_connector()),
+            (Some(slack.id.clone()), slack.transport.clone()),
+        ] {
             let error = core
                 .handle(Command::SaveMcpServer {
                     id,
                     name: "x".to_owned(),
-                    topic_id: None,
-                    transport: made_up.clone(),
-                    enabled: true,
+                    transport,
                 })
                 .await
                 .unwrap_err();
@@ -2566,9 +2557,113 @@ mod tests {
         assert_eq!(added, ["claude.ai Notion"]);
         assert_eq!(removed, ["claude.ai Linear"]);
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(server("claude.ai Slack").unwrap().enabled, "it stays on");
+        // Workspaces that added it keep it.
+        assert_eq!(server("claude.ai Slack").unwrap().id, slack.id);
         assert!(server("ChatGPT Slack").is_some());
         assert!(server("claude.ai Linear").is_none());
+    }
+
+    fn made_up_connector() -> protocol::McpTransport {
+        protocol::McpTransport::ClaudeConnector {
+            url: "https://elsewhere".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn workspaces_choose_library_servers_and_their_profiles() {
+        use protocol::{McpProfileId, WorkspaceMcp};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("data")).unwrap();
+        let core = Core::open(&dir.path().join("data"), options("host", None)).unwrap();
+        let Ok(CommandOutput::Workspace { workspace }) = core
+            .handle(Command::CreateWorkspace {
+                path: dir.path().join("repo").display().to_string(),
+            })
+            .await
+        else {
+            panic!("no workspace");
+        };
+        let stdio = |command: &str| protocol::McpTransport::Stdio {
+            command: command.to_owned(),
+            args: vec![],
+            env: BTreeMap::from([("TOKEN".to_owned(), "base".to_owned())]),
+        };
+        let save = |name: &str, command: &str| {
+            core.handle(Command::SaveMcpServer {
+                id: None,
+                name: name.to_owned(),
+                transport: stdio(command),
+            })
+        };
+        let Ok(CommandOutput::McpServer { server }) = save("notion", "n").await else {
+            panic!("not saved");
+        };
+        let error = save("notion", "other").await.unwrap_err();
+        assert!(error.message.contains("already"), "{}", error.message);
+
+        let profile = |name: &str, id: Option<McpProfileId>| {
+            core.handle(Command::SaveMcpProfile {
+                server_id: server.id.clone(),
+                id,
+                name: name.to_owned(),
+                values: BTreeMap::from([("TOKEN".to_owned(), name.to_owned())]),
+            })
+        };
+        let Ok(CommandOutput::McpProfile { profile: work }) = profile("work", None).await else {
+            panic!("no profile");
+        };
+        let error = profile("work", None).await.unwrap_err();
+        assert!(error.message.contains("already"), "{}", error.message);
+        profile("work", Some(work.id.clone())).await.unwrap();
+
+        let entry = |profile_id: Option<McpProfileId>| WorkspaceMcp {
+            enabled: true,
+            profile_id,
+        };
+        let set = |profile_id: Option<McpProfileId>| {
+            core.handle(Command::SetWorkspaceMcp {
+                workspace_id: workspace.id.clone(),
+                servers: BTreeMap::from([(server.id.clone(), entry(profile_id))]),
+            })
+        };
+        let error = set(Some("someone else's".into())).await.unwrap_err();
+        assert!(error.message.contains("no profile"), "{}", error.message);
+        set(Some(work.id.clone())).await.unwrap();
+
+        let state = || core.snapshot_and_subscribe().0;
+        let topic = Topic {
+            id: "t".into(),
+            name: "t".into(),
+            worktree_id: "wt".into(),
+            worktrees: vec![],
+            sessions: vec![],
+            terminals: vec![],
+            diffs: vec![],
+        };
+        let mut with_topic = state();
+        with_topic.workspaces[0].topics.push(topic.clone());
+        let got = crate::mcp::agent_servers(&with_topic, &topic, "http://proxy");
+        assert_eq!(got.ids, [(server.id.clone(), Some(work.id.clone()))]);
+        let crate::mcp::AgentMcp::Stdio { env, .. } = &got.servers[0] else {
+            panic!("not stdio");
+        };
+        assert_eq!(env, &[("TOKEN".to_owned(), "work".to_owned())]);
+
+        // Removing the profile keeps the server in the workspace, without one.
+        core.handle(Command::RemoveMcpProfile {
+            server_id: server.id.clone(),
+            id: work.id.clone(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(state().workspaces[0].mcp[&server.id], entry(None));
+
+        core.handle(Command::RemoveMcpServer {
+            id: server.id.clone(),
+        })
+        .await
+        .unwrap();
+        assert!(state().workspaces[0].mcp.is_empty());
     }
 
     #[tokio::test]
@@ -2921,6 +3016,7 @@ mod tests {
                     name: "r".into(),
                     path: "/r".into(),
                     topics: vec![],
+                    mcp: BTreeMap::new(),
                 })
                 .unwrap();
             let topic = Topic {
@@ -2935,7 +3031,6 @@ mod tests {
                 sessions: vec![],
                 terminals: vec![],
                 diffs: vec![],
-                mcp: BTreeMap::new(),
             };
             store.insert_topic(&"w".into(), &topic, false).unwrap();
             store
@@ -3082,6 +3177,7 @@ mod tests {
                     name: "r".into(),
                     path: "/r".into(),
                     topics: vec![],
+                    mcp: BTreeMap::new(),
                 })
                 .unwrap();
             let topic_id = protocol::TopicId::from("t");
@@ -3100,7 +3196,6 @@ mod tests {
                         sessions: vec![],
                         terminals: vec![],
                         diffs: vec![],
-                        mcp: BTreeMap::new(),
                     },
                     false,
                 )

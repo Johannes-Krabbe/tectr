@@ -25,6 +25,7 @@ const ICONS = {
   add: { glyph: Plus },
   agent: { glyph: Bot },
   branch: { glyph: GitFork },
+  check: { glyph: Check },
   copy: { glyph: Copy },
   diff: { glyph: GitCompare },
   expires: { glyph: Clock },

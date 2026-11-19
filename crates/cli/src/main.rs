@@ -843,11 +843,11 @@ fn print_status(engine: &Engine) {
                 workspace.name,
                 workspace.path
             );
+            if let Some(line) = mcp::workspace_status_line(state, workspace) {
+                println!("    {line}");
+            }
             for topic in &workspace.topics {
                 println!("    topic {} {}", short(&topic.id.0), topic.name);
-                if let Some(line) = mcp::topic_status_line(state, topic) {
-                    println!("      {line}");
-                }
                 for worktree in &topic.worktrees {
                     let here = if worktree.id == topic.worktree_id {
                         " (here)"

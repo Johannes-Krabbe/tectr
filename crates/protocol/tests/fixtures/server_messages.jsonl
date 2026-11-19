@@ -36,9 +36,10 @@
 {"type":"state_changed","change":{"change":"worktrees_changed","topic_id":"t1","worktree_id":"wt2","worktrees":[{"id":"wt1","path":"/repo","branch":"main"},{"id":"wt2","path":"/wt","branch":"tectr/fix-login-ab12"}]}}
 {"type":"response","id":20,"result":{"Ok":{"output":"archive_risk","risk":{"running":1,"worktrees":[{"path":"/wt","branch":"tectr/fix-login-ab12","uncommitted":3,"unpushed":2}]}}}}
 {"type":"response","id":41,"result":{"Ok":{"output":"archived_topics","topics":[{"id":"t1","workspace_id":"w1","name":"Fix login","archived_at_ms":1700000000000}]}}}
-{"type":"state_changed","change":{"change":"mcp_server_changed","server":{"id":"x1","name":"linear","transport":{"type":"http","url":"https://mcp.linear.app/mcp","headers":{"X-Team":"core"},"oauth_client_id":"abc"},"enabled":true,"auth":"needs_login"}}}
+{"type":"state_changed","change":{"change":"mcp_server_changed","server":{"id":"x1","name":"linear","transport":{"type":"http","url":"https://mcp.linear.app/mcp","headers":{"X-Team":"core"},"oauth_client_id":"abc"},"profiles":[{"id":"p1","name":"work","auth":"logged_in"},{"id":"p2","name":"personal","values":{"X-Team":"me"},"auth":"needs_login"}],"needs_login":true}}}
 {"type":"state_changed","change":{"change":"mcp_server_removed","id":"x1"}}
-{"type":"state_changed","change":{"change":"topic_mcp_changed","topic_id":"t1","mcp":{"x1":false}}}
+{"type":"state_changed","change":{"change":"workspace_mcp_changed","workspace_id":"w1","mcp":{"x1":{"enabled":true,"profile_id":"p1"},"x2":{"enabled":false}}}}
+{"type":"response","id":1,"result":{"Ok":{"output":"mcp_profile","profile":{"id":"p1","name":"work","auth":"needs_login"}}}}
 {"type":"response","id":1,"result":{"Ok":{"output":"mcp_login","url":"https://auth.example/authorize?x=1"}}}
 {"type":"response","id":1,"result":{"Ok":{"output":"mcp_import","added":["github"],"skipped":["old: sse servers aren't supported"]}}}
 {"type":"state_changed","change":{"change":"commands_changed","session_id":"s1","commands":[{"name":"usage","description":"Show plan usage limits"},{"name":"review","description":"Review a pull request","hint":"PR number"}]}}
@@ -51,8 +52,8 @@
 {"type":"state_changed","change":{"change":"terminal_changed","terminal":{"id":"x2","status":"exited","opened_at_ms":3000}}}
 {"type":"state_changed","change":{"change":"terminal_removed","terminal_id":"x2"}}
 {"type":"response","id":1,"result":{"Ok":{"output":"terminal","topic_id":"t1","terminal":{"id":"x2","status":"running","opened_at_ms":3000}}}}
-{"type":"state_changed","change":{"change":"mcp_server_changed","server":{"id":"c1","name":"claude.ai Slack","transport":{"type":"claude_connector","url":"https://mcp.slack.com/mcp"},"enabled":false}}}
-{"type":"state_changed","change":{"change":"mcp_server_changed","server":{"id":"c2","name":"ChatGPT Slack","transport":{"type":"codex_app","id":"asdk_app_1"},"enabled":true}}}
+{"type":"state_changed","change":{"change":"mcp_server_changed","server":{"id":"c1","name":"claude.ai Slack","transport":{"type":"claude_connector","url":"https://mcp.slack.com/mcp"}}}}
+{"type":"state_changed","change":{"change":"mcp_server_changed","server":{"id":"c2","name":"ChatGPT Slack","transport":{"type":"codex_app","id":"asdk_app_1"}}}}
 {"type":"response","id":1,"result":{"Ok":{"output":"mcp_connectors","added":["claude.ai Notion"],"removed":["claude.ai Linear"],"problems":["Codex has no list of its apps on this device yet"]}}}
 {"type":"response","id":1,"result":{"Ok":{"output":"conversations","conversations":[{"agent":"codex","id":"01a18876-b39d-75f2-906c-f7a10fd228b2","title":"Check the diff","cwd":"/Users/me/repo","updated_at_ms":1700000000000}]}}}
 {"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":12,"at_ms":1000,"kind":{"event":"turn_ended","stop_reason":"end_turn","last_message":"msg_01"}}}

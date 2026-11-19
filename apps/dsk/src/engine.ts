@@ -147,9 +147,6 @@ export interface Topic {
   terminals?: Terminal[];
   /** Left out while it has none. */
   diffs?: Diff[];
-  /** The device's MCP servers this topic turns on or off, against their own `enabled`. By
-   * server ID. */
-  mcp?: Record<string, boolean>;
 }
 
 export type MoveTarget =
@@ -198,6 +195,16 @@ export interface Workspace {
   name: string;
   path: string;
   topics: Topic[];
+  /** The library's MCP servers its agents get, by server ID. Left out while it has none. */
+  mcp?: Record<string, WorkspaceMcp>;
+}
+
+/** How a workspace uses one of the library's MCP servers. */
+export interface WorkspaceMcp {
+  /** Off keeps the server and its profile in the list without giving it to agents. */
+  enabled: boolean;
+  /** Which of the server's profiles its agents use. Left out to use the server as it is. */
+  profile_id?: string | null;
 }
 
 export interface ToolCallPatch {
@@ -286,7 +293,7 @@ export interface DaemonState {
   /** Until when someone asked the machine to stay awake, on the daemon's clock. Left out when
    * nobody did, and cleared once it has passed. */
   awake_until_ms?: number;
-  /** The MCP servers agents on this device get, device-wide and per topic. */
+  /** The device's library of MCP servers. A workspace's agents get the ones it adds. */
   mcp_servers?: McpServer[];
   /** The clients on other machines that may connect, oldest first. */
   paired_clients?: PairedClient[];
@@ -325,15 +332,23 @@ export type McpTransport =
 /** Whether the daemon holds a login. Left out while it's `none`. */
 export type McpAuth = "none" | "needs_login" | "logged_in" | "unknown";
 
-/** An MCP server that tectr gives agents, the only ones they get. */
+/** An MCP server in the device's library. Agents get the ones their workspace adds. */
 export interface McpServer {
   id: string;
   name: string;
-  /** The topic that has it to itself. Left out for a device-wide server. */
-  topic_id?: string | null;
   transport: McpTransport;
-  /** Device-wide: whether topics get it unless they turn it off. A topic's own: whether it's on. */
-  enabled: boolean;
+  /** Its logins or sets of values, for workspaces to choose between. Left out while it has none. */
+  profiles?: McpProfile[];
+  /** It turned the daemon away without a login, so agents need a logged in profile. */
+  needs_login?: boolean;
+}
+
+/** One way of using a server: a login for an HTTP server, values for either kind. */
+export interface McpProfile {
+  id: string;
+  name: string;
+  /** Laid over the server's env for a stdio server, and its headers for an HTTP one. */
+  values?: Record<string, string>;
   auth?: McpAuth;
 }
 
@@ -452,20 +467,26 @@ export type Command =
   | { command: "commit"; diff_id: string; message: string; amend?: boolean }
   | {
       command: "save_mcp_server";
-      /** Changes the server it names, or else adds one. */
+      /** Changes the server it names, or else adds one to the library. */
       id?: string;
       name: string;
-      /** Left out for a device-wide server. A server can't move between the two. */
-      topic_id?: string;
       transport: McpTransport;
-      enabled: boolean;
     }
   | { command: "remove_mcp_server"; id: string }
-  /** Null follows the server's own `enabled` again. */
-  | { command: "set_topic_mcp"; topic_id: string; server_id: string; on: boolean | null }
-  | { command: "login_mcp_server"; id: string }
+  | {
+      command: "save_mcp_profile";
+      server_id: string;
+      /** Changes the profile it names, or else adds one. */
+      id?: string;
+      name: string;
+      values?: Record<string, string>;
+    }
+  | { command: "remove_mcp_profile"; server_id: string; id: string }
+  /** Replaces the whole list. */
+  | { command: "set_workspace_mcp"; workspace_id: string; servers: Record<string, WorkspaceMcp> }
+  | { command: "login_mcp_server"; id: string; profile_id: string }
   | { command: "complete_mcp_login"; state: string; code: string }
-  | { command: "logout_mcp_server"; id: string }
+  | { command: "logout_mcp_server"; id: string; profile_id: string }
   | { command: "import_mcp_servers" }
   | { command: "refresh_mcp_connectors" }
   | { command: "list_conversations" }
@@ -491,6 +512,7 @@ export type CommandOutput =
   | { output: "archive_risk"; risk: ArchiveRisk }
   | { output: "archived_topics"; topics: ArchivedTopic[] }
   | { output: "mcp_server"; server: McpServer }
+  | { output: "mcp_profile"; profile: McpProfile }
   /** Where the browser has to go to log in. */
   | { output: "mcp_login"; url: string }
   /** The names added, and why each one left out was. */

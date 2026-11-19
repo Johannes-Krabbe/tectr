@@ -23,7 +23,7 @@ export type TopicItemId =
   | "rename-topic"
   | "toggle-unread"
   | "move-topic"
-  | "topic-mcp"
+  | "open-workspace"
   | "import-conversation"
   | "archive-topic";
 
@@ -31,6 +31,8 @@ export type TopicItemId =
  * comes last and on its own, away from everything that's safe to press. */
 export function topicItems(topic: {
   name: string;
+  /** The workspace it's in, whose page has its MCP servers. */
+  workspace: string;
   /** The branch of its worktree, if it has one. */
   branch?: string;
   /** What marking it would do, and to how many tabs. Nothing with none. */
@@ -63,11 +65,11 @@ export function topicItems(topic: {
     organize,
     [
       {
-        id: "topic-mcp",
-        label: "MCP servers",
-        inPalette: `MCP servers for ${name}`,
-        detail: "Topic",
-        key: "global.topic_mcp",
+        id: "open-workspace",
+        label: "Workspace",
+        inPalette: `Open ${topic.workspace}`,
+        detail: "Workspace, with its MCP servers",
+        key: "global.open_workspace",
       },
       {
         id: "import-conversation",

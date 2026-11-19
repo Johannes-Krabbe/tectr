@@ -53,11 +53,11 @@ export function subscribeKeyboardPlace(notify: () => void) {
 /** Gives the main pane the keyboard once the current update has rendered. It lands on
  * the transcript rather than the composer, so single keys work straight away. Starting an
  * agent has no transcript, and exists to be typed into. A new tab lands on its first choice,
- * a terminal on its shell and a diff on its files. */
+ * a terminal on its shell, a diff on its files and a workspace on its page. */
 export function focusPane() {
   requestAnimationFrame(() => {
     const target = document.querySelector<HTMLElement>(
-      ".create textarea, .new-tab-kind:not(:disabled), .log, .terminal-host, .diff-body",
+      ".create textarea, .new-tab-kind:not(:disabled), .log, .terminal-host, .diff-body, .workspace-page",
     );
     if (target) target.focus();
     else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();

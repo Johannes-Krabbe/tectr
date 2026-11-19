@@ -86,13 +86,13 @@ import { appSections, settingsGroups } from "./settingsNav";
 import { Sheets, type SheetRequest } from "./Sheets";
 import { globalHints, pinnedHints, useHints } from "./shortcuts";
 import { Sidebar } from "./Sidebar";
-import { TopicMcpSheet } from "./TopicMcp";
 import { Icon } from "./ui/Icon";
 import { MenuButton, type MenuGroups } from "./ui/Menu";
 import type { SettingsNav } from "./ui/SettingsPage";
 import { ShortcutBar } from "./ui/ShortcutBar";
 import { Toasts } from "./ui/Toasts";
 import { Keys, StatusIcon } from "./ui/StatusIcon";
+import { WorkspacePage } from "./WorkspacePage";
 
 /** One for every session without draft images, so a pane's images stay the same object. */
 const NO_IMAGES: PromptImage[] = [];
@@ -182,8 +182,6 @@ export function App() {
   } | null>(null);
   const [palette, setPalette] = useState(false);
   const [picker, setPicker] = useState<Picker | null>(null);
-  // The topic whose MCP servers are being chosen. It reads the topic live, so changes show.
-  const [mcpTopic, setMcpTopic] = useState<{ machineId: string; topicId: string } | null>(null);
   // The tab just started here, which is chosen before the daemon's news of it arrives.
   const [startedHere, setStartedHere] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -206,6 +204,14 @@ export function App() {
   const entry =
     view?.kind === "topic"
       ? topics.find((t) => t.machineId === view.machineId && t.topic.id === view.topicId)
+      : undefined;
+  const pageDevice =
+    view?.kind === "workspace"
+      ? devices.find((d) => d.state?.machine.id === view.machineId)
+      : undefined;
+  const pageWorkspace =
+    view?.kind === "workspace"
+      ? pageDevice?.state?.workspaces.find((w) => w.id === view.workspaceId)
       : undefined;
   const sessions = entry?.topic.sessions ?? [];
   const tabs = entry ? tabsOf(entry.topic) : [];
@@ -412,10 +418,17 @@ export function App() {
   // Where the new topic and new workspace keys create things. The palette and the workspace
   // select reach everywhere else.
   const onlineEntry = entry && isOnline(entry.device) ? entry : undefined;
-  const workspaceDevice = onlineEntry?.device ?? devices.find(isOnline);
+  const onlinePage =
+    pageDevice && pageWorkspace && isOnline(pageDevice)
+      ? { device: pageDevice, workspace: pageWorkspace }
+      : undefined;
+  const workspaceDevice = onlineEntry?.device ?? onlinePage?.device ?? devices.find(isOnline);
   const topicDevice =
-    onlineEntry?.device ?? devices.find((d) => isOnline(d) && d.state?.workspaces.length);
-  const topicWorkspace = onlineEntry?.workspace ?? topicDevice?.state?.workspaces[0];
+    onlineEntry?.device ??
+    onlinePage?.device ??
+    devices.find((d) => isOnline(d) && d.state?.workspaces.length);
+  const topicWorkspace =
+    onlineEntry?.workspace ?? onlinePage?.workspace ?? topicDevice?.state?.workspaces[0];
 
   const newWorkspace = () => {
     if (workspaceDevice) addWorkspaceOn(workspaceDevice);
@@ -656,19 +669,10 @@ export function App() {
     }
   };
 
-  const openTopicMcp = (target = entry) => {
-    if (target?.device.state) {
-      setMcpTopic({ machineId: target.machineId, topicId: target.topic.id });
-    }
+  /** Its page has its topics and the MCP servers its agents get. */
+  const openWorkspace = (target = entry) => {
+    if (target) open({ kind: "workspace", machineId: target.machineId, workspaceId: target.workspace.id });
   };
-  const mcpEntry =
-    mcpTopic &&
-    topics.find((t) => t.machineId === mcpTopic.machineId && t.topic.id === mcpTopic.topicId);
-  const mcpGone = mcpTopic !== null && !mcpEntry?.device.state;
-  // Another client can delete the topic, which takes the sheet with it.
-  useEffect(() => {
-    if (mcpGone) setMcpTopic(null);
-  }, [mcpGone]);
 
   const renameTopic = (target: TopicEntry) => {
     if (!isOnline(target.device)) return;
@@ -786,6 +790,7 @@ export function App() {
     return withRuns(
       topicItems({
         name: target.topic.name,
+        workspace: target.workspace.name,
         branch: topicWorktree(target.topic)?.branch,
         toggle: { unread: toggle.unread, count: toggle.sessions.length },
         onNewTab: onNewTab && target === entry,
@@ -794,7 +799,7 @@ export function App() {
         "rename-topic": () => renameTopic(target),
         "toggle-unread": () => toggleUnread(target),
         "move-topic": () => pickFolder(target),
-        "topic-mcp": () => openTopicMcp(target),
+        "open-workspace": () => openWorkspace(target),
         "import-conversation": () => void findConversations(target).catch(reportFailure),
         "archive-topic": () => archiveTopic(target),
       },
@@ -1014,6 +1019,17 @@ export function App() {
         }
       }
       for (const workspace of device.state?.workspaces ?? []) {
+        const machineId = device.state?.machine.id;
+        if (machineId) {
+          items.push({
+            id: `workspace/${workspace.id}`,
+            label: workspace.name,
+            detail: `Workspace on ${deviceName}, with its MCP servers`,
+            keys:
+              entry?.workspace === workspace ? keysLabel("global.open_workspace") : undefined,
+            run: () => open({ kind: "workspace", machineId, workspaceId: workspace.id }),
+          });
+        }
         items.push({
           id: `new-topic/${workspace.id}`,
           label: `New topic in ${workspace.name}`,
@@ -1053,7 +1069,6 @@ export function App() {
       tabs: tabIds.length,
       closeTab: canClose,
       newTab: entry !== undefined && isOnline(entry.device),
-      topicMcp: entry !== undefined && !inSettings,
       newTopic: view?.kind !== "new_topic" && topicDevice !== undefined && topicWorkspace !== undefined,
       newWorkspace: workspaceDevice !== undefined,
       topics: topics.length,
@@ -1069,7 +1084,7 @@ export function App() {
     const onKey = (event: KeyboardEvent) => {
       // A sheet or a list to choose from owns the keyboard, and so does a screen's own sheet,
       // which only the palette's own key gets past to close the palette.
-      if (sheet || picker || mcpTopic || (!palette && sheetOpen())) return;
+      if (sheet || picker || (!palette && sheetOpen())) return;
       if (act(event, "global.palette", () => setPalette((shown) => !shown))) return;
       if (palette || overlayOpen()) return; // So does a palette or dropdown, past that key.
 
@@ -1103,7 +1118,7 @@ export function App() {
         ["global.pair_machine", () => localDevice && void pairWith(localDevice).catch(reportFailure)],
         ["global.add_device", () => setSheet({ kind: "add_device" })],
         ["global.reconnect", reconnectNow],
-        ["global.topic_mcp", () => openTopicMcp()],
+        ["global.open_workspace", () => openWorkspace()],
       ];
       TAB_ACTIONS.forEach((id, index) => {
         commands.push([
@@ -1195,8 +1210,16 @@ export function App() {
               onCancel={() => {
                 const back = navigation.beforeNewTopic;
                 const gone =
-                  back?.kind !== "topic" ||
-                  !topics.some((t) => t.machineId === back.machineId && t.topic.id === back.topicId);
+                  back?.kind === "workspace"
+                    ? !devices.some(
+                        (d) =>
+                          d.state?.machine.id === back.machineId &&
+                          d.state.workspaces.some((w) => w.id === back.workspaceId),
+                      )
+                    : back?.kind !== "topic" ||
+                      !topics.some(
+                        (t) => t.machineId === back.machineId && t.topic.id === back.topicId,
+                      );
                 // With no topic to go back to, the screen stays and keeps its draft.
                 if (gone) {
                   focusSidebar();
@@ -1208,6 +1231,19 @@ export function App() {
               onStarted={onTopicStarted}
               onStalled={onTopicStalled}
             />
+          ) : view?.kind === "workspace" && pageDevice && pageWorkspace ? (
+            <>
+              <DeviceNoticeLine device={pageDevice} onReconnect={reconnectNow} />
+              {error && <p className="error main-error">{error}</p>}
+              <WorkspacePage
+                key={`${view.machineId}/${view.workspaceId}`}
+                device={pageDevice}
+                workspace={pageWorkspace}
+                onOpenTopic={(topicId) => open({ kind: "topic", machineId: view.machineId, topicId })}
+                onNewTopic={() => createTopicIn(pageDevice, pageWorkspace)}
+                onPicker={setPicker}
+              />
+            </>
           ) : entry ? (
             <>
               <div className="tab-bar">
@@ -1338,6 +1374,11 @@ export function App() {
               ? devices.find((d) => d.state?.machine.id === sheet.machineId)?.state?.workspaces
               : undefined) ?? []
           }
+          mcpServers={
+            ("machineId" in sheet
+              ? devices.find((d) => d.state?.machine.id === sheet.machineId)?.state?.mcp_servers
+              : undefined) ?? []
+          }
           pairingRequests={
             ("machineId" in sheet
               ? devices.find((d) => d.state?.machine.id === sheet.machineId)?.state
@@ -1353,14 +1394,6 @@ export function App() {
             if (sheet.kind === "close") focusPane();
             if (sheet.kind === "archive") afterArchiving(sheet);
           }}
-        />
-      )}
-      {mcpEntry?.device.state && (
-        <TopicMcpSheet
-          state={mcpEntry.device.state}
-          topic={mcpEntry.topic}
-          online={isOnline(mcpEntry.device)}
-          onClose={() => setMcpTopic(null)}
         />
       )}
       {palette && <Palette items={paletteItems()} onClose={() => setPalette(false)} />}

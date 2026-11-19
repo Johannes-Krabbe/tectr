@@ -250,6 +250,8 @@ button.row:hover { background: var(--color-surface-raised); }
 
 .row.device.off .name { color: var(--color-text-tertiary); }
 .row.workspace { padding-left: var(--space-lg); }
+/* A div, because its + is a button, but it opens its page like a topic row does. */
+.row.workspace:hover:not(.current) { background: var(--color-surface-raised); }
 .row.topic { padding-left: var(--space-xl); color: var(--color-text-primary); font: var(--text-body); }
 .row.topic.read .name,
 .row.topic.stale .name { color: var(--color-text-tertiary); }
@@ -2202,4 +2204,209 @@ textarea.sheet-input {
   padding: var(--space-md) var(--space-lg);
   color: var(--color-text-tertiary);
   font: var(--text-meta);
+}
+
+/* A workspace's page: its topics and its MCP servers. Quiet until it has the keyboard: the
+   selection only shows while it does, and a row's controls only on the row in use. */
+.workspace-page { padding-top: var(--space-2xl); }
+.workspace-page:focus { outline: 0; }
+
+.workspace-in { gap: var(--space-2xl); }
+
+.workspace-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: 0 var(--space-sm);
+}
+
+.workspace-heading {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.workspace-title {
+  overflow: hidden;
+  font: var(--text-title);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.workspace-sub {
+  display: flex;
+  gap: var(--space-md);
+  min-width: 0;
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.workspace-sub .code {
+  min-width: 0;
+  overflow: hidden;
+  font: var(--text-code-small);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.workspace-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  height: var(--size-row);
+  padding: 0 var(--space-sm);
+  border-bottom: 1px solid var(--color-line-subtle);
+  margin-bottom: var(--space-xs);
+}
+
+.workspace-section-title {
+  color: var(--color-text-secondary);
+  font: var(--text-label);
+}
+
+.workspace-count {
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.workspace-section-head .icon-button { margin-left: auto; }
+
+.workspace-section .keybinds { margin-top: 0; }
+
+.workspace-page .keybind.current {
+  background: none;
+  color: var(--color-text-secondary);
+}
+
+.workspace-page .keybind:hover,
+.workspace-page:focus-within .keybind.current {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+}
+
+.workspace-row .server-name { color: var(--color-text-primary); }
+.workspace-row .server-summary { padding-left: var(--space-xs); }
+
+/* What an empty section offers, drawn like a row that hasn't happened yet. */
+.workspace-empty { color: var(--color-text-tertiary); }
+.workspace-empty svg {
+  flex: none;
+  width: calc(14 * var(--unit));
+  height: calc(14 * var(--unit));
+}
+
+.workspace-link {
+  align-self: flex-start;
+  margin: var(--space-xs) var(--space-sm) 0;
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+  cursor: default;
+}
+
+.workspace-link:hover { color: var(--color-text-secondary); }
+
+.workspace-error {
+  padding: var(--space-xs) var(--space-sm);
+  font: var(--text-meta);
+}
+
+/* Controls that only matter on the row in use: its menu, and a profile choice with nothing
+   to choose yet. */
+.workspace-row .row-menu,
+.workspace-row .row-quiet { visibility: hidden; }
+.workspace-row:hover .row-menu,
+.workspace-row:hover .row-quiet,
+.workspace-page:focus-within .workspace-row.current .row-menu,
+.workspace-page:focus-within .workspace-row.current .row-quiet,
+.workspace-row .row-menu[data-popup-open],
+.workspace-row .row-quiet[data-popup-open] { visibility: visible; }
+
+.workspace-row .picker svg {
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+  color: var(--color-text-tertiary);
+}
+
+.switch {
+  position: relative;
+  flex: none;
+  width: calc(26 * var(--unit));
+  height: calc(16 * var(--unit));
+  border-radius: calc(8 * var(--unit));
+  background: var(--color-surface-control-hover);
+  transition: background var(--motion-fast) ease;
+}
+
+.switch::after {
+  position: absolute;
+  top: calc(2 * var(--unit));
+  left: calc(2 * var(--unit));
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+  border-radius: 50%;
+  background: var(--color-text-secondary);
+  content: "";
+  transition: transform var(--motion-fast) ease, background var(--motion-fast) ease;
+}
+
+.switch[aria-checked="true"] { background: var(--color-accent-solid); }
+.switch[aria-checked="true"]::after {
+  background: var(--color-text-on-accent);
+  transform: translateX(calc(10 * var(--unit)));
+}
+
+.switch:disabled { opacity: 0.5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .switch, .switch::after { transition: none; }
+}
+
+button.keybind {
+  width: 100%;
+  text-align: left;
+}
+
+.keybind.off .server-name,
+.keybind.off .server-summary { color: var(--color-text-tertiary); }
+
+/* A profile, under its server in the library. */
+.keybind.nested { padding-left: var(--space-xl); }
+
+/* A row's own menu, for pointers. It shows where the row's keys would work. */
+.keybind .row-menu { visibility: hidden; }
+.keybind:hover .row-menu,
+.keybind.current .row-menu,
+.keybind .row-menu[data-popup-open] { visibility: visible; }
+
+.picker.alert { color: var(--color-status-waiting); }
+.picker .dim { color: var(--color-text-tertiary); }
+
+/* Checked or not, in a list where several can be. */
+.check {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(14 * var(--unit));
+  height: calc(14 * var(--unit));
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-xs);
+}
+
+.check.on {
+  border-color: var(--color-accent-solid);
+  background: var(--color-accent-solid);
+  color: var(--color-text-on-accent);
+}
+
+.check .icon {
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
 }

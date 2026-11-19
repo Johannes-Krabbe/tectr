@@ -155,7 +155,13 @@ async fn proxy(
 
     let mut retried = false;
     loop {
-        let token = core.mcp_access_token(&target.server_id, retried).await;
+        let token = match &target.profile_id {
+            Some(profile) => {
+                core.mcp_access_token(&target.server_id, profile, retried)
+                    .await
+            }
+            None => None,
+        };
         let mut upstream = core
             .http()
             .request(method.clone(), &target.url)
@@ -185,10 +191,11 @@ async fn proxy(
                 retried = true;
                 continue;
             }
-            core.mcp_needs_login(&target.server_id);
+            core.mcp_needs_login(&target.server_id, target.profile_id.as_ref());
             return rpc_error(
                 StatusCode::UNAUTHORIZED,
-                "this MCP server needs a login. Log in to it in tectr's MCP settings",
+                "this MCP server needs a login. Choose a logged in profile for it on the \
+                 workspace's page in tectr",
             );
         }
         return relay(response);

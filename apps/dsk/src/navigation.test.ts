@@ -73,6 +73,13 @@ test("leaving the new topic screen goes back to what was open before it", () => 
   assert.deepEqual(navigation.beforeNewTopic, topic);
 });
 
+test("the new topic screen goes back to the workspace page it was opened from", () => {
+  const page: View = { kind: "workspace", machineId: "m", workspaceId: "w" };
+  const navigation = goTo(goTo(empty, page), newTopic);
+  assert.deepEqual(navigation.beforeNewTopic, page);
+  assert.deepEqual(navigation.lastTopics, {});
+});
+
 test("a trip to settings doesn't change where the new topic screen goes back to", () => {
   let navigation: Navigation = goTo(empty, topic, "w");
   navigation = goTo(navigation, newTopic);

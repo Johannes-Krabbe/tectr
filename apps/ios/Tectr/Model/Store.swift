@@ -140,7 +140,8 @@ final class Store {
             for workspace in state.workspaces {
                 workspaces.append(Workspace(
                     id: workspace.id, deviceID: wire.url, name: workspace.name, path: workspace.path,
-                    topics: workspace.topics.map { Self.topic($0, in: workspace, state: state) }
+                    topics: workspace.topics.map { Self.topic($0, in: workspace, state: state) },
+                    mcp: workspace.mcp
                 ))
             }
             requests += state.approvals.map(Request.init)
@@ -183,7 +184,7 @@ final class Store {
             worktrees: topic.worktrees.map {
                 Worktree(id: $0.id, path: $0.path, branch: $0.branch, isRepo: $0.path == workspace.path)
             },
-            tabs: tabs, mcp: topic.mcp
+            tabs: tabs
         )
     }
 
@@ -553,12 +554,6 @@ final class Store {
         return ArchiveRisk(risk)
     }
 
-    /// Turns a device-wide server on or off for one topic. Matching the server's own setting
-    /// clears the topic's, so it follows the device again.
-    func setMcp(_ server: McpServer, on: Bool, for topicID: Topic.ID) {
-        fire(machineID(of: topicID), .setTopicMcp(topicID, server: server.id, on: on == server.enabled ? nil : on))
-    }
-
     func loadConversations(on deviceID: Device.ID?) async {
         guard let engine, let machine = device(deviceID)?.machineID else { return }
         do {
@@ -618,8 +613,7 @@ final class Store {
 
     func save(_ server: McpServer, isNew: Bool, on deviceID: Device.ID) {
         fire(device(deviceID)?.machineID, .saveMcpServer(
-            id: isNew ? nil : server.id, name: server.name, topicId: server.topicID,
-            transport: server.transport.wire, enabled: server.enabled
+            id: isNew ? nil : server.id, name: server.name, transport: server.transport.wire
         ))
     }
 
@@ -630,9 +624,31 @@ final class Store {
         fire(device(deviceID)?.machineID, .removeMcpServer(serverID))
     }
 
-    /// The address to log in at, in a browser.
-    func login(server serverID: McpServer.ID, on deviceID: Device.ID) async -> URL? {
-        guard case .mcpLogin(let url) = await send(device(deviceID)?.machineID, .loginMcpServer(serverID)) else { return nil }
+    /// Adds a profile, or renames one, and answers its ID once the device has it.
+    func saveProfile(
+        _ profileID: McpServer.Profile.ID?, named name: String, values: [String: String] = [:],
+        server serverID: McpServer.ID, on deviceID: Device.ID
+    ) async -> McpServer.Profile.ID? {
+        let command = Command.saveMcpProfile(server: serverID, id: profileID, name: name, values: values)
+        guard case .mcpProfile(let profile) = await send(device(deviceID)?.machineID, command) else { return nil }
+        return profile.id
+    }
+
+    func remove(profile profileID: McpServer.Profile.ID, server serverID: McpServer.ID, on deviceID: Device.ID) {
+        fire(device(deviceID)?.machineID, .removeMcpProfile(server: serverID, id: profileID))
+    }
+
+    /// Replaces which library servers a workspace's agents get.
+    func setMcp(_ servers: [McpServer.ID: WorkspaceMcp], for workspace: Workspace) {
+        fire(device(workspace.deviceID)?.machineID, .setWorkspaceMcp(workspace.id, servers: servers))
+    }
+
+    /// The address to log a profile in at, in a browser.
+    func login(
+        server serverID: McpServer.ID, profile profileID: McpServer.Profile.ID, on deviceID: Device.ID
+    ) async -> URL? {
+        let command = Command.loginMcpServer(serverID, profile: profileID)
+        guard case .mcpLogin(let url) = await send(device(deviceID)?.machineID, command) else { return nil }
         return URL(string: url)
     }
 
@@ -640,8 +656,8 @@ final class Store {
         await send(device(deviceID)?.machineID, .completeMcpLogin(state: state, code: code)) != nil
     }
 
-    func logout(server serverID: McpServer.ID, on deviceID: Device.ID) {
-        fire(device(deviceID)?.machineID, .logoutMcpServer(serverID))
+    func logout(server serverID: McpServer.ID, profile profileID: McpServer.Profile.ID, on deviceID: Device.ID) {
+        fire(device(deviceID)?.machineID, .logoutMcpServer(serverID, profile: profileID))
     }
 
     /// What it imported, worded.
@@ -773,12 +789,23 @@ private extension McpServer {
         case .codexApp(let id): .codexApp(id: id)
         case .unknown: .stdio(command: "", args: [], env: [:])
         }
-        let auth: Auth = switch wire.auth {
+        self.init(
+            id: wire.id, name: wire.name, transport: transport,
+            profiles: wire.profiles.map {
+                Profile(id: $0.id, name: $0.name, values: $0.values, auth: Auth($0.auth))
+            },
+            needsLogin: wire.needsLogin
+        )
+    }
+}
+
+private extension McpServer.Auth {
+    init(_ wire: Wire.McpAuth) {
+        self = switch wire {
         case .needsLogin: .needsLogin
         case .loggedIn: .loggedIn
         case .none, .unknown: .none
         }
-        self.init(id: wire.id, name: wire.name, topicID: wire.topicId, transport: transport, enabled: wire.enabled, auth: auth)
     }
 }
 

@@ -137,18 +137,32 @@ fn choose_client(
     )
 }
 
+/// What starting a login needs.
+pub struct Start<'a> {
+    pub server_url: &'a str,
+    pub headers: &'a [(String, String)],
+    /// One registered by hand.
+    pub client_id: Option<&'a str>,
+    /// An earlier login whose registration can be used again.
+    pub previous: Option<&'a Login>,
+    pub redirect_uri: &'a str,
+    pub state: &'a str,
+    /// Another profile is logged in already, so the person may want a different account.
+    pub select_account: bool,
+}
+
 /// Finds where to log in, registers tectr if needed, and returns the address to open in the
-/// browser with what finishing the login needs. `client_id` is one registered by hand, and
-/// `previous` an earlier login whose registration can be used again.
-pub async fn start(
-    http: &reqwest::Client,
-    server_url: &str,
-    headers: &[(String, String)],
-    client_id: Option<&str>,
-    previous: Option<&Login>,
-    redirect_uri: &str,
-    state: &str,
-) -> Result<(String, Pending)> {
+/// browser with what finishing the login needs.
+pub async fn start(http: &reqwest::Client, start: Start<'_>) -> Result<(String, Pending)> {
+    let Start {
+        server_url,
+        headers,
+        client_id,
+        previous,
+        redirect_uri,
+        state,
+        select_account,
+    } = start;
     let endpoints = discover(http, server_url, headers).await?;
     let (client_id, client_secret) =
         match choose_client(&endpoints, client_id, previous, redirect_uri)? {
@@ -173,6 +187,12 @@ pub async fn start(
             .append_pair("resource", &endpoints.resource);
         if let Some(scope) = &endpoints.scope {
             query.append_pair("scope", scope);
+        }
+        // The browser is usually still signed in to the account another profile used, and
+        // would hand that one over again without asking. Servers that don't know `prompt`
+        // ignore it.
+        if select_account {
+            query.append_pair("prompt", "select_account");
         }
     }
     let pending = Pending {
