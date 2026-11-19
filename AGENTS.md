@@ -63,6 +63,7 @@ mise run tokens:test  # tokens, contrast, no raw colors
 mise run tokens       # regenerate tokens and icons
 mise run ios:core     # build the engine for the iOS app, after any Rust change
 mise run logo         # regenerate logo files and app icons
+mise run clean        # cap target/ at 30 GB; every building task runs it first
 mise run release:build  # build the release app, CLI and daemon locally, publishing nothing
 mise run ios:testflight  # archive the iOS app and upload it to TestFlight; publishes, only when asked
 ```

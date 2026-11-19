@@ -5,19 +5,33 @@ zig = "0.17.1"
 node = "22"
 pnpm = "11.28.9"
 xcodegen = "2.46.0"
+# Prunes stale build artifacts, which cargo never deletes on its own.
+"cargo:cargo-sweep" = "0.8.0"
 
 [tasks.test]
+depends = ["clean"]
 description = "Run all tests, including daemon and client end-to-end tests against the fake agent"
 run = "cargo test"
 
 [tasks.lint]
+depends = ["clean"]
 run = ["cargo fmt --all --check", "cargo clippy --all-targets -- -D warnings"]
 
+# Cargo never deletes stale artifacts, so every toolchain bump, dependency update and feature
+# change leaves a full copy behind; target/ once reached 115 GB. Every task that builds runs
+# this first. It takes well under a second and deletes the oldest artifacts past the cap, which
+# sits far above what one set of builds needs, so it only ever removes stale ones.
+[tasks.clean]
+description = "Cap target/ at 30 GB by deleting the oldest build artifacts"
+run = "cargo sweep --maxsize 30GB"
+
 [tasks.daemon]
+depends = ["clean"]
 description = "Run the daemon on loopback, with the CLI its agents get built beside it"
 run = "cargo build -q -p cli && cargo run -p daemon --"
 
 [tasks.dsk]
+depends = ["clean"]
 description = "Run the desktop app in development"
 dir = "apps/dsk"
 run = "pnpm tauri dev"
@@ -32,10 +46,12 @@ dir = "apps/ios"
 run = "xcodegen generate"
 
 [tasks."ios:core"]
+depends = ["clean"]
 description = "Build the engine for the iOS app: the ffi crate, its Swift bindings and TectrCore's xcframework"
 run = "scripts/ios-core.sh"
 
 [tasks."ios:testflight"]
+depends = ["clean"]
 description = "Archive the iOS app on this Mac and upload it to TestFlight"
 run = "scripts/ios-testflight.sh"
 
@@ -52,13 +68,16 @@ description = "Regenerate the logo files in design/logo and copy the app icons i
 run = "node design/logo/build.mjs"
 
 [tasks.tectr]
+depends = ["clean"]
 description = "Run the CLI, for example: mise run tectr status"
 run = "cargo run -q -p cli --"
 
 [tasks."release:build"]
+depends = ["clean"]
 description = "Build the release app, CLI and daemon into target/release-dist, publishing nothing"
 run = "scripts/release.sh build"
 
 [tasks.release]
+depends = ["clean"]
 description = "Bump, build, tag and publish to GitHub Releases and the Homebrew tap, for example: mise run release 0.2.0"
 run = "scripts/release.sh publish"
