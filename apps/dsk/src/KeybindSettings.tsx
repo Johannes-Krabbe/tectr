@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { errorText } from "./engine";
 import {
-  act,
   type ActionId,
   type Binding,
   bindingLabel,
@@ -13,19 +12,23 @@ import {
   resetBindings,
   saveBindings,
   sequenceTimeout,
+  titled,
   useSettings,
 } from "./keybinds";
 import { formatSequence } from "./keymatch";
-import { inPane } from "./keys";
-import { hint, SETTINGS_MOVES, useHints } from "./shortcuts";
-import { GoInHint, listMoves, SettingsPage } from "./ui/SettingsPage";
-import { Kbd, Keys } from "./ui/StatusIcon";
+import { Icon } from "./ui/Icon";
+import { MenuButton, type MenuGroups } from "./ui/Menu";
+import { ResetButton, SettingRow, SettingsGroupBox, SettingsPage } from "./ui/SettingsPage";
 
 /** What switching holding on starts with. The file can set any other length. */
 const DEFAULT_HOLD_MS = 500;
 
+const MAX_SEQUENCE = 4;
+
 interface Recording {
-  mode: "replace" | "add";
+  id: ActionId;
+  /** The key being replaced, or a new one. */
+  slot: number | "add";
   /** Pressed but not saved yet. Any key can be a shortcut, including the ones that save
    * and cancel, so those only mean that once something has been pressed. */
   chord: string | null;
@@ -33,28 +36,26 @@ interface Recording {
   at: number;
 }
 
-const MAX_SEQUENCE = 4;
+/** Every word typed has to appear in the action's label, its group or one of its keys. */
+function matchesQuery(action: KeyAction, group: string, query: string): boolean {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  const text = [action.label, group, ...action.bindings.map(bindingLabel)].join(" ").toLowerCase();
+  return words.every((word) => text.includes(word));
+}
 
-/** Every shortcut in the app. What can be done to the selected one stays in a bar at the
- * bottom, so moving through the list never moves the list. */
-export function KeybindSettings({
-  active,
-  onActivate,
-  onLeave,
-}: {
-  /** This list has the keyboard, rather than the sections beside it. */
-  active: boolean;
-  onActivate: () => void;
-  onLeave: () => void;
-}) {
+/** Every shortcut in the app, as a form: a row per action with its keys as buttons. Clicking a
+ * key records a new one in its place, and the row's menu adds, removes and changes how a key
+ * has to be pressed. A search box finds an action among the many. */
+export function KeybindSettings() {
   const settings = useSettings();
   const rows = settings?.keybinds ?? [];
-  const [cursor, setCursor] = useState(0);
+  const [query, setQuery] = useState("");
   const [recording, setRecording] = useState<Recording | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const selected = Math.max(Math.min(cursor, rows.length - 1), 0);
-  const row: KeyAction | undefined = rows[selected];
-  const hasKeys = (row?.bindings.length ?? 0) > 0;
+  // The chip and buttons of the recording, so a click anywhere else can end it.
+  const recorder = useRef<HTMLSpanElement>(null);
+  const recordingAction = recording && rows.find((action) => action.id === recording.id);
 
   const update = (id: ActionId, bindings: Binding[]) => {
     setError(null);
@@ -82,96 +83,37 @@ export function KeybindSettings({
     );
   };
 
-  const commit = (action: KeyAction, { mode, chord }: Recording) => {
+  const record = (id: ActionId, slot: number | "add") => setRecording({ id, slot, chord: null, at: 0 });
+
+  const commit = (action: KeyAction, { slot, chord }: Recording) => {
     if (!chord) return;
-    const like = action.bindings[0];
+    // A new key is pressed the way the one it replaces was, or else like the action's others.
+    const like = (slot === "add" ? undefined : action.bindings[slot]) ?? action.bindings[0];
     const binding: Binding = {
       key: chord,
       hold_ms: like?.hold_ms ?? 0,
       repeat: like?.repeat ?? action.repeat,
     };
-    update(
-      action.id,
-      mode === "add"
-        ? [...action.bindings.filter((other) => other.key !== chord), binding]
-        : [binding],
-    );
+    const others = action.bindings.filter((other, index) => other.key !== chord && index !== slot);
+    const next =
+      slot === "add"
+        ? [...others, binding]
+        : action.bindings.flatMap((other, index) =>
+            index === slot ? [binding] : others.includes(other) ? [other] : [],
+          );
+    update(action.id, next);
     setRecording(null);
   };
 
-  useHints(
-    "pane",
-    active && !recording && row
-      ? [
-          hint("Change", "settings.edit"),
-          hint("Add key", "settings.add"),
-          ...(hasKeys
-            ? [
-                hint("Remove", "settings.unbind"),
-                hint("Holding", "settings.toggle_hold"),
-                hint("Repeating", "settings.toggle_repeat"),
-              ]
-            : []),
-          ...(row.customized ? [hint("Reset", "settings.reset")] : []),
-          ...SETTINGS_MOVES,
-        ]
-      : null,
-  );
-  // Until something is pressed every key is the new shortcut, including the ones that save.
-  useHints(
-    "overlay",
-    recording
-      ? recording.chord
-        ? [
-            hint("Save", "recorder.save"),
-            hint("Cancel", "recorder.cancel"),
-            hint("Keep pressing to make a sequence"),
-          ]
-        : [hint("Press the new shortcut")]
-      : null,
-  );
-
-  // Going back to the sections with the pointer ends a recording, which needs a selected row.
-  useEffect(() => {
-    if (!active) setRecording(null);
-  }, [active]);
-
-  useEffect(() => {
-    if (active) document.querySelector(".keybind.current")?.scrollIntoView({ block: "nearest" });
-  }, [selected, active]);
-
-  useEffect(() => {
-    if (!active || recording || !row) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (!inPane(event)) return;
-      const commands: [ActionId, () => void][] = [
-        ...listMoves(selected, rows.length, setCursor, onLeave),
-        ["settings.edit", () => setRecording({ mode: "replace", chord: null, at: 0 })],
-        ["settings.add", () => setRecording({ mode: "add", chord: null, at: 0 })],
-      ];
-      if (hasKeys) {
-        commands.push(
-          ["settings.unbind", () => update(row.id, [])],
-          ["settings.toggle_hold", () => toggleHold(row)],
-          ["settings.toggle_repeat", () => toggleRepeat(row)],
-        );
-      }
-      if (row.customized) commands.push(["settings.reset", () => reset(row.id)]);
-      commands.some(([id, run]) => act(event, id, run));
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-
   // Takes every key while recording, ahead of everything else in the app.
   useEffect(() => {
-    if (!recording || !row) return;
+    if (!recording || !recordingAction) return;
     pauseKeys(true);
     const onKey = (event: KeyboardEvent) => {
       event.preventDefault();
       event.stopImmediatePropagation();
       if (event.repeat) return;
-      if (recording.chord && matches(event, "recorder.save")) commit(row, recording);
+      if (recording.chord && matches(event, "recorder.save")) commit(recordingAction, recording);
       else if (recording.chord && matches(event, "recorder.cancel")) setRecording(null);
       else {
         const chord = recordedChord(event);
@@ -184,112 +126,144 @@ export function KeybindSettings({
         setRecording({ ...recording, chord: continues ? `${recording.chord} ${chord}` : chord, at });
       }
     };
+    // Pointing somewhere else is leaving it, the way it is for a text box.
+    const onPointer = (event: MouseEvent) => {
+      if (!(event.target instanceof Node) || !recorder.current?.contains(event.target)) setRecording(null);
+    };
     window.addEventListener("keydown", onKey, true);
+    window.addEventListener("mousedown", onPointer, true);
     return () => {
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("mousedown", onPointer, true);
       pauseKeys(false);
     };
-  }, [recording, row]);
+  }, [recording, recordingAction]);
 
-  const footer = recording ? (
-    <>
-      <span className="settings-actions-what">
-        {recording.chord
-          ? "Keep pressing to make a sequence like gg"
-          : `Press the new shortcut for ${row?.label}`}
+  const menu = (action: KeyAction): MenuGroups => {
+    const hasKeys = action.bindings.length > 0;
+    const keys = [
+      { id: "add", label: "Add another key", run: () => record(action.id, "add") },
+      ...action.bindings.map((binding, index) => ({
+        id: `remove/${binding.key}`,
+        label: `Remove ${bindingLabel(binding)}`,
+        run: () => update(action.id, action.bindings.filter((_, other) => other !== index)),
+      })),
+    ];
+    if (!hasKeys) return [keys];
+    const holds = action.bindings.some((binding) => binding.hold_ms > 0);
+    const repeats = action.bindings.some((binding) => binding.repeat);
+    return [
+      keys,
+      [
+        {
+          id: "hold",
+          label: holds ? "Don't require holding" : "Hold to press",
+          run: () => toggleHold(action),
+        },
+        {
+          id: "repeat",
+          label: repeats ? "Don't repeat" : "Repeat while held",
+          run: () => toggleRepeat(action),
+        },
+      ],
+    ];
+  };
+
+  const recorderFor = (action: KeyAction, current: Recording) => (
+    <span ref={recorder} className="key-recording">
+      <span className="kbd key-chip recording">
+        {current.chord ? formatSequence(current.chord, MAC) : "Press a key"}
       </span>
       <button
-        className="button primary"
-        disabled={!recording.chord}
-        onClick={() => row && commit(row, recording)}
+        className="button small primary"
+        disabled={!current.chord}
+        title={titled("Save", "recorder.save")}
+        onClick={() => commit(action, current)}
       >
         Save
-        {recording.chord && <Keys action="recorder.save" />}
       </button>
-      <button className="button" onClick={() => setRecording(null)}>
+      <button className="button small" title={titled("Cancel", "recorder.cancel")} onClick={() => setRecording(null)}>
         Cancel
-        {recording.chord && <Keys action="recorder.cancel" />}
       </button>
-    </>
-  ) : active && row ? (
-    <>
-      <span className="settings-actions-what" />
-      <button className="button" onClick={() => setRecording({ mode: "replace", chord: null, at: 0 })}>
-        Change
-        <Keys action="settings.edit" />
-      </button>
-      <button className="button" onClick={() => setRecording({ mode: "add", chord: null, at: 0 })}>
-        Add
-        <Keys action="settings.add" />
-      </button>
-      <button className="button" disabled={!hasKeys} onClick={() => update(row.id, [])}>
-        Remove
-        <Keys action="settings.unbind" />
-      </button>
-      <button className="button" disabled={!hasKeys} onClick={() => toggleHold(row)}>
-        {row.bindings.some((binding) => binding.hold_ms > 0) ? "Holding on" : "Holding off"}
-        <Keys action="settings.toggle_hold" />
-      </button>
-      <button className="button" disabled={!hasKeys} onClick={() => toggleRepeat(row)}>
-        {row.bindings.some((binding) => binding.repeat) ? "Repeating on" : "Repeating off"}
-        <Keys action="settings.toggle_repeat" />
-      </button>
-      <button className="button" disabled={!row.customized} onClick={() => reset(row.id)}>
-        Reset
-        <Keys action="settings.reset" />
-      </button>
-    </>
-  ) : (
-    <GoInHint />
+    </span>
   );
 
+  const keysOf = (action: KeyAction) => {
+    const current = recording?.id === action.id ? recording : null;
+    const chips = action.bindings.map((binding, index) =>
+      current?.slot === index ? (
+        <span key={binding.key}>{recorderFor(action, current)}</span>
+      ) : (
+        <button
+          key={binding.key}
+          className="kbd key-chip"
+          title={`Change ${bindingLabel(binding)}`}
+          onClick={() => record(action.id, index)}
+        >
+          {bindingLabel(binding)}
+        </button>
+      ),
+    );
+    if (current?.slot === "add") chips.push(<span key="add">{recorderFor(action, current)}</span>);
+    else if (action.bindings.length === 0) {
+      chips.push(
+        <button key="none" className="kbd key-chip empty" title="Choose a key" onClick={() => record(action.id, "add")}>
+          No key
+        </button>,
+      );
+    }
+    return chips;
+  };
+
+  const groups = (settings?.groups ?? [])
+    .map((group) => ({
+      group,
+      actions: rows.filter((action) => action.group === group.id && matchesQuery(action, group.title, query)),
+    }))
+    .filter(({ actions }) => actions.length > 0);
+
   return (
-    <SettingsPage error={error} footer={footer}>
-      {settings?.groups.map((group) => (
-        <section key={group.id} className="settings-group">
-          <h3 className="settings-group-title">{group.title}</h3>
-          <div className="keybinds">
-            {rows
-              .filter((action) => action.group === group.id)
-              .map((action) => {
-                const index = rows.indexOf(action);
-                const current = active && index === selected;
-                const recordingHere = current ? recording : null;
-                return (
-                  <div
-                    key={action.id}
-                    className={`keybind ${current ? "current" : ""}`}
-                    // Moving, rather than entering: a row scrolling under a pointer that
-                    // isn't moving must not take the keyboard or the selection.
-                    onMouseMove={(event) => {
-                      if (recording || (event.movementX === 0 && event.movementY === 0)) return;
-                      setCursor(index);
-                      onActivate();
-                    }}
-                  >
-                    <span className="name">{action.label}</span>
-                    {!recordingHere && action.customized && <span className="meta">Changed</span>}
-                    {current && !recording && !action.customized && action.inherits && (
-                      <span className="meta">Follows {action.inherits}</span>
-                    )}
-                    {recordingHere ? (
-                      recordingHere.chord ? (
-                        <Kbd>{formatSequence(recordingHere.chord, MAC)}</Kbd>
-                      ) : (
-                        <span className="meta">Press a key</span>
-                      )
-                    ) : action.bindings.length > 0 ? (
-                      action.bindings.map((binding) => (
-                        <Kbd key={binding.key}>{bindingLabel(binding)}</Kbd>
-                      ))
-                    ) : (
-                      <span className="meta">No key</span>
-                    )}
-                  </div>
-                );
-              })}
-          </div>
-        </section>
+    <SettingsPage error={error}>
+      <input
+        className="settings-search"
+        type="search"
+        placeholder="Search shortcuts"
+        aria-label="Search shortcuts"
+        value={query}
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && query) {
+            event.stopPropagation();
+            setQuery("");
+          }
+          // Down goes from the search into what it found, as it would in a native list.
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            document.querySelector<HTMLElement>(".settings [data-setting]")?.focus();
+          }
+        }}
+      />
+      {groups.length === 0 && <p className="settings-note">No shortcut matches</p>}
+      {groups.map(({ group, actions }) => (
+        <SettingsGroupBox key={group.id} title={group.title}>
+          {actions.map((action) => (
+            <SettingRow
+              key={action.id}
+              label={action.label}
+              quiet={
+                <MenuButton label={`Keys for ${action.label}`} className="icon-button" groups={menu(action)}>
+                  <Icon name="more" />
+                </MenuButton>
+              }
+            >
+              {action.customized && <ResetButton label={action.label} onReset={() => reset(action.id)} />}
+              <span className="key-chips">{keysOf(action)}</span>
+            </SettingRow>
+          ))}
+        </SettingsGroupBox>
       ))}
     </SettingsPage>
   );

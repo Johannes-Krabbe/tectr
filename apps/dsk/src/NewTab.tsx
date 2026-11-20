@@ -1,10 +1,10 @@
 import { useEffect, useRef } from "react";
 import { type AgentChoice, type AgentDraft, AgentForm } from "./AgentForm";
 import { errorText, request } from "./engine";
+import { ImportConversation } from "./ImportConversation";
 import { act, type ActionId } from "./keybinds";
 import { focusPane, inPane } from "./keys";
 import type { TopicEntry } from "./model";
-import { hint, type Hint, useHints } from "./shortcuts";
 import { Icon, type IconName } from "./ui/Icon";
 import { Keys } from "./ui/StatusIcon";
 
@@ -23,29 +23,21 @@ interface Kind {
   kind: TabKind;
   label: string;
   icon: IconName;
-  action: ActionId;
+  /** The letter that opens it, for the kinds opened often enough to have one. */
+  action?: ActionId;
   built: boolean;
 }
 
-// In the order of their keys, so the list reads as a numbered menu.
+// Importing is rare, so it has no letter: arrows and Enter, or a click, reach it.
 const KINDS: Kind[] = [
   { kind: "agent", label: "Agent", icon: "agent", action: "new_tab.agent", built: true },
   { kind: "terminal", label: "Terminal", icon: "terminal", action: "new_tab.terminal", built: true },
   { kind: "diff", label: "Diff", icon: "diff", action: "new_tab.diff", built: true },
-  {
-    kind: "import",
-    label: "Import a conversation",
-    icon: "import",
-    action: "new_tab.import",
-    built: true,
-  },
+  { kind: "import", label: "Import a conversation", icon: "import", built: true },
 ];
 
-const BUILT = KINDS.filter((k) => k.built);
-
 /** Where a topic's next tab starts: choose what it is, then set it up. Choosing is a list
- * rather than a form, so every kind is one key away and kinds that need no setup can open
- * straight away. */
+ * rather than a form, so kinds that need no setup open straight away. */
 export function NewTab({
   entry,
   online,
@@ -68,8 +60,8 @@ export function NewTab({
   onTerminal: () => void;
   /** Neither does a diff. */
   onDiff: () => void;
-  /** Chooses a Claude Code or Codex conversation to carry on here. */
-  onImport: () => void;
+  /** Carries on a Claude Code or Codex conversation here, chosen in the tab. */
+  onImport: (agent: string, id: string) => void;
   onStarted: (sessionId: string) => void;
   /** The agent started but its prompt didn't reach it, so starting again would make another. */
   onStalled: (sessionId: string, reason: string) => void;
@@ -84,10 +76,6 @@ export function NewTab({
     }
     if (kind === "diff") {
       onDiff();
-      return;
-    }
-    if (kind === "import") {
-      onImport();
       return;
     }
     onState({ ...state, kind });
@@ -117,6 +105,18 @@ export function NewTab({
     }
   };
 
+  if (state.kind === "import") {
+    return (
+      <ImportConversation
+        entry={entry}
+        onImport={onImport}
+        onBack={() => {
+          onState({ ...state, kind: null });
+          focusPane();
+        }}
+      />
+    );
+  }
   if (state.kind === "agent") {
     return (
       <AgentForm
@@ -141,11 +141,6 @@ function Kinds({ online, onChoose }: { online: boolean; onChoose: (kind: TabKind
   const chooseRef = useRef(onChoose);
   chooseRef.current = onChoose;
 
-  const hints: Hint[] = BUILT.map((k) => hint(k.label, k.action));
-  if (BUILT.length > 1) hints.push(hint("Move", "new_tab.up", "new_tab.down"));
-  hints.push(hint("Sidebar", "pane.back"));
-  useHints("pane", hints);
-
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!inPane(event)) return;
@@ -156,8 +151,8 @@ function Kinds({ online, onChoose }: { online: boolean; onChoose: (kind: TabKind
         const next = choices[(from + step + choices.length) % choices.length];
         if (next instanceof HTMLElement) next.focus();
       };
-      const handled = KINDS.some(({ kind, action }) =>
-        act(event, action, () => chooseRef.current(kind)),
+      const handled = KINDS.some(
+        ({ kind, action }) => action !== undefined && act(event, action, () => chooseRef.current(kind)),
       );
       if (handled) return;
       if (act(event, "new_tab.up", () => move(-1))) return;
@@ -186,7 +181,7 @@ function Kinds({ online, onChoose }: { online: boolean; onChoose: (kind: TabKind
             <Icon name={k.icon} />
             <span className="name">{k.label}</span>
             {!k.built && <span className="meta">Not built yet</span>}
-            <Keys action={k.action} />
+            {k.action && <Keys action={k.action} />}
           </button>
         ))}
       </div>

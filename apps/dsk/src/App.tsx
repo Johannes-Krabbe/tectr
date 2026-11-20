@@ -1,8 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AgentPane } from "./AgentPane";
-import { shownValue } from "./appearance";
 import { AppSettings } from "./AppSettings";
-import { type DeviceField, DeviceSettings } from "./DeviceSettings";
+import { DeviceSettings } from "./DeviceSettings";
 import {
   type Approval,
   type Device,
@@ -25,9 +24,7 @@ import {
   showsSteps,
   titled,
   toggleSteps,
-  toggleVim,
   useSettings,
-  vimOn,
 } from "./keybinds";
 import {
   focusPane,
@@ -37,28 +34,21 @@ import {
   overlayOpen,
   pointedRow,
   pressAdd,
-  sheetOpen,
-  subscribeKeyboardPlace,
+  subscribeFocus,
 } from "./keys";
 import {
   allTopics,
-  awakeUntil,
   connectionProblem,
-  conversationsFor,
   deviceNotice,
-  folderName,
   isOnline,
-  keepsAwake,
   type MoveChoice,
   moveChoices,
   sessionState,
   tabLabel,
   tabsOf,
   type TopicEntry,
-  topicState,
   topicWorktree,
   unreadToggle,
-  withKeepAwakeToggled,
 } from "./model";
 import {
   awaitingStartedTab,
@@ -80,18 +70,15 @@ import { appItems, type Runnable, topicItems, withRuns } from "./menus";
 import { DiffPane, forgetDiffView } from "./DiffPane";
 import { NEW_TAB_STATE, NewTab, type NewTabState } from "./NewTab";
 import { NewTopic, type NewTopicForm } from "./NewTopic";
-import { Palette, type PaletteItem, screenPaletteItems } from "./Palette";
 import { isLoopback } from "./pathInput";
 import { appSections, settingsGroups } from "./settingsNav";
 import { Sheets, type SheetRequest } from "./Sheets";
-import { globalHints, pinnedHints, useHints } from "./shortcuts";
 import { Sidebar } from "./Sidebar";
 import { Icon } from "./ui/Icon";
 import { MenuButton, type MenuGroups } from "./ui/Menu";
 import type { SettingsNav } from "./ui/SettingsPage";
-import { ShortcutBar } from "./ui/ShortcutBar";
 import { Toasts } from "./ui/Toasts";
-import { Keys, StatusIcon } from "./ui/StatusIcon";
+import { StatusIcon } from "./ui/StatusIcon";
 import { WorkspacePage } from "./WorkspacePage";
 
 /** One for every session without draft images, so a pane's images stay the same object. */
@@ -117,13 +104,6 @@ const TAB_ACTIONS: ActionId[] = [
   "global.tab_9",
 ];
 
-/** A list to choose from in the palette's place, like archived topics. */
-interface Picker {
-  placeholder: string;
-  empty: string;
-  items: PaletteItem[];
-}
-
 /** A topic on its way out, and where the keyboard was when it left. */
 interface Leaving {
   machineId: string;
@@ -131,9 +111,6 @@ interface Leaving {
   topic: Topic;
   fromSidebar: boolean;
 }
-
-const archivedOn = (ms: number) =>
-  new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
 interface RequestItem {
   approval: Approval;
@@ -175,13 +152,6 @@ export function App() {
   // Each topic's new tab, kept while you look elsewhere. Topic ID to state.
   const [newTabStates, setNewTabStates] = useState<Record<string, NewTabState>>({});
   const [sheet, setSheet] = useState<SheetRequest | null>(null);
-  // The device whose name is being edited in place, in its settings.
-  const [editingDevice, setEditingDevice] = useState<{
-    machineId: string;
-    field: DeviceField;
-  } | null>(null);
-  const [palette, setPalette] = useState(false);
-  const [picker, setPicker] = useState<Picker | null>(null);
   // The tab just started here, which is chosen before the daemon's news of it arrives.
   const [startedHere, setStartedHere] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -192,7 +162,7 @@ export function App() {
   // Tabs marked unread here, which looking at them doesn't read until you've looked away.
   const [keptUnread, setKeptUnread] = useState<string[]>([]);
   const focused = useWindowFocused();
-  const onSidebar = useSyncExternalStore(subscribeKeyboardPlace, inSidebar);
+  const onSidebar = useSyncExternalStore(subscribeFocus, inSidebar);
 
   const { view } = navigation;
 
@@ -231,7 +201,6 @@ export function App() {
   const session = sessions.find((s) => s.id === shownTabId);
   const shownTerminal = entry?.topic.terminals?.find((t) => t.id === shownTabId);
   const shownDiff = entry?.topic.diffs?.find((d) => d.id === shownTabId);
-  const shownLabel = tabs.find((tab) => tab.id === shownTabId);
   const onNewTab = entry !== undefined && shownTabId === NEW_TAB;
   const shownKey = JSON.stringify([view, shownTabId]);
 
@@ -375,30 +344,13 @@ export function App() {
     await forgetDevice(device.url);
   };
 
-  // Editing a name in place ends once its device's General settings aren't showing.
-  useEffect(() => {
-    const showing =
-      view?.kind === "device_settings" &&
-      view.machineId === editingDevice?.machineId &&
-      (view.section ?? "general") === "general";
-    if (editingDevice && !showing) setEditingDevice(null);
-  }, [view, editingDevice]);
-
-  /** Opens the device's general settings with `field` ready to type in. */
-  const editDevice = (device: Device, field: DeviceField) => {
-    if (!device.state || !isOnline(device)) return;
-    const { id } = device.state.machine;
-    preview({ kind: "device_settings", machineId: id, section: "general" });
-    setEditingDevice({ machineId: id, field });
-  };
-
   const openSettings = (machineId: string, section?: string) => {
     preview({ kind: "device_settings", machineId, section });
   };
 
   const openAppSettings = (section = navigation.settingsSection) => {
     preview({ kind: "app_settings", section });
-    // The keys here would otherwise reach whichever row or text box has focus.
+    // Settings start with the keyboard on their list of sections, rather than wherever it was.
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   };
 
@@ -415,29 +367,8 @@ export function App() {
     open({ kind: "new_topic", machineId: device.state.machine.id, workspaceId: workspace.id });
   };
 
-  // Where the new topic and new workspace keys create things. The palette and the workspace
-  // select reach everywhere else.
-  const onlineEntry = entry && isOnline(entry.device) ? entry : undefined;
-  const onlinePage =
-    pageDevice && pageWorkspace && isOnline(pageDevice)
-      ? { device: pageDevice, workspace: pageWorkspace }
-      : undefined;
-  const workspaceDevice = onlineEntry?.device ?? onlinePage?.device ?? devices.find(isOnline);
-  const topicDevice =
-    onlineEntry?.device ??
-    onlinePage?.device ??
-    devices.find((d) => isOnline(d) && d.state?.workspaces.length);
-  const topicWorkspace =
-    onlineEntry?.workspace ?? onlinePage?.workspace ?? topicDevice?.state?.workspaces[0];
-
-  const newWorkspace = () => {
-    if (workspaceDevice) addWorkspaceOn(workspaceDevice);
-  };
-
-  const newTopic = () => {
-    if (view?.kind === "new_topic") focusPane();
-    else if (topicDevice && topicWorkspace) createTopicIn(topicDevice, topicWorkspace);
-  };
+  /** Where the empty window's button adds a workspace: the first device that can take one. */
+  const firstOnline = devices.find(isOnline);
 
   const onTopicStarted = (machineId: string, topicId: string, sessionId: string) => {
     setNewTopicForm({});
@@ -528,40 +459,30 @@ export function App() {
       .catch(reportFailure);
   };
 
-  /** Conversations are in each agent's own files on the topic's device, so it's asked when this
-   * opens. The imported one opens as a tab, which from the new tab takes the new tab's place. */
-  const findConversations = async (target: TopicEntry) => {
+  /** Carries on a conversation from another agent's files as a tab, in the new tab's place. */
+  const importConversation = (agent: string, id: string) => {
+    if (!entry || !isOnline(entry.device)) return;
+    const { machineId, topic } = entry;
+    setError(null);
+    request(machineId, { command: "import_conversation", topic_id: topic.id, agent, id })
+      .then((imported) => {
+        if (imported.output === "session") onTabStarted(topic.id, imported.session.id);
+      })
+      .catch(reportFailure);
+  };
+
+  /** Opens the topic's new tab on its import page, where the conversation is chosen. */
+  const openImport = (target: TopicEntry) => {
     if (!isOnline(target.device)) return;
-    const { machineId, topic } = target;
-    const fromNewTab = onNewTab && target === entry;
-    const output = await request(machineId, { command: "list_conversations" });
-    const listed = output.output === "conversations" ? output.conversations : [];
-    const providers = target.device.state?.providers ?? [];
-    const importIt = (agent: string, id: string) => {
-      setError(null);
-      request(machineId, { command: "import_conversation", topic_id: topic.id, agent, id })
-        .then((imported) => {
-          if (imported.output !== "session") return;
-          if (fromNewTab) onTabStarted(topic.id, imported.session.id);
-          else selectTab(topic.id, imported.session.id);
-        })
-        .catch(reportFailure);
-    };
-    const items = conversationsFor(listed, target.workspace, topic).map((c) => ({
-      id: `conversation/${c.agent}/${c.id}`,
-      label: c.title,
-      detail: [
-        providers.find((p) => p.agent === c.agent)?.name ?? c.agent,
-        folderName(c.cwd),
-        archivedOn(c.updated_at_ms),
-      ].join(", "),
-      run: () => importIt(c.agent, c.id),
+    const topicId = target.topic.id;
+    const already = target === entry && onNewTab;
+    setNewTabStates((current) => ({
+      ...current,
+      [topicId]: { ...(current[topicId] ?? NEW_TAB_STATE), kind: "import" },
     }));
-    setPicker({
-      placeholder: `Import a conversation into ${topic.name}`,
-      empty: "No Claude Code or Codex conversations to import",
-      items,
-    });
+    preview({ kind: "topic", machineId: target.machineId, topicId });
+    setNavigation((current) => openNewTab(current, topicId));
+    focusOnceShown(!already, focusPane);
   };
 
   /** The prompt stays in the new tab, because it never reached the agent. */
@@ -611,7 +532,6 @@ export function App() {
     entry !== undefined &&
     id !== undefined &&
     (id === NEW_TAB ? tabs.length > 0 : isOnline(entry.device));
-  const canClose = canCloseTab(shownTabId);
 
   /** Stops the agent and removes its tab, asking first if it's still running. A new tab
    * closes with what was typed in it. It's the shown tab unless another is named, which its
@@ -713,41 +633,6 @@ export function App() {
     focusWhenShown.current = next.kind === "new_topic" ? focusPane : stayOnSide;
   };
 
-  const restoreTopic = (machineId: string, topicId: string) => {
-    setError(null);
-    request(machineId, { command: "restore_topic", topic_id: topicId })
-      .then(() => open({ kind: "topic", machineId, topicId }))
-      .catch(reportFailure);
-  };
-
-  /** Archived topics aren't in any device's state, so each device is asked when this opens. */
-  const findArchived = async () => {
-    const lists = await Promise.all(
-      devices.filter(isOnline).map(async (device) => {
-        const machineId = device.state!.machine.id;
-        const output = await request(machineId, { command: "list_archived_topics" });
-        const archived = output.output === "archived_topics" ? output.topics : [];
-        return archived.map((topic) => ({ device, machineId, topic }));
-      }),
-    );
-    const items = lists
-      .flat()
-      .sort((a, b) => b.topic.archived_at_ms - a.topic.archived_at_ms)
-      .map(({ device, machineId, topic }) => ({
-        id: `archived/${machineId}/${topic.id}`,
-        label: topic.name,
-        detail: [
-          device.state?.workspaces.find((w) => w.id === topic.workspace_id)?.name,
-          device.state?.machine.name,
-          archivedOn(topic.archived_at_ms),
-        ]
-          .filter(Boolean)
-          .join(", "),
-        run: () => restoreTopic(machineId, topic.id),
-      }));
-    setPicker({ placeholder: "Restore an archived topic", empty: "No archived topics", items });
-  };
-
   const moveToFolder = (target: TopicEntry, choice: MoveChoice) => {
     if (!isOnline(target.device)) return;
     if (target.topic.sessions.some(isActive)) {
@@ -760,17 +645,6 @@ export function App() {
       topic_id: target.topic.id,
       to: choice.target,
     }).catch(reportFailure);
-  };
-
-  const pickFolder = (target: TopicEntry) => {
-    if (!isOnline(target.device)) return;
-    const items = moveChoices(target.topic, target.workspace.path).map((choice) => ({
-      id: `move/${choice.id}`,
-      label: choice.label,
-      detail: choice.detail,
-      run: () => moveToFolder(target, choice),
-    }));
-    setPicker({ placeholder: `Move ${target.topic.name} to`, empty: "Nowhere to move", items });
   };
 
   const nextRequest = () => {
@@ -787,62 +661,52 @@ export function App() {
   const topicActions = (target: TopicEntry): Runnable[][] => {
     if (!isOnline(target.device)) return [];
     const toggle = unreadToggle(target.topic);
-    return withRuns(
-      topicItems({
-        name: target.topic.name,
-        workspace: target.workspace.name,
-        branch: topicWorktree(target.topic)?.branch,
-        toggle: { unread: toggle.unread, count: toggle.sessions.length },
-        onNewTab: onNewTab && target === entry,
-      }),
+    const groups = withRuns(
+      topicItems({ toggle: { unread: toggle.unread, count: toggle.sessions.length } }),
       {
         "rename-topic": () => renameTopic(target),
         "toggle-unread": () => toggleUnread(target),
-        "move-topic": () => pickFolder(target),
+        "move-topic": () => {},
         "open-workspace": () => openWorkspace(target),
-        "import-conversation": () => void findConversations(target).catch(reportFailure),
+        "import-conversation": () => openImport(target),
         "archive-topic": () => archiveTopic(target),
       },
     );
+    // There are only ever a few places to move to, so they're chosen right in the menu.
+    const places = moveChoices(target.topic, target.workspace.path).map((choice) => ({
+      id: `move/${choice.id}`,
+      label: choice.label,
+      run: () => moveToFolder(target, choice),
+    }));
+    return groups.map((group) =>
+      group.map((item) => (item.id === "move-topic" ? { ...item, items: places } : item)),
+    );
   };
 
-  /** What isn't about one topic, with what runs it. */
+  /** What's about every topic at once, with what runs it. */
   const appActions = (): Runnable[][] =>
     withRuns(
-      appItems({
-        requests: requests.length,
-        unread: unreadTopics.length,
-        online: devices.some(isOnline),
-        away: devices.some((device) => !isOnline(device)),
-        local: localDevice?.state?.machine.name,
-      }),
-      {
-        next: nextRequest,
-        "mark-all-read": markAllRead,
-        "archived-topics": () => void findArchived().catch(reportFailure),
-        reconnect: reconnectNow,
-        "add-device": () => setSheet({ kind: "add_device" }),
-        "pair-machine": () => {
-          if (localDevice) void pairWith(localDevice).catch(reportFailure);
-        },
-      },
+      appItems({ requests: requests.length, unread: unreadTopics.length }),
+      { next: nextRequest, "mark-all-read": markAllRead },
     );
 
   const asMenu = (groups: Runnable[][]): MenuGroups =>
     groups.map((group) =>
-      group.map(({ id, label, key, run }) => ({ id, label, keys: keysLabel(key), run })),
+      group.map(({ id, label, key, items, run }) => ({ id, label, keys: key && keysLabel(key), items, run })),
     );
 
-  const asPalette = (groups: Runnable[][]): PaletteItem[] =>
-    groups
-      .flat()
-      .map(({ id, inPalette, detail, key, run }) => ({
-        id,
-        label: inPalette,
-        detail,
-        keys: keysLabel(key),
-        run,
-      }));
+  /** The tab bar's menu: what the topic offers, then how an agent's tab shows its work, which is
+   * a setting and so works while the device is away. */
+  const tabBarMenu = (target: TopicEntry): MenuGroups => {
+    const groups = asMenu(topicActions(target));
+    if (!session) return groups;
+    const steps = {
+      id: "toggle-steps",
+      label: showsSteps() ? "Fold tool calls" : "Show tool calls",
+      run: () => void toggleSteps().catch(reportFailure),
+    };
+    return [...groups, [steps]];
+  };
 
   /** A topic's menu, for a right click on its row. */
   const topicMenu = (machineId: string, topicId: string): MenuGroups => {
@@ -850,205 +714,6 @@ export function App() {
     return target ? asMenu(topicActions(target)) : [];
   };
 
-  /** What's most useful here comes first, then every topic, then creating anywhere. */
-  const paletteItems = (): PaletteItem[] => {
-    const items: PaletteItem[] = [];
-    if (entry && isOnline(entry.device)) {
-      items.push({
-        id: "new-tab",
-        label: `New tab in ${entry.topic.name}`,
-        keys: keysLabel("global.new_tab"),
-        run: newTab,
-      });
-      items.push({
-        id: "new-terminal",
-        label: `New terminal in ${entry.topic.name}`,
-        keys: onNewTab ? keysLabel("new_tab.terminal") : undefined,
-        run: openTerminal,
-      });
-      items.push({
-        id: "new-diff",
-        label: `New diff in ${entry.topic.name}`,
-        keys: onNewTab ? keysLabel("new_tab.diff") : undefined,
-        run: openDiff,
-      });
-      items.push(...asPalette(topicActions(entry)));
-    }
-    items.push(...screenPaletteItems());
-    if (session && isActive(session)) {
-      items.push({
-        id: "interrupt",
-        label: "Interrupt the agent",
-        keys: keysLabel("global.interrupt"),
-        run: () => {
-          interrupt();
-          focusPane();
-        },
-      });
-    }
-    items.push({
-      id: "toggle-vim",
-      label: vimOn() ? "Turn vim keys off" : "Turn vim keys on",
-      detail: "Message boxes",
-      keys: keysLabel("global.toggle_vim"),
-      run: () => {
-        toggleVim().catch(reportFailure);
-        focusPane();
-      },
-    });
-    if (session) {
-      items.push({
-        id: "toggle-steps",
-        label: showsSteps() ? "Fold tool calls" : "Show tool calls",
-        keys: keysLabel("pane.toggle_steps"),
-        run: () => {
-          toggleSteps().catch(reportFailure);
-          focusPane();
-        },
-      });
-    }
-    if (entry && tabIds.length > 1) {
-      tabIds.forEach((id, index) => {
-        const s = sessions.find((other) => other.id === id);
-        const tab = tabs.find((other) => other.id === id);
-        items.push({
-          id: `tab/${id}`,
-          label: tab ? tabLabel(tab) : "New tab",
-          detail: "Tab",
-          keys: index < 9 ? keysLabel(TAB_ACTIONS[index]) : undefined,
-          state: s && sessionState(s, isOnline(entry.device)),
-          run: () => selectTab(entry.topic.id, id),
-        });
-      });
-    }
-    if (entry && canClose) {
-      items.push({
-        id: "close-tab",
-        label: `Close ${shownLabel ? tabLabel(shownLabel) : "the new tab"}`,
-        detail: "Tab",
-        keys: keysLabel("global.close_tab"),
-        run: () => closeTab(),
-      });
-    }
-    items.push(...asPalette(appActions()));
-    for (const device of devices.filter((d) => !isLoopback(d.url))) {
-      items.push({
-        id: `forget-device/${device.url}`,
-        label: `Remove ${device.state?.machine.name ?? device.url} from this app`,
-        keys: device === settingsDevice ? keysLabel("pairing.forget") : undefined,
-        run: () => void forget(device).catch(reportFailure),
-      });
-    }
-    items.push({
-      id: "sidebar",
-      label: "Go to the sidebar",
-      keys: keysLabel("global.toggle_sidebar"),
-      run: () => requestAnimationFrame(focusSidebar),
-    });
-    items.push({
-      id: "app-settings",
-      label: "Settings",
-      keys: keysLabel("global.settings"),
-      run: () => openAppSettings(),
-    });
-    for (const section of appSections(settings?.appearance.pages ?? [])) {
-      items.push({
-        id: `app-settings/${section.id}`,
-        label: section.label,
-        detail: "Settings",
-        run: () => openAppSettings(section.id),
-      });
-    }
-    for (const t of topics) {
-      items.push({
-        id: `topic/${t.machineId}/${t.topic.id}`,
-        label: t.topic.name,
-        detail: `${t.workspace.name}, ${t.device.state?.machine.name}`,
-        state: topicState(t.topic, isOnline(t.device)),
-        run: () => open({ kind: "topic", machineId: t.machineId, topicId: t.topic.id }),
-      });
-    }
-    for (const device of devices.filter(isOnline)) {
-      const deviceName = device.state?.machine.name;
-      if (device.state) {
-        const { id } = device.state.machine;
-        items.push({
-          id: `settings/${device.url}`,
-          label: `Settings for ${deviceName}`,
-          run: () => openSettings(id),
-        });
-        items.push({
-          id: `mcp/${device.url}`,
-          label: `MCP servers on ${deviceName}`,
-          detail: "Device settings",
-          run: () => openSettings(id, "mcp"),
-        });
-        items.push({
-          id: `rename-device/${device.url}`,
-          label: `Rename ${deviceName}`,
-          keys: device === settingsDevice ? keysLabel("device.rename") : undefined,
-          run: () => editDevice(device, "name"),
-        });
-        const state = device.state;
-        items.push({
-          id: `keep-awake/${device.url}`,
-          label: keepsAwake(state)
-            ? `Let ${deviceName} sleep while agents work`
-            : `Keep ${deviceName} awake while agents work`,
-          keys: device === settingsDevice ? keysLabel("device.toggle_keep_awake") : undefined,
-          run: () => {
-            const settings = withKeepAwakeToggled(state);
-            request(id, { command: "set_device_settings", settings }).catch(reportFailure);
-          },
-        });
-        items.push({
-          id: `keep-awake-for/${device.url}`,
-          label: `Keep ${deviceName} awake for a while`,
-          keys: device === settingsDevice ? keysLabel("device.keep_awake_for") : undefined,
-          run: () => editDevice(device, "awake"),
-        });
-        if (awakeUntil(state, Date.now()) !== null) {
-          items.push({
-            id: `stop-keep-awake/${device.url}`,
-            label: `Stop keeping ${deviceName} awake`,
-            keys: device === settingsDevice ? keysLabel("device.stop_keep_awake") : undefined,
-            run: () => {
-              request(id, { command: "keep_awake_for", seconds: null }).catch(reportFailure);
-            },
-          });
-        }
-      }
-      for (const workspace of device.state?.workspaces ?? []) {
-        const machineId = device.state?.machine.id;
-        if (machineId) {
-          items.push({
-            id: `workspace/${workspace.id}`,
-            label: workspace.name,
-            detail: `Workspace on ${deviceName}, with its MCP servers`,
-            keys:
-              entry?.workspace === workspace ? keysLabel("global.open_workspace") : undefined,
-            run: () => open({ kind: "workspace", machineId, workspaceId: workspace.id }),
-          });
-        }
-        items.push({
-          id: `new-topic/${workspace.id}`,
-          label: `New topic in ${workspace.name}`,
-          detail: deviceName,
-          keys: workspace === topicWorkspace ? keysLabel("global.new_topic") : undefined,
-          run: () => createTopicIn(device, workspace),
-        });
-      }
-      items.push({
-        id: `new-workspace/${device.url}`,
-        label: `Add a workspace on ${deviceName}`,
-        keys: device === workspaceDevice ? keysLabel("global.new_workspace") : undefined,
-        run: () => addWorkspaceOn(device),
-      });
-    }
-    return items;
-  };
-
-  const inSettings = view?.kind === "app_settings" || settingsDevice !== undefined;
   // A device that drops off while its settings are open stays in the list until they close.
   const settingsNav: SettingsNav = {
     groups: settingsGroups(
@@ -1062,31 +727,11 @@ export function App() {
     onGo: show,
     onClose: closeSettings,
   };
-  useHints(
-    "global",
-    globalHints({
-      interrupt: session !== undefined && isActive(session),
-      tabs: tabIds.length,
-      closeTab: canClose,
-      newTab: entry !== undefined && isOnline(entry.device),
-      newTopic: view?.kind !== "new_topic" && topicDevice !== undefined && topicWorkspace !== undefined,
-      newWorkspace: workspaceDevice !== undefined,
-      topics: topics.length,
-      workspaces: new Set(topics.map((t) => t.workspace)).size,
-      sidebar: !inSettings,
-      settings: view?.kind !== "app_settings",
-    }),
-  );
-  useHints("pinned", pinnedHints(requests.length));
-
   // Registered on every render, so the handlers always see the current state.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      // A sheet or a list to choose from owns the keyboard, and so does a screen's own sheet,
-      // which only the palette's own key gets past to close the palette.
-      if (sheet || picker || (!palette && sheetOpen())) return;
-      if (act(event, "global.palette", () => setPalette((shown) => !shown))) return;
-      if (palette || overlayOpen()) return; // So does a palette or dropdown, past that key.
+      // A sheet or a dropdown owns the keyboard, and so does a screen's own sheet.
+      if (sheet || overlayOpen()) return;
 
       const moveInWorkspaces = (step: number) => () => {
         if (entry) moveWorkspace(step);
@@ -1099,26 +744,12 @@ export function App() {
         ["global.next_workspace", moveInWorkspaces(1)],
         ["global.settings", () => openAppSettings()],
         ["global.toggle_sidebar", toggleSidebar],
-        ["global.new_workspace", newWorkspace],
-        ["global.new_topic", newTopic],
         ["global.new_tab", newTab],
         ["global.next_request", nextRequest],
         ["global.interrupt", interrupt],
         ["global.close_tab", () => closeTab()],
         ["global.prev_tab", () => moveTab(-1)],
         ["global.next_tab", () => moveTab(1)],
-        ["global.mark_all_read", markAllRead],
-        ["global.toggle_vim", () => toggleVim().catch(reportFailure)],
-        ["global.move_topic", () => entry && pickFolder(entry)],
-        ["global.archived_topics", () => void findArchived().catch(reportFailure)],
-        [
-          "global.import_conversation",
-          () => entry && void findConversations(entry).catch(reportFailure),
-        ],
-        ["global.pair_machine", () => localDevice && void pairWith(localDevice).catch(reportFailure)],
-        ["global.add_device", () => setSheet({ kind: "add_device" })],
-        ["global.reconnect", reconnectNow],
-        ["global.open_workspace", () => openWorkspace()],
       ];
       TAB_ACTIONS.forEach((id, index) => {
         commands.push([
@@ -1141,7 +772,6 @@ export function App() {
       if (rowTopic && act(event, "sidebar.archive", () => archiveTopic(rowTopic))) return;
       if (rowTopic && act(event, "sidebar.toggle_unread", () => toggleUnread(rowTopic))) return;
       if (inPane(event)) {
-        if (act(event, "pane.next_request", nextRequest)) return;
         // Settings decides for itself, because going back there depends on where you are in it.
         if (view?.kind !== "device_settings" && view?.kind !== "app_settings") {
           act(event, "pane.back", focusSidebar);
@@ -1161,7 +791,6 @@ export function App() {
           view={view}
           onView={open}
           onPreview={preview}
-          onPalette={() => setPalette(true)}
           appMenu={asMenu(appActions())}
           topicMenu={topicMenu}
           onSettings={openSettings}
@@ -1182,15 +811,12 @@ export function App() {
         />
       ) : settingsDevice && view?.kind === "device_settings" ? (
         <DeviceSettings
-          // Each device's sections keep their own cursor and whatever was being typed.
+          // Each device's sections keep whatever was being typed in them.
           key={view.machineId}
           device={settingsDevice}
           machineId={view.machineId}
           section={view.section}
           nav={settingsNav}
-          editing={editingDevice?.machineId === view.machineId ? editingDevice.field : null}
-          onEdit={(field) => editDevice(settingsDevice, field)}
-          onEditEnd={() => setEditingDevice(null)}
           onPair={() => void pairWith(settingsDevice).catch(reportFailure)}
           onForget={() => void forget(settingsDevice).catch(reportFailure)}
         />
@@ -1241,7 +867,6 @@ export function App() {
                 workspace={pageWorkspace}
                 onOpenTopic={(topicId) => open({ kind: "topic", machineId: view.machineId, topicId })}
                 onNewTopic={() => createTopicIn(pageDevice, pageWorkspace)}
-                onPicker={setPicker}
               />
             </>
           ) : entry ? (
@@ -1297,7 +922,7 @@ export function App() {
                 <MenuButton
                   label="Topic actions"
                   className="icon-button"
-                  groups={asMenu(topicActions(entry))}
+                  groups={tabBarMenu(entry)}
                   title={
                     isOnline(entry.device)
                       ? `Actions for ${entry.topic.name}`
@@ -1340,7 +965,6 @@ export function App() {
                   topic={entry.topic}
                   diff={shownDiff}
                   online={isOnline(entry.device)}
-                  onPicker={setPicker}
                   onConfirm={setSheet}
                 />
               ) : (
@@ -1353,7 +977,7 @@ export function App() {
                   onSettings={openSettings}
                   onTerminal={openTerminal}
                   onDiff={openDiff}
-                  onImport={() => void findConversations(entry).catch(reportFailure)}
+                  onImport={importConversation}
                   onStarted={(sessionId) => onTabStarted(entry.topic.id, sessionId)}
                   onStalled={(sessionId, reason) =>
                     onTabStalled(entry.topic.id, sessionId, reason)
@@ -1362,7 +986,11 @@ export function App() {
               )}
             </>
           ) : (
-            <Welcome devices={devices} topics={topics} />
+            <Welcome
+              devices={devices}
+              topics={topics}
+              onAddWorkspace={firstOnline && (() => addWorkspaceOn(firstOnline))}
+            />
           )}
         </main>
       )}
@@ -1396,16 +1024,6 @@ export function App() {
           }}
         />
       )}
-      {palette && <Palette items={paletteItems()} onClose={() => setPalette(false)} />}
-      {picker && (
-        <Palette
-          items={picker.items}
-          placeholder={picker.placeholder}
-          empty={picker.empty}
-          onClose={() => setPicker(null)}
-        />
-      )}
-      {shownValue("general.show_shortcuts") === true && <ShortcutBar />}
       <Toasts />
     </div>
   );
@@ -1428,7 +1046,6 @@ function DeviceNoticeLine({ device, onReconnect }: { device: Device; onReconnect
           onClick={onReconnect}
         >
           Reconnect
-          <Keys action="global.reconnect" />
         </button>
       )}
     </p>
@@ -1439,7 +1056,16 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div className="pane empty">{children}</div>;
 }
 
-function Welcome({ devices, topics }: { devices: Device[]; topics: TopicEntry[] }) {
+/** The window with nothing open says what to do next, with the button that does it. */
+function Welcome({
+  devices,
+  topics,
+  onAddWorkspace,
+}: {
+  devices: Device[];
+  topics: TopicEntry[];
+  onAddWorkspace?: () => void;
+}) {
   if (!devices.some(isOnline)) {
     const failure = devices
       .map(connectionProblem)
@@ -1456,18 +1082,17 @@ function Welcome({ devices, topics }: { devices: Device[]; topics: TopicEntry[] 
     return (
       <Empty>
         <p>Add a workspace, then create a topic in it</p>
-        <p className="empty-keys">
-          <Keys action="global.new_workspace" /> Add a workspace
-        </p>
+        {onAddWorkspace && (
+          <button className="button primary" onClick={onAddWorkspace}>
+            Add a workspace
+          </button>
+        )}
       </Empty>
     );
   }
   return (
     <Empty>
-      <p>Choose a topic</p>
-      <p className="empty-keys">
-        <Keys action="global.palette" /> Find a topic
-      </p>
+      <p>Choose a topic in the sidebar</p>
     </Empty>
   );
 }

@@ -1,7 +1,7 @@
 import type { KeyboardEvent } from "react";
 import type { Device, Workspace } from "./engine";
 import type { View } from "./navigation";
-import { act } from "./keybinds";
+import { act, titled } from "./keybinds";
 import {
   ago,
   awakeUntil,
@@ -14,7 +14,7 @@ import {
 } from "./model";
 import { Icon } from "./ui/Icon";
 import { MenuButton, type MenuGroups, RightClickMenu } from "./ui/Menu";
-import { Keys, StatusIcon } from "./ui/StatusIcon";
+import { StatusIcon } from "./ui/StatusIcon";
 import { useNow } from "./ui/useNow";
 
 interface Props {
@@ -22,8 +22,7 @@ interface Props {
   view: View | null;
   onView: (view: View | null) => void;
   onPreview: (view: View | null) => void;
-  onPalette: () => void;
-  /** What isn't about one topic, behind the button next to Settings. */
+  /** What's about every topic at once, behind the button next to Settings. */
   appMenu: MenuGroups;
   /** What a right click on a topic offers. */
   topicMenu: (machineId: string, topicId: string) => MenuGroups;
@@ -112,7 +111,6 @@ export function Sidebar({
   view,
   onView,
   onPreview,
-  onPalette,
   appMenu,
   topicMenu,
   onSettings,
@@ -127,18 +125,6 @@ export function Sidebar({
   };
   return (
     <aside className="side" onKeyDown={(event) => onSidebarKey(event, onPreview)}>
-      {/* Looks like the box it opens, so the palette is somewhere to go and not only a key. */}
-      <button
-        className="row side-search"
-        tabIndex={-1}
-        // Focus stays where it was, which is where closing the palette puts it back.
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={onPalette}
-      >
-        <Icon name="search" />
-        <span className="name">Find a topic or command</span>
-        <Keys action="global.palette" />
-      </button>
       <RightClickMenu render={<nav className="tree" />} groupsAt={menuAt}>
         {devices.map((device) => {
           const online = isOnline(device);
@@ -171,7 +157,7 @@ export function Sidebar({
                   className="add"
                   disabled={!online}
                   tabIndex={-1}
-                  title={online ? "Add a workspace" : refusal}
+                  title={online ? titled("Add a workspace", "sidebar.add") : refusal}
                   aria-label={`Add a workspace on ${name}`}
                   onClick={() => onAddWorkspace(device)}
                 >
@@ -185,8 +171,8 @@ export function Sidebar({
                   tabIndex={-1}
                   onClick={() => onAddWorkspace(device)}
                 >
-                  <span className="name">No workspaces yet</span>
-                  <Keys action="global.new_workspace" />
+                  <Icon name="add" />
+                  <span className="name">Add a workspace</span>
                 </button>
               )}
               {device.state?.workspaces.map((workspace) => {
@@ -213,7 +199,7 @@ export function Sidebar({
                       className="add"
                       disabled={!online}
                       tabIndex={-1}
-                      title={online ? "Create a topic" : refusal}
+                      title={online ? titled("Create a topic", "sidebar.add") : refusal}
                       aria-label={`Create a topic in ${workspace.name}`}
                       onClick={(event) => {
                         // The row behind it opens the workspace's page.
@@ -231,8 +217,8 @@ export function Sidebar({
                       tabIndex={-1}
                       onClick={() => onNewTopic(device, workspace)}
                     >
-                      <span className="name">No topics yet</span>
-                      <Keys action="global.new_topic" />
+                      <Icon name="add" />
+                      <span className="name">Create a topic</span>
                     </button>
                   )}
                   {workspace.topics.map((topic) => {
@@ -271,13 +257,15 @@ export function Sidebar({
         })}
       </RightClickMenu>
       <div className="side-foot">
-        <button className="row" tabIndex={-1} onClick={onAppSettings}>
+        <button className="row" title={titled("Settings", "global.settings")} onClick={onAppSettings}>
           <span className="name">Settings</span>
-          <Keys action="global.settings" />
         </button>
-        <MenuButton label="More actions" className="icon-button" groups={appMenu}>
-          <Icon name="more" />
-        </MenuButton>
+        {/* Only there while it has something to do, like a request waiting. */}
+        {appMenu.length > 0 && (
+          <MenuButton label="More actions" className="icon-button" groups={appMenu}>
+            <Icon name="more" />
+          </MenuButton>
+        )}
       </div>
     </aside>
   );

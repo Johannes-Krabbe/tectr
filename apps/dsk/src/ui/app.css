@@ -49,57 +49,9 @@ button:disabled {
 .app {
   display: grid;
   grid-template-columns: var(--layout-sidebar-width) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
 }
-
-:root {
-  --shortcut-bar-height: calc(26 * var(--unit));
-}
-
-.shortcut-bar {
-  grid-column: 1 / -1;
-  display: flex;
-  gap: var(--space-md);
-  height: var(--shortcut-bar-height);
-  padding: 0 var(--space-md);
-  border-top: 1px solid var(--color-line-subtle);
-  color: var(--color-text-tertiary);
-  font: var(--text-meta);
-  white-space: nowrap;
-}
-
-/* What doesn't fit wraps out of sight as whole hints, so none is ever cut in half. */
-.shortcut-bar-hints {
-  flex: 1;
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  column-gap: var(--space-md);
-  min-width: 0;
-  height: 100%;
-  overflow: hidden;
-}
-
-.shortcut {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  max-width: 100%;
-  height: 100%;
-}
-
-.shortcut .kbd { flex: none; }
-
-/* An agent names the options of a request, so a label can be any length. */
-.shortcut-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* A sheet's keys are down here, so the scrim stops short of them. */
-:root:has(.shortcut-bar) .scrim { bottom: var(--shortcut-bar-height); }
 
 .kbd {
   display: inline-flex;
@@ -260,9 +212,9 @@ button.row:hover { background: var(--color-surface-raised); }
 .row.topic.waiting.current { background: var(--color-status-waiting-tint-strong); }
 .row.empty { padding-left: var(--space-xl); color: var(--color-text-tertiary); font: var(--text-meta); }
 
-/* The sidebar owns the keyboard. */
+/* The list has the keyboard. */
 .side .row:focus-visible,
-.settings-side.active .row.current { background: var(--color-accent-tint); }
+.settings-side .row:focus-visible { background: var(--color-accent-tint); }
 
 .settings-side-heading {
   flex: none;
@@ -281,21 +233,6 @@ button.row:hover { background: var(--color-surface-raised); }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-
-/* The palette's way in, drawn as the box it opens. */
-.side-search {
-  flex: none;
-  background: var(--color-surface-raised);
-  color: var(--color-text-tertiary);
-}
-
-/* Named as a button so it outranks the hover every row gets. */
-button.side-search:hover {
-  background: var(--color-surface-control);
-  color: var(--color-text-secondary);
-}
-
-.side-search:hover .kbd { background: var(--color-surface-control-hover); }
 
 /* Under the tree: settings, and a menu for what isn't about one topic. */
 .side-foot {
@@ -581,6 +518,31 @@ button.side-search:hover {
   overflow-y: auto;
   border-right: 1px solid var(--color-line-subtle);
 }
+
+/* Going to a file: typing here filters the list below it. */
+.diff-files-filter {
+  display: block;
+  width: calc(100% - 2 * var(--space-sm));
+  height: calc(24 * var(--unit));
+  margin: 0 var(--space-sm) var(--space-xs);
+  padding: 0 var(--space-xs);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-line-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font: var(--text-meta);
+  outline: 0;
+}
+
+.diff-files-filter:focus { border-color: var(--color-accent-text); }
+
+.diff-files-empty {
+  padding: var(--space-xs) var(--space-md);
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.diff-file-link[data-highlighted] { background: var(--color-surface-control); }
 
 .diff-group-title {
   padding: var(--space-sm) var(--space-md) var(--space-xs);
@@ -1485,11 +1447,6 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   font-weight: 500;
 }
 
-.image-keys {
-  margin-left: auto;
-  padding-left: var(--space-md);
-}
-
 .viewer {
   position: fixed;
   z-index: 1;
@@ -1551,6 +1508,16 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   gap: var(--space-xs);
   margin-top: var(--space-md);
 }
+
+/* An option's place in the list, which is also the key that picks it. Quiet, so it reads as
+   numbering rather than a key chip. */
+.request-number {
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.button.primary .request-number { color: var(--color-text-on-accent); }
 
 .button {
   display: inline-flex;
@@ -1626,29 +1593,106 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 
 .settings-group-head .settings-group-title { flex: 1; min-width: 0; }
 
-.keybinds {
+/* A settings row is a form row: what it is, then the controls that change it, in place. */
+.settings-rows {
   display: flex;
   flex-direction: column;
   margin-top: var(--space-xs);
 }
 
-.keybind {
+.setting {
   display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  min-height: var(--size-row);
+  flex-direction: column;
   padding: 0 var(--space-sm);
   border-radius: var(--radius-sm);
   color: var(--color-text-secondary);
   font: var(--text-label);
 }
 
-.keybind.current {
-  background: var(--color-surface-raised);
-  color: var(--color-text-primary);
+/* Shows which row the eye or the keyboard is on, across a wide row. */
+.setting:hover,
+.setting:focus-within { background: var(--color-surface-raised); }
+
+/* The row itself has the keyboard, the way a sidebar row does. */
+.setting:focus-visible {
+  outline: 0;
+  background: var(--color-accent-tint);
 }
 
-.keybind .name {
+.setting-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: var(--size-row);
+}
+
+.setting-label {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.setting-label .name {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.setting-detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  text-overflow: ellipsis;
+}
+
+.setting.nested { padding-left: var(--space-xl); }
+.setting.dim .setting-label .name { color: var(--color-text-tertiary); }
+
+/* Controls that only matter on the row in use, like its menu. Opacity rather than visibility,
+   so Tab still reaches them, and they show once it does. */
+.setting-quiet {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2xs);
+  opacity: 0;
+}
+
+.setting:hover .setting-quiet,
+.setting:focus-within .setting-quiet,
+.setting-quiet:has([data-popup-open]) { opacity: 1; }
+
+.setting-error {
+  padding-bottom: var(--space-xs);
+  color: var(--color-status-failed);
+  font: var(--text-meta);
+  white-space: pre-wrap;
+}
+
+/* A row that is itself the thing to press, like a topic on its workspace's page. */
+button.setting-line {
+  width: 100%;
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font: var(--text-label);
+  text-align: left;
+}
+
+button.setting-line:hover:not(:disabled) { background: var(--color-surface-raised); }
+
+/* Like a settings row with the keyboard. */
+button.setting-line:focus-visible {
+  outline: 0;
+  background: var(--color-accent-tint);
+}
+
+button.setting-line .name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1656,26 +1700,53 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   text-overflow: ellipsis;
 }
 
-/* What can be done to the selected row. It stays put, so the list doesn't move. */
-.settings-actions {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-xs);
-  min-height: calc(42 * var(--unit));
-  padding: var(--space-xs) var(--space-lg);
-  border-top: 1px solid var(--color-line-subtle);
+.setting .picker svg {
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+  color: var(--color-text-tertiary);
 }
 
-.settings-actions-what {
-  display: flex;
-  flex: 1;
+/* A value that's always typed right in its row, such as a device's name, stays quiet until
+   it has focus. */
+.setting .settings-input { border-color: var(--color-line-strong); }
+.setting .settings-input:focus { border-color: var(--color-accent-text); }
+.setting .settings-input:disabled { opacity: 0.5; }
+
+/* A setting that differs from its default, which this puts back. */
+.icon-button.reset { color: var(--color-text-tertiary); }
+.icon-button.reset:hover { color: var(--color-text-secondary); }
+
+/* Finds one shortcut among many. */
+.settings-search {
+  height: calc(28 * var(--unit));
+  margin-bottom: var(--space-md);
+  padding: 0 var(--space-sm);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  font: var(--text-label);
+}
+
+.settings-search:focus { border-color: var(--color-accent-text); outline: 0; }
+
+/* A shortcut's keys, each a button that records a new one in its place. */
+.key-chips {
+  display: inline-flex;
+  flex: none;
   align-items: center;
-  gap: var(--space-xs);
-  min-width: 0;
-  color: var(--color-text-tertiary);
-  font: var(--text-meta);
+  gap: var(--space-2xs);
+}
+
+.key-chip { color: var(--color-text-secondary); }
+.key-chip:hover { background: var(--color-surface-control-hover); color: var(--color-text-primary); }
+.key-chip.empty { color: var(--color-text-tertiary); }
+.key-chip.recording { box-shadow: inset 0 0 0 1px var(--color-accent-ring); color: var(--color-text-primary); }
+
+.key-recording {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
 }
 
 /* A value typed right in its row, such as a device's name. */
@@ -1693,16 +1764,6 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 
 /* A time, which is a few characters, beside the suggestions in its row. */
 .settings-input.short { width: calc(96 * var(--unit)); }
-
-.settings-actions-what.error { color: var(--color-status-failed); }
-
-.settings-actions-what.code {
-  display: block;
-  overflow: hidden;
-  font: var(--text-code-small);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
 
 /* Appearance */
 .appearance-preview {
@@ -1765,8 +1826,6 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   text-align: center;
 }
 
-.settings-actions-keys { flex: none; }
-
 /* Starting something: a new topic, or a new tab */
 .create {
   align-items: center;
@@ -1781,6 +1840,55 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   width: 100%;
   max-width: 720px;
 }
+
+/* A new tab's import page: a search over conversations, from the top of the pane down. */
+.import {
+  align-items: center;
+  padding: var(--space-xl);
+  overflow-y: auto;
+}
+
+.import-in {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  width: 100%;
+  max-width: 720px;
+}
+
+.import-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.import-title { font: var(--text-heading); }
+
+.import-search {
+  height: calc(32 * var(--unit));
+  padding: 0 var(--space-md);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  outline: 0;
+}
+
+.import-search:focus { border-color: var(--color-accent-text); }
+
+.import-note {
+  padding: var(--space-xs) var(--space-sm);
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.import-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.import-list .list-choice { width: 100%; text-align: left; }
 
 .create-selects {
   display: flex;
@@ -1880,6 +1988,18 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 
 .interrupt:hover { background: var(--color-surface-control-hover); }
 
+.send {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(24 * var(--unit));
+  height: calc(24 * var(--unit));
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-solid);
+  color: var(--color-text-on-accent);
+}
+
 .interrupt svg {
   width: calc(10 * var(--unit));
   height: calc(10 * var(--unit));
@@ -1917,7 +2037,7 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 
 .select-popup:focus-visible { outline: 0; }
 
-.select-popup .palette-item[data-disabled] { color: var(--color-text-tertiary); }
+.select-popup .list-choice[data-disabled] { color: var(--color-text-tertiary); }
 
 .select-device {
   padding: var(--space-xs) var(--space-sm);
@@ -1946,7 +2066,6 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   pointer-events: none;
 }
 
-:root:has(.shortcut-bar) .toasts { bottom: calc(var(--shortcut-bar-height) + var(--space-xl)); }
 
 .toast {
   max-width: min(480px, calc(100vw - 2 * var(--space-2xl)));
@@ -2124,7 +2243,7 @@ textarea.sheet-input {
 
 .sheet-group-empty { padding-top: 0; }
 
-.palette-list:focus-visible { outline: 0; }
+.list-choices:focus-visible { outline: 0; }
 
 .server-name {
   flex: none;
@@ -2158,17 +2277,17 @@ textarea.sheet-input {
   font: var(--text-meta);
 }
 
-/* Palette */
-.palette-list {
+/* Lists to choose from: menus, pickers, slash commands and the import page */
+.list-choices {
   max-height: min(380px, 56vh);
   padding: var(--space-xs);
   overflow-y: auto;
   scrollbar-width: none;
 }
 
-.palette-list:empty { display: none; }
+.list-choices:empty { display: none; }
 
-.palette-item {
+.list-choice {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
@@ -2180,7 +2299,7 @@ textarea.sheet-input {
   cursor: default;
 }
 
-.palette-item .name {
+.list-choice .name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -2188,23 +2307,25 @@ textarea.sheet-input {
   text-overflow: ellipsis;
 }
 
-.palette-item .name.code {
+.list-choice .name.code {
   font: var(--text-code-body);
   font-variant-ligatures: var(--font-code-ligatures);
 }
 
-.palette-item[data-highlighted] {
+.list-choice[data-highlighted] {
   background: var(--color-surface-control);
   color: var(--color-text-primary);
 }
 
-.palette-item[data-highlighted] .kbd { background: var(--color-surface-control-hover); }
-
-.palette-empty {
-  padding: var(--space-md) var(--space-lg);
-  color: var(--color-text-tertiary);
-  font: var(--text-meta);
+/* A submenu's item, with its chevron, stays lit while the submenu is open. */
+.list-choice[data-popup-open] {
+  background: var(--color-surface-control);
+  color: var(--color-text-primary);
 }
+
+.list-choice > .icon:last-child { color: var(--color-text-tertiary); }
+
+.list-choice[data-highlighted] .kbd { background: var(--color-surface-control-hover); }
 
 /* A workspace's page: its topics and its MCP servers. Quiet until it has the keyboard: the
    selection only shows while it does, and a row's controls only on the row in use. */
@@ -2278,22 +2399,6 @@ textarea.sheet-input {
 
 .workspace-section-head .icon-button { margin-left: auto; }
 
-.workspace-section .keybinds { margin-top: 0; }
-
-.workspace-page .keybind.current {
-  background: none;
-  color: var(--color-text-secondary);
-}
-
-.workspace-page .keybind:hover,
-.workspace-page:focus-within .keybind.current {
-  background: var(--color-surface-raised);
-  color: var(--color-text-primary);
-}
-
-.workspace-row .server-name { color: var(--color-text-primary); }
-.workspace-row .server-summary { padding-left: var(--space-xs); }
-
 /* What an empty section offers, drawn like a row that hasn't happened yet. */
 .workspace-empty { color: var(--color-text-tertiary); }
 .workspace-empty svg {
@@ -2302,36 +2407,36 @@ textarea.sheet-input {
   height: calc(14 * var(--unit));
 }
 
-.workspace-link {
+/* Opens what's under a list in place, like archived topics or the library's servers. Quiet,
+   because it's what's left over rather than what the section is about. */
+.workspace-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
   align-self: flex-start;
-  margin: var(--space-xs) var(--space-sm) 0;
+  margin: var(--space-xs) 0 0;
+  padding: var(--space-2xs) var(--space-sm);
+  border-radius: var(--radius-sm);
   color: var(--color-text-tertiary);
   font: var(--text-meta);
-  cursor: default;
 }
 
-.workspace-link:hover { color: var(--color-text-secondary); }
+.workspace-disclosure:enabled:hover,
+.workspace-disclosure:focus-visible { color: var(--color-text-secondary); }
+
+.workspace-disclosure svg {
+  flex: none;
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+}
+
+.workspace-library { margin-top: 0; }
+
+.workspace-note { padding: var(--space-xs) var(--space-sm); }
 
 .workspace-error {
   padding: var(--space-xs) var(--space-sm);
   font: var(--text-meta);
-}
-
-/* Controls that only matter on the row in use: its menu, and a profile choice with nothing
-   to choose yet. */
-.workspace-row .row-menu,
-.workspace-row .row-quiet { visibility: hidden; }
-.workspace-row:hover .row-menu,
-.workspace-row:hover .row-quiet,
-.workspace-page:focus-within .workspace-row.current .row-menu,
-.workspace-page:focus-within .workspace-row.current .row-quiet,
-.workspace-row .row-menu[data-popup-open],
-.workspace-row .row-quiet[data-popup-open] { visibility: visible; }
-
-.workspace-row .picker svg {
-  width: calc(12 * var(--unit));
-  height: calc(12 * var(--unit));
-  color: var(--color-text-tertiary);
 }
 
 .switch {
@@ -2367,23 +2472,6 @@ textarea.sheet-input {
 @media (prefers-reduced-motion: reduce) {
   .switch, .switch::after { transition: none; }
 }
-
-button.keybind {
-  width: 100%;
-  text-align: left;
-}
-
-.keybind.off .server-name,
-.keybind.off .server-summary { color: var(--color-text-tertiary); }
-
-/* A profile, under its server in the library. */
-.keybind.nested { padding-left: var(--space-xl); }
-
-/* A row's own menu, for pointers. It shows where the row's keys would work. */
-.keybind .row-menu { visibility: hidden; }
-.keybind:hover .row-menu,
-.keybind.current .row-menu,
-.keybind .row-menu[data-popup-open] { visibility: visible; }
 
 .picker.alert { color: var(--color-status-waiting); }
 .picker .dim { color: var(--color-text-tertiary); }

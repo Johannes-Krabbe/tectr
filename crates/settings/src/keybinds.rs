@@ -31,11 +31,6 @@ pub const GROUPS: &[Group] = &[
         about: "While the main pane has the keyboard.",
     },
     Group {
-        id: "workspace",
-        title: "Workspace page",
-        about: "On a workspace's page, while it has the keyboard. Its MCP servers take the MCP servers keys.",
-    },
-    Group {
         id: "composer",
         title: "Message box",
         about: "While typing a message to an agent.",
@@ -86,29 +81,9 @@ pub const GROUPS: &[Group] = &[
         about: "In the last step of adding a workspace, where typing filters the servers.",
     },
     Group {
-        id: "palette",
-        title: "Command palette",
-        about: "While the palette is open.",
-    },
-    Group {
         id: "picker",
-        title: "Pickers",
-        about: "While a dropdown or a menu is open.",
-    },
-    Group {
-        id: "device",
-        title: "Device settings",
-        about: "In a device's settings.",
-    },
-    Group {
-        id: "mcp",
-        title: "MCP servers",
-        about: "In a device's MCP servers, and in a workspace's.",
-    },
-    Group {
-        id: "pairing",
-        title: "Pairing",
-        about: "In a device's Pairing settings, and in the app's Devices settings.",
+        title: "Lists and menus",
+        about: "While a dropdown, a menu or a list to choose from is open.",
     },
     Group {
         id: "mcp_form",
@@ -123,7 +98,7 @@ pub const GROUPS: &[Group] = &[
     Group {
         id: "settings",
         title: "Settings",
-        about: "While a section of settings has the keyboard.",
+        about: "On a page of settings, and on a workspace's page. Enter does what clicking the row's control does.",
     },
     Group {
         id: "recorder",
@@ -133,8 +108,8 @@ pub const GROUPS: &[Group] = &[
 ];
 
 // Moving through a list you search by typing, where plain letters have to go to the search.
-// Ctrl+J and Ctrl+K pair with J and K, but `mod` is Ctrl outside macOS, and there Ctrl+K
-// is what opens and closes the palette, so there it's only the arrows.
+// Ctrl+J and Ctrl+K pair with J and K, but `mod` is Ctrl outside macOS, where those are
+// taken, so there it's only the arrows.
 const INPUT_UP: &[&str] = if cfg!(target_os = "macos") {
     &["ctrl+k", "up"]
 } else {
@@ -146,24 +121,11 @@ const INPUT_DOWN: &[&str] = if cfg!(target_os = "macos") {
     &["down"]
 };
 
-// Ctrl+C is copy outside macOS. It comes first because the first key is the one the UI shows.
+// Ctrl+C is copy outside macOS.
 const INTERRUPT: &[&str] = if cfg!(target_os = "macos") {
-    &["ctrl+c", "mod+."]
+    &["ctrl+c"]
 } else {
     &["mod+."]
-};
-
-// Outside macOS `mod` is Ctrl, so Ctrl+W on its own already closes a tab there and can't
-// also start a sequence.
-const TOGGLE_SIDEBAR: &[&str] = if cfg!(target_os = "macos") {
-    &["mod+0", "ctrl+w w"]
-} else {
-    &["mod+0"]
-};
-const CLOSE_TAB: &[&str] = if cfg!(target_os = "macos") {
-    &["mod+w", "ctrl+w q"]
-} else {
-    &["mod+w"]
 };
 
 const fn once(id: &'static str, label: &'static str, defaults: &'static [&'static str]) -> Action {
@@ -197,8 +159,9 @@ const fn follows(id: &'static str, label: &'static str, nav: &'static str) -> Ac
     }
 }
 
-/// Vim's keys wherever an action means the same thing in Vim. What Vim has no word for
-/// keeps its ⌘ key, and the ⌘ and arrow keys stay alongside the Vim ones.
+/// Only what's done many times a session has a key, and each has one. Moving is the
+/// exception: it takes the arrow and Vim's letter for it, so hands can stay where they are.
+/// Everything else is a button, a menu item or a settings row, reached by pointer or by Tab.
 pub const ACTIONS: &[Action] = &[
     held("nav.up", "Move up", &["k", "up"]),
     held("nav.down", "Move down", &["j", "down"]),
@@ -213,7 +176,7 @@ pub const ACTIONS: &[Action] = &[
         INPUT_DOWN,
     ),
     held("nav.left", "Move left", &["h", "left"]),
-    once("nav.right", "Move right", &["l", "right"]),
+    held("nav.right", "Move right", &["l", "right"]),
     once(
         "nav.input_first",
         "Go to the first item in a list you search by typing",
@@ -237,22 +200,15 @@ pub const ACTIONS: &[Action] = &[
     once("nav.center", "Center the current item", &["z z"]),
     once("nav.confirm", "Confirm", &["enter"]),
     once("nav.back", "Go back", &["escape"]),
-    once(
-        "global.palette",
-        "Open the command palette",
-        &["mod+k", ":"],
-    ),
     once("global.settings", "Open settings", &["mod+,"]),
-    once("global.new_topic", "New topic", &["mod+n"]),
-    once("global.new_workspace", "Add a workspace", &["mod+shift+n"]),
     once("global.new_tab", "New tab", &["mod+t"]),
     once("global.next_request", "Next permission request", &["mod+j"]),
     once("global.interrupt", "Interrupt the agent", INTERRUPT),
-    once("global.close_tab", "Close the tab", CLOSE_TAB),
+    once("global.close_tab", "Close the tab", &["mod+w"]),
     once(
         "global.toggle_sidebar",
         "Move between the sidebar and the pane",
-        TOGGLE_SIDEBAR,
+        &["mod+0"],
     ),
     once("global.tab_1", "Go to tab 1", &["mod+1"]),
     once("global.tab_2", "Go to tab 2", &["mod+2"]),
@@ -263,8 +219,8 @@ pub const ACTIONS: &[Action] = &[
     once("global.tab_7", "Go to tab 7", &["mod+7"]),
     once("global.tab_8", "Go to tab 8", &["mod+8"]),
     once("global.tab_9", "Go to tab 9", &["mod+9"]),
-    held("global.prev_tab", "Previous tab", &["mod+[", "g shift+t"]),
-    held("global.next_tab", "Next tab", &["mod+]", "g t"]),
+    held("global.prev_tab", "Previous tab", &["mod+["]),
+    held("global.next_tab", "Next tab", &["mod+]"]),
     held("global.prev_topic", "Previous topic", &["alt+k", "alt+up"]),
     held("global.next_topic", "Next topic", &["alt+j", "alt+down"]),
     held(
@@ -277,35 +233,6 @@ pub const ACTIONS: &[Action] = &[
         "Next workspace",
         &["alt+shift+j", "alt+shift+down"],
     ),
-    once(
-        "global.mark_all_read",
-        "Mark every topic read",
-        &["mod+shift+u"],
-    ),
-    once(
-        "global.open_workspace",
-        "Open the current topic's workspace",
-        &[],
-    ),
-    once("global.toggle_vim", "Turn vim keys on or off", &[]),
-    once("global.move_topic", "Move the topic to another folder", &[]),
-    once("global.archived_topics", "Restore an archived topic", &[]),
-    once(
-        "global.import_conversation",
-        "Import a Claude Code or Codex conversation into the topic",
-        &[],
-    ),
-    once(
-        "global.pair_machine",
-        "Pair another machine with this one",
-        &[],
-    ),
-    once(
-        "global.add_device",
-        "Add a device from another machine",
-        &[],
-    ),
-    once("global.reconnect", "Reconnect to offline devices", &[]),
     follows("sidebar.up", "Move up", "nav.up"),
     follows("sidebar.down", "Move down", "nav.down"),
     follows("sidebar.first", "Go to the first row", "nav.first"),
@@ -322,8 +249,8 @@ pub const ACTIONS: &[Action] = &[
     follows("sidebar.confirm", "Open the row", "nav.confirm"),
     once(
         "sidebar.add",
-        "Add to the pointed or focused row",
-        &["a", "o"],
+        "Add a workspace or topic to the pointed or focused row",
+        &["a"],
     ),
     once(
         "sidebar.rename",
@@ -333,7 +260,7 @@ pub const ACTIONS: &[Action] = &[
     once(
         "sidebar.archive",
         "Archive the pointed or focused topic",
-        &["d d", "backspace"],
+        &["d d"],
     ),
     once(
         "sidebar.toggle_unread",
@@ -352,36 +279,11 @@ pub const ACTIONS: &[Action] = &[
     ),
     follows("pane.page_up", "Scroll up a screen", "nav.page_up"),
     follows("pane.page_down", "Scroll down a screen", "nav.page_down"),
-    once("pane.compose", "Write a message", &["i", "/", "enter"]),
-    once("pane.toggle_steps", "Fold or show tool calls", &["o"]),
-    once(
-        "pane.toggle_turn",
-        "Fold or show what the agent is doing now",
-        &["shift+o"],
-    ),
+    follows("pane.compose", "Write a message", "nav.confirm"),
     follows("pane.back", "Go to the sidebar", "nav.back"),
-    once("pane.next_request", "Next permission request", &["tab"]),
-    once("pane.pick_model", "Choose the model", &["mod+l"]),
-    once("pane.pick_effort", "Choose the effort", &["mod+e"]),
-    once("pane.pick_mode", "Choose the permission mode", &["mod+u"]),
-    once(
-        "pane.open_images",
-        "Open the images in the conversation",
-        &["v"],
-    ),
-    once(
-        "pane.branch",
-        "Branch from the last answer into a new tab",
-        &["b"],
-    ),
     once("composer.send", "Send", &["enter"]),
     once("composer.newline", "New line", &["shift+enter"]),
     follows("composer.blur", "Leave the message box", "nav.back"),
-    once(
-        "composer.open_image",
-        "Open the image next to the cursor",
-        &["mod+y"],
-    ),
     follows("image.prev", "Previous image", "nav.left"),
     follows("image.next", "Next image", "nav.right"),
     follows("image.close", "Close", "nav.back"),
@@ -400,9 +302,6 @@ pub const ACTIONS: &[Action] = &[
         "Complete the slash command",
         &["tab"],
     ),
-    once("permission.allow_once", "Allow once", &["y"]),
-    once("permission.allow_always", "Always allow", &["a"]),
-    once("permission.reject", "Deny", &["n"]),
     once("permission.option_1", "Choose option 1", &["1"]),
     once("permission.option_2", "Choose option 2", &["2"]),
     once("permission.option_3", "Choose option 3", &["3"]),
@@ -415,10 +314,9 @@ pub const ACTIONS: &[Action] = &[
     follows("new_tab.up", "Move up", "nav.up"),
     follows("new_tab.down", "Move down", "nav.down"),
     follows("new_tab.confirm", "Open the chosen kind", "nav.confirm"),
-    once("new_tab.agent", "Start an agent", &["1", "a"]),
-    once("new_tab.terminal", "Open a terminal", &["2", "t"]),
-    once("new_tab.diff", "Open a diff", &["3", "d"]),
-    once("new_tab.import", "Import a conversation", &["4", "i"]),
+    once("new_tab.agent", "Start an agent", &["a"]),
+    once("new_tab.terminal", "Open a terminal", &["t"]),
+    once("new_tab.diff", "Open a diff", &["d"]),
     follows("diff.up", "Scroll up", "nav.up"),
     follows("diff.down", "Scroll down", "nav.down"),
     follows("diff.first", "Scroll to the top", "nav.first"),
@@ -435,15 +333,13 @@ pub const ACTIONS: &[Action] = &[
     once("diff.prev_file", "Previous file", &["["]),
     once("diff.next_hunk", "Next hunk", &["}"]),
     once("diff.prev_hunk", "Previous hunk", &["{"]),
+    once("diff.jump_file", "Go to a file by name", &["p"]),
     once("diff.toggle_file", "Fold or unfold the file", &["o"]),
-    once("diff.toggle_all", "Fold or unfold every file", &["shift+o"]),
     once(
         "diff.viewed",
         "Mark the file viewed, fold it and go to the next",
         &["v"],
     ),
-    once("diff.jump_file", "Go to a file by name", &["p"]),
-    once("diff.copy_path", "Copy the file's path", &["y"]),
     once("diff.search", "Search", &["/"]),
     once(
         "diff.next_match",
@@ -462,11 +358,6 @@ pub const ACTIONS: &[Action] = &[
     ),
     once("diff_search.cancel", "Stop searching", &["escape"]),
     once(
-        "diff.scope",
-        "Switch between uncommitted changes and the whole branch",
-        &["b"],
-    ),
-    once(
         "diff.stage_hunk",
         "Stage or unstage the hunk at the top",
         &["s"],
@@ -476,168 +367,30 @@ pub const ACTIONS: &[Action] = &[
         "Stage or unstage the file at the top",
         &["shift+s"],
     ),
-    once(
-        "diff.stage_all",
-        "Stage everything, or unstage it all once it's all staged",
-        &["a"],
-    ),
-    once("diff.discard_hunk", "Discard the hunk at the top", &["x"]),
-    once(
-        "diff.discard_file",
-        "Discard the file at the top",
-        &["shift+x"],
-    ),
     once("diff.commit", "Commit what's staged", &["c"]),
-    once("diff.amend", "Amend the last commit", &["shift+a"]),
     once("commit.send", "Commit", &["mod+enter"]),
-    once(
-        "commit.toggle_amend",
-        "Amend the last commit or not",
-        &["alt+a"],
-    ),
     follows("commit.cancel", "Close the commit box", "nav.back"),
-    once(
-        "diff.toggle_files",
-        "Show or hide the list of files",
-        &["f"],
-    ),
-    once("diff.toggle_wrap", "Wrap long lines or not", &["w"]),
     once("new_topic.start", "Start", &["enter"]),
     once("new_topic.newline", "New line", &["shift+enter"]),
     follows("new_topic.cancel", "Cancel", "nav.back"),
-    once(
-        "new_topic.pick_workspace",
-        "Choose the workspace",
-        &["mod+o"],
-    ),
-    once("new_topic.pick_place", "Choose where to work", &["mod+b"]),
-    once("new_topic.pick_provider", "Choose the provider", &["mod+p"]),
-    once("new_topic.pick_model", "Choose the model", &["mod+l"]),
-    once("new_topic.pick_effort", "Choose the effort", &["mod+e"]),
-    once(
-        "new_topic.pick_mode",
-        "Choose the permission mode",
-        &["mod+u"],
-    ),
     follows("sheet.submit", "Submit", "nav.confirm"),
     follows("sheet.cancel", "Cancel", "nav.back"),
-    once(
-        "sheet.confirm",
-        "Confirm what can't be undone, where Enter cancels",
-        &["y"],
-    ),
     follows("sheet.up", "Move up the suggestions", "nav.input_up"),
     follows("sheet.down", "Move down the suggestions", "nav.input_down"),
     once("sheet.complete", "Complete the path", &["tab"]),
-    follows("palette.up", "Move up", "nav.input_up"),
-    follows("palette.down", "Move down", "nav.input_down"),
-    follows("palette.confirm", "Run the command", "nav.confirm"),
-    follows("palette.cancel", "Close", "nav.back"),
     follows("picker.up", "Move up", "nav.input_up"),
     follows("picker.down", "Move down", "nav.input_down"),
     follows("picker.first", "Go to the first choice", "nav.input_first"),
     follows("picker.last", "Go to the last choice", "nav.input_last"),
     follows("picker.confirm", "Choose", "nav.confirm"),
     follows("picker.cancel", "Close", "nav.back"),
-    follows(
-        "device.confirm",
-        "Add or refresh the provider",
-        "nav.confirm",
-    ),
-    once(
-        "device.remove",
-        "Remove the provider",
-        &["d d", "backspace"],
-    ),
-    once("device.pick_model", "Choose the default model", &["m"]),
-    once("device.pick_effort", "Choose the default effort", &["e"]),
-    once("device.rename", "Rename the device", &["r"]),
-    once(
-        "device.toggle_keep_awake",
-        "Keep the device awake while agents work, or not",
-        &["w"],
-    ),
-    once(
-        "device.keep_awake_for",
-        "Keep the device awake for a while",
-        &["t"],
-    ),
-    once(
-        "device.stop_keep_awake",
-        "Stop keeping the device awake",
-        &["shift+t"],
-    ),
-    once("pairing.add", "Pair another machine", &["p"]),
-    once("pairing.add_device", "Add a device", &["a"]),
-    once(
-        "pairing.remove",
-        "Remove the paired machine or device",
-        &["d d", "backspace"],
-    ),
-    once("pairing.forget", "Remove the device from this app", &[]),
-    once("mcp.edit", "Edit the server or profile", &["e"]),
-    once(
-        "mcp.add",
-        "Add a server, or on a workspace's page, whatever the section with the cursor holds",
-        &["a", "o"],
-    ),
-    once(
-        "mcp.remove",
-        "Remove the server or profile, or take the server off the workspace",
-        &["d d", "backspace"],
-    ),
-    once(
-        "mcp.toggle",
-        "Turn the server on or off for the workspace",
-        &["t", "space"],
-    ),
-    once(
-        "mcp.profile",
-        "Choose the profile the workspace uses",
-        &["p"],
-    ),
-    once(
-        "mcp.new_profile",
-        "Add a profile, and log in with it",
-        &["n"],
-    ),
-    once(
-        "mcp.copy_from",
-        "Copy the MCP servers of another workspace",
-        &["c"],
-    ),
-    once("mcp.login", "Log in with the profile", &["l"]),
-    once("mcp.logout", "Log out of the profile", &["shift+l"]),
-    once(
-        "mcp.import",
-        "Import the servers of Claude Code, Codex and OpenCode",
-        &["i"],
-    ),
-    once(
-        "mcp.connectors",
-        "Refresh the claude.ai connectors and ChatGPT apps",
-        &["r"],
-    ),
     once("mcp_form.save", "Save, from any field", &["mod+enter"]),
-    once(
-        "mcp_form.switch_type",
-        "Switch between stdio and HTTP",
-        &["mod+t"],
-    ),
-    follows("workspace.up", "Move up", "nav.up"),
-    follows("workspace.down", "Move down", "nav.down"),
-    follows("workspace.first", "Go to the first row", "nav.first"),
-    follows("workspace.last", "Go to the last row", "nav.last"),
-    follows(
-        "workspace.open",
-        "Open the topic, or choose the server's profile",
-        "nav.confirm",
-    ),
     once(
         "new_workspace.check",
         "Check or uncheck the server",
         &["tab"],
     ),
+    // Typing goes to the filter here, so the rest of the step needs keys with a modifier.
     once(
         "new_workspace.profile",
         "Switch to the server's next profile",
@@ -653,59 +406,33 @@ pub const ACTIONS: &[Action] = &[
     follows("sections.first", "First section", "nav.first"),
     follows("sections.last", "Last section", "nav.last"),
     follows("sections.open", "Go into the section", "nav.right"),
-    follows("sections.confirm", "Go into the section", "nav.confirm"),
     follows("sections.close", "Close settings", "nav.back"),
     follows("settings.up", "Move up", "nav.up"),
     follows("settings.down", "Move down", "nav.down"),
     follows("settings.first", "Go to the first row", "nav.first"),
     follows("settings.last", "Go to the last row", "nav.last"),
-    follows("settings.half_up", "Move up half a screen", "nav.half_up"),
     follows(
-        "settings.half_down",
-        "Move down half a screen",
-        "nav.half_down",
+        "settings.decrease",
+        "Lower the value, or the previous choice",
+        "nav.left",
     ),
-    follows("settings.center", "Center the current row", "nav.center"),
+    follows(
+        "settings.increase",
+        "Raise the value, or the next choice",
+        "nav.right",
+    ),
     follows(
         "settings.edit",
-        "Change the selected setting",
+        "Switch it, open its choices, or start typing",
         "nav.confirm",
     ),
     follows("settings.back", "Back to the sections", "nav.back"),
-    follows("settings.parent", "Back to the sections", "nav.left"),
-    once("settings.add", "Add another shortcut", &["a"]),
-    once(
-        "settings.unbind",
-        "Remove the shortcut",
-        &["d d", "backspace"],
-    ),
-    once("settings.reset", "Reset to the default", &["u", "r"]),
-    held(
-        "settings.decrease",
-        "Lower the value, or the previous choice",
-        &["-"],
-    ),
-    held(
-        "settings.increase",
-        "Raise the value, or the next choice",
-        &["=", "plus"],
-    ),
-    once(
-        "settings.toggle_hold",
-        "Switch holding on or off",
-        &["shift+h"],
-    ),
-    once(
-        "settings.toggle_repeat",
-        "Switch repeating on or off",
-        &["shift+r"],
-    ),
     once("recorder.save", "Save", &["enter"]),
     once("recorder.cancel", "Cancel", &["escape"]),
 ];
 
 /// Pairs of contexts that are live at the same time. Everything not listed is only
-/// checked against itself: a sheet, palette or picker takes the keyboard from the rest.
+/// checked against itself: a sheet or a list takes the keyboard from the rest.
 const SHARED_WITH_GLOBAL: &[&str] = &[
     "sidebar",
     "pane",
@@ -716,20 +443,12 @@ const SHARED_WITH_GLOBAL: &[&str] = &[
     "diff_search",
     "commit",
     "new_topic",
-    "device",
-    "mcp",
-    "workspace",
-    "pairing",
     "sections",
     "settings",
 ];
 // The new workspace step is only checked against itself: its Tab is the path step's Complete,
 // and the two steps are never on screen together.
-const SHARED: &[(&str, &str)] = &[
-    ("pane", "permission"),
-    ("sheet", "mcp_form"),
-    ("workspace", "mcp"),
-];
+const SHARED: &[(&str, &str)] = &[("pane", "permission"), ("sheet", "mcp_form")];
 
 /// macOS handles these through the app menu before the webview sees them.
 const MACOS_MENU_KEYS: &[&str] = &[
@@ -776,7 +495,7 @@ const TEXT_GROUPS: &[&str] = &[
     "composer",
     "new_topic",
     "sheet",
-    "palette",
+    "picker",
     "mcp_form",
     "new_workspace",
     "diff_search",
@@ -1210,26 +929,6 @@ pub fn warnings(resolved: &[ResolvedAction]) -> Vec<String> {
             if binding.key.contains(' ') && binding.key.split(' ').any(types_a_character) {
                 warnings.push(format!(
                     "{} on {} never fires, because a sequence can't take keys from a text box. Give each key cmd, ctrl or alt",
-                    binding.key, action.id
-                ));
-            }
-        }
-    }
-    // The palette and pickers take the keyboard from every global key but the palette's own.
-    let toggle: HashSet<String> = resolved
-        .iter()
-        .filter(|action| action.id == "global.palette")
-        .flat_map(|action| &action.bindings)
-        .map(|binding| effective_key(&binding.key))
-        .collect();
-    for action in live
-        .iter()
-        .filter(|action| action.group == "palette" || action.group == "picker")
-    {
-        for binding in &action.bindings {
-            if toggle.contains(&effective_key(&binding.key)) {
-                warnings.push(format!(
-                    "{} is on both global.palette and {}, and opening or closing the palette wins",
                     binding.key, action.id
                 ));
             }

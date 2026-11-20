@@ -14,7 +14,7 @@ tectr is a single place to run all of your agents:
 - **Many agents in parallel.** Topics run independently, across as many workspaces and devices as you like.
 - **See everything at a glance.** A sidebar sorted by device shows each agent's state live (working, waiting for you, done, failed) across all workspaces and topics.
 - **Full control, not just monitoring.** Send prompts, answer the agent's questions, interrupt, and resume, all from the app. Agents run in auto mode by default, or in yolo mode if you configure it.
-- **Keyboard first.** Everything on desktop can be done from the keyboard, including creating workspaces and topics with just a name and sensible defaults.
+- **Obvious by pointer, complete by keyboard.** Everything on desktop is somewhere to click, and everything can be reached from the keyboard by moving focus, including creating workspaces and topics with just a name and sensible defaults. Only what you do all day, like switching topics and answering agents, has a shortcut.
 - **Desk and pocket.** A desktop app and a native iPhone and iPad app with nearly the same features, so everything can be done from either. Both are views of the same live sessions.
 - **Agent-agnostic.** Claude Code first, with Codex, Gemini CLI, and others behind the same interface.
 - **Fast.** Instant startup, no lag while output streams, and smooth scrolling through long sessions, in the spirit of Zed.

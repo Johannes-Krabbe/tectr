@@ -208,7 +208,8 @@ export function stepped(
   options: Option[],
 ): AppearanceValue {
   const { kind, value } = field;
-  if (kind.type === "toggle") return !value;
+  // Left is off and right is on, the way a switch slides.
+  if (kind.type === "toggle") return direction > 0;
   if (kind.type === "number") {
     const position = Number(value) / kind.step;
     // A little room for 1.55 / 0.05 not coming out whole.

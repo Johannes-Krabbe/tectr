@@ -1,7 +1,6 @@
 import { Select } from "@base-ui/react/select";
 import type { ReactNode, RefObject } from "react";
 import { type ActionId, remapNative } from "../keybinds";
-import { hint, useHints } from "../shortcuts";
 
 /** The keys of any list that drops down, which the menus follow too. */
 export const PICKER_KEYS: [ActionId, string][] = [
@@ -13,14 +12,8 @@ export const PICKER_KEYS: [ActionId, string][] = [
   ["picker.cancel", "Escape"],
 ];
 
-export const PICKER_HINTS = [
-  hint("Move", "picker.up", "picker.down"),
-  hint("First, last", "picker.first", "picker.last"),
-  hint("Choose", "picker.confirm"),
-  hint("Close", "picker.cancel"),
-];
-
-/** A dropdown that follows the settings' keys. `finalFocus` is where focus goes when it closes. */
+/** A dropdown that follows the settings' keys. When it closes, focus goes back to its button,
+ * so the keyboard carries on from where it was, unless `finalFocus` names somewhere else. */
 export function Picker({
   label,
   className,
@@ -41,12 +34,11 @@ export function Picker({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onChange: (value: string) => void;
-  finalFocus: RefObject<HTMLElement | null> | false;
+  finalFocus?: RefObject<HTMLElement | null>;
   title?: string;
   trigger: ReactNode;
   children: ReactNode;
 }) {
-  useHints("overlay", open ? PICKER_HINTS : null);
   return (
     <Select.Root
       value={value}
@@ -93,7 +85,7 @@ export function Choice({
 }) {
   return (
     <Select.Item
-      className="palette-item"
+      className="list-choice"
       value={value}
       disabled={disabled}
       onFocus={onHighlight}

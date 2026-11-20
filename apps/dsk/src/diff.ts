@@ -138,6 +138,16 @@ export function totals(files: FileDiff[]): { added: number; removed: number } {
 }
 
 /** A file's folder and name apart, so the name can stay readable when the folder is cut. */
+/** The files whose path has every word typed, in any case, by their place in the list. Nothing
+ * typed matches every file. */
+export function filesMatching(paths: string[], query: string): number[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return paths.flatMap((path, index) => {
+    const lower = path.toLowerCase();
+    return words.every((word) => lower.includes(word)) ? [index] : [];
+  });
+}
+
 export function splitPath(path: string): { folder: string; name: string } {
   const slash = path.lastIndexOf("/");
   return slash === -1

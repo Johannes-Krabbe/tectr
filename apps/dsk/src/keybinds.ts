@@ -23,7 +23,6 @@ import {
   chordMatches,
   chordOf,
   formatBinding,
-  formatKeys,
   isBareChord,
   isSequence,
   type KeyPress,
@@ -52,10 +51,7 @@ export type ActionId =
   | "nav.center"
   | "nav.confirm"
   | "nav.back"
-  | "global.palette"
   | "global.settings"
-  | "global.new_topic"
-  | "global.new_workspace"
   | "global.new_tab"
   | "global.next_request"
   | "global.interrupt"
@@ -76,15 +72,6 @@ export type ActionId =
   | "global.next_topic"
   | "global.prev_workspace"
   | "global.next_workspace"
-  | "global.mark_all_read"
-  | "global.toggle_vim"
-  | "global.move_topic"
-  | "global.archived_topics"
-  | "global.import_conversation"
-  | "global.pair_machine"
-  | "global.add_device"
-  | "global.reconnect"
-  | "global.open_workspace"
   | "sidebar.up"
   | "sidebar.down"
   | "sidebar.first"
@@ -108,28 +95,16 @@ export type ActionId =
   | "pane.page_up"
   | "pane.page_down"
   | "pane.compose"
-  | "pane.toggle_steps"
-  | "pane.toggle_turn"
   | "pane.back"
-  | "pane.next_request"
-  | "pane.pick_model"
-  | "pane.pick_effort"
-  | "pane.pick_mode"
-  | "pane.open_images"
-  | "pane.branch"
   | "composer.send"
   | "composer.newline"
   | "composer.blur"
-  | "composer.open_image"
   | "image.prev"
   | "image.next"
   | "image.close"
   | "composer.command_up"
   | "composer.command_down"
   | "composer.complete_command"
-  | "permission.allow_once"
-  | "permission.allow_always"
-  | "permission.reject"
   | "permission.option_1"
   | "permission.option_2"
   | "permission.option_3"
@@ -145,7 +120,6 @@ export type ActionId =
   | "new_tab.agent"
   | "new_tab.terminal"
   | "new_tab.diff"
-  | "new_tab.import"
   | "diff.up"
   | "diff.down"
   | "diff.first"
@@ -158,14 +132,9 @@ export type ActionId =
   | "diff.prev_file"
   | "diff.next_hunk"
   | "diff.prev_hunk"
-  | "diff.scope"
-  | "diff.toggle_files"
-  | "diff.toggle_wrap"
-  | "diff.toggle_file"
-  | "diff.toggle_all"
-  | "diff.viewed"
   | "diff.jump_file"
-  | "diff.copy_path"
+  | "diff.toggle_file"
+  | "diff.viewed"
   | "diff.search"
   | "diff.next_match"
   | "diff.prev_match"
@@ -173,69 +142,24 @@ export type ActionId =
   | "diff_search.cancel"
   | "diff.stage_hunk"
   | "diff.stage_file"
-  | "diff.stage_all"
-  | "diff.discard_hunk"
-  | "diff.discard_file"
   | "diff.commit"
-  | "diff.amend"
   | "commit.send"
-  | "commit.toggle_amend"
   | "commit.cancel"
   | "new_topic.start"
   | "new_topic.newline"
   | "new_topic.cancel"
-  | "new_topic.pick_workspace"
-  | "new_topic.pick_place"
-  | "new_topic.pick_provider"
-  | "new_topic.pick_model"
-  | "new_topic.pick_effort"
-  | "new_topic.pick_mode"
   | "sheet.submit"
   | "sheet.cancel"
-  | "sheet.confirm"
   | "sheet.up"
   | "sheet.down"
   | "sheet.complete"
-  | "palette.up"
-  | "palette.down"
-  | "palette.confirm"
-  | "palette.cancel"
   | "picker.up"
   | "picker.down"
   | "picker.first"
   | "picker.last"
   | "picker.confirm"
   | "picker.cancel"
-  | "device.confirm"
-  | "device.remove"
-  | "device.pick_model"
-  | "device.pick_effort"
-  | "device.rename"
-  | "device.toggle_keep_awake"
-  | "device.keep_awake_for"
-  | "device.stop_keep_awake"
-  | "mcp.edit"
-  | "mcp.add"
-  | "mcp.remove"
-  | "mcp.toggle"
-  | "mcp.profile"
-  | "mcp.new_profile"
-  | "mcp.copy_from"
-  | "mcp.login"
-  | "mcp.logout"
-  | "mcp.import"
-  | "mcp.connectors"
-  | "pairing.add"
-  | "pairing.add_device"
-  | "pairing.remove"
-  | "pairing.forget"
   | "mcp_form.save"
-  | "mcp_form.switch_type"
-  | "workspace.up"
-  | "workspace.down"
-  | "workspace.first"
-  | "workspace.last"
-  | "workspace.open"
   | "new_workspace.check"
   | "new_workspace.profile"
   | "new_workspace.copy_from"
@@ -244,25 +168,15 @@ export type ActionId =
   | "sections.first"
   | "sections.last"
   | "sections.open"
-  | "sections.confirm"
   | "sections.close"
   | "settings.up"
   | "settings.down"
   | "settings.first"
   | "settings.last"
-  | "settings.half_up"
-  | "settings.half_down"
-  | "settings.center"
-  | "settings.edit"
-  | "settings.back"
-  | "settings.parent"
-  | "settings.add"
-  | "settings.unbind"
-  | "settings.reset"
   | "settings.decrease"
   | "settings.increase"
-  | "settings.toggle_hold"
-  | "settings.toggle_repeat"
+  | "settings.edit"
+  | "settings.back"
   | "recorder.save"
   | "recorder.cancel";
 
@@ -392,17 +306,6 @@ export function bindingLabel(binding: Binding): string {
   return formatBinding(binding, MAC);
 }
 
-/** How actions that belong together are shown as one, leaving out any without a key, or
- * undefined when none has one. In a text field it's the keys that still work there. */
-export function groupedKeysLabel(ids: ActionId[], typing: boolean): string | undefined {
-  const bindings = ids.flatMap((id) =>
-    (actions.get(id)?.bindings ?? [])
-      .filter((binding) => !typing || worksWhileTyping(binding.key, id))
-      .slice(0, 1),
-  );
-  return bindings.length > 0 ? formatKeys(bindings, MAC) : undefined;
-}
-
 /** A tooltip that names the key, when there is one. */
 export function titled(text: string, id: ActionId): string {
   const keys = keysLabel(id);
@@ -415,7 +318,8 @@ const TEXT_CONTEXTS = new Set([
   "composer",
   "new_topic",
   "sheet",
-  "palette",
+  // Lists you search by typing, like importing a conversation, move from their search box.
+  "picker",
   "mcp_form",
   "diff_search",
   "commit",

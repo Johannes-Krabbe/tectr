@@ -2,7 +2,6 @@ import { type FocusEvent, type KeyboardEvent, useEffect, useId, useRef, useState
 import type { AgentCommand } from "./engine";
 import { act } from "./keybinds";
 import { moveHighlight } from "./pathInput";
-import { hint, type Hint } from "./shortcuts";
 import { commandQuery, completedText, matchCommands, sendsAtOnce } from "./slashCommands";
 import type { VimMode } from "./vim";
 
@@ -10,11 +9,6 @@ interface FocusProps {
   onFocus(): void;
   onBlur(event: FocusEvent<HTMLTextAreaElement>): void;
 }
-
-const HINTS: Hint[] = [
-  hint("Move", "composer.command_up", "composer.command_down"),
-  hint("Complete", "composer.complete_command"),
-];
 
 /** Suggests the agent's slash commands in the message box while it holds only `/` and part of
  * a name. The box keeps the keyboard throughout. */
@@ -54,7 +48,6 @@ export function useCommandSuggestions({
   };
 
   return {
-    hints: suggestions.length > 0 ? HINTS : [],
     /** Goes after the box's own props, and passes focus on to `inner`, such as vim's. */
     boxProps: (inner: FocusProps) => ({
       role: "combobox",
@@ -120,12 +113,12 @@ function CommandList({
     if (highlight !== null) list.current?.children[highlight]?.scrollIntoView({ block: "nearest" });
   }, [highlight]);
   return (
-    <div ref={list} id={id} className="command-list palette-list" role="listbox">
+    <div ref={list} id={id} className="command-list list-choices" role="listbox">
       {commands.map((command, index) => (
         <div
           key={command.name}
           id={`${id}-${index}`}
-          className="palette-item"
+          className="list-choice"
           role="option"
           aria-selected={index === highlight}
           data-highlighted={index === highlight ? "" : undefined}

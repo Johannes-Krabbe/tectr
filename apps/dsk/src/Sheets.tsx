@@ -27,7 +27,7 @@ import {
   type Workspace,
   type WorkspaceMcp,
 } from "./engine";
-import { act, type ActionId, keysLabel, remapNative } from "./keybinds";
+import { act, type ActionId, keysLabel, remapNative, titled } from "./keybinds";
 import {
   canHaveProfiles,
   connectorAgent,
@@ -53,12 +53,10 @@ import {
   suggest,
   type Suggestion,
 } from "./pathInput";
-import { hint as keyHint, type Hint, useHints } from "./shortcuts";
 import { countdown, spacedDigits } from "./pairing";
 import { Icon } from "./ui/Icon";
 import { Choice, Picker } from "./ui/Picker";
 import { QrCode } from "./ui/QrCode";
-import { Keys } from "./ui/StatusIcon";
 import { showToast } from "./toast";
 
 export type SheetRequest =
@@ -93,9 +91,8 @@ export function Sheet({
   onDone,
   onKeyDown,
   focusAction,
-  confirmKey,
+  dangerous,
   returnsFocus,
-  hints = [],
   list,
   input,
   children,
@@ -111,14 +108,12 @@ export function Sheet({
   onKeyDown?: (event: KeyboardEvent<HTMLFormElement>) => void;
   /** For a sheet with nothing to type in, whose Enter should do what the sheet is for. */
   focusAction?: boolean;
-  /** For a sheet whose action can't be undone. Only this key does it, and Cancel is the primary
-   * button with the focus, so an Enter out of habit cancels. */
-  confirmKey?: ActionId;
+  /** For a sheet whose action can't be undone. Cancel is the primary button with the focus, so
+   * an Enter out of habit cancels, and only Tab to the action and Enter, or a click, does it. */
+  dangerous?: boolean;
   /** For a sheet that changes something in place, so there's no new thing for focus to go to. */
   returnsFocus?: boolean;
-  /** The keys only this sheet has, for the shortcut line. */
-  hints?: Hint[];
-  /** For a sheet that's an input and a list, like the palette. It takes the place of the
+  /** For a sheet that's an input and a list. It takes the place of the
    * buttons, and an error takes its place. */
   list?: ReactNode;
   /** What's typed, when changing it should take back an error about the last try. */
@@ -127,7 +122,6 @@ export function Sheet({
 }) {
   const actionButton = useRef<HTMLButtonElement>(null);
   const cancelButton = useRef<HTMLButtonElement>(null);
-  const submitKey = confirmKey ?? "sheet.submit";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Cancelling goes back to where you were. Read while rendering, because the input's
@@ -137,12 +131,6 @@ export function Sheet({
   const created = useRef(false);
 
   useEffect(() => setError(null), [input]);
-
-  useHints("overlay", [
-    ...(canSubmit && !busy ? [keyHint(action, submitKey)] : []),
-    ...hints,
-    keyHint("Cancel", "sheet.cancel"),
-  ]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -171,7 +159,7 @@ export function Sheet({
         <Dialog.Popup
           className="sheet"
           finalFocus={() => (created.current ? false : opener)}
-          initialFocus={confirmKey ? cancelButton : focusAction ? actionButton : undefined}
+          initialFocus={dangerous ? cancelButton : focusAction ? actionButton : undefined}
           onKeyDownCapture={(event) => remapNative(event, CANCEL_KEY)}
         >
           <form
@@ -179,7 +167,7 @@ export function Sheet({
             onKeyDown={(event) => {
               const form = event.currentTarget;
               // Sending the browser's own submit, because it would ignore a remapped Enter.
-              if (act(event, submitKey, () => form.requestSubmit())) return;
+              if (!dangerous && act(event, "sheet.submit", () => form.requestSubmit())) return;
               if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) {
                 event.preventDefault();
               }
@@ -192,18 +180,21 @@ export function Sheet({
             {list === undefined && (
               <div className="sheet-foot">
                 <span className="sheet-hint">{hint}</span>
-                <Dialog.Close ref={cancelButton} className={`button ${confirmKey ? "primary" : ""}`}>
+                <Dialog.Close
+                  ref={cancelButton}
+                  className={`button ${dangerous ? "primary" : ""}`}
+                  title={titled("Cancel", "sheet.cancel")}
+                >
                   Cancel
-                  <Keys action="sheet.cancel" />
                 </Dialog.Close>
                 <button
                   ref={actionButton}
-                  className={`button ${confirmKey ? "" : "primary"}`}
+                  className={`button ${dangerous ? "" : "primary"}`}
                   type="submit"
+                  title={dangerous ? undefined : titled(action, "sheet.submit")}
                   disabled={!canSubmit || busy}
                 >
                   {action}
-                  <Keys action={submitKey} />
                 </button>
               </div>
             )}
@@ -249,13 +240,6 @@ function useListing(
 
   return parent === undefined ? undefined : listings[parent];
 }
-
-const WORKSPACE_HINTS = [
-  keyHint("Move", "sheet.up", "sheet.down"),
-  keyHint("Complete", "sheet.complete"),
-];
-
-const GOAL_HINTS = [keyHint("Move", "sheet.up", "sheet.down")];
 
 const GOALS: { goal: PathGoal; label: string; meta: string }[] = [
   { goal: "open", label: "Open folder", meta: "Existing git repository" },
@@ -339,7 +323,6 @@ function WorkspaceSheet({
         }}
         onClose={onClose}
         onDone={onDone}
-        hints={GOAL_HINTS}
         onKeyDown={(event) => {
           const move = (step: 1 | -1) =>
             setGoalHighlight((current) => (current + step + GOALS.length) % GOALS.length);
@@ -349,7 +332,7 @@ function WorkspaceSheet({
         list={
           // Focusable itself, so the sheet's keys reach the form with nothing to type in.
           <div
-            className="palette-list"
+            className="list-choices"
             role="listbox"
             tabIndex={0}
             aria-label="Workspace from"
@@ -359,7 +342,7 @@ function WorkspaceSheet({
               <div
                 key={row.goal}
                 id={`${listId}-goal-${index}`}
-                className="palette-item"
+                className="list-choice"
                 role="option"
                 aria-selected={index === goalHighlight}
                 data-highlighted={index === goalHighlight ? "" : undefined}
@@ -419,18 +402,17 @@ function WorkspaceSheet({
       }}
       onClose={onClose}
       onDone={onDone}
-      hints={WORKSPACE_HINTS}
       input={path}
       list={
         listing && "error" in listing ? (
           <p className="error sheet-error">{listing.error}</p>
         ) : rows.length > 0 ? (
-          <div ref={list} id={listId} className="palette-list" role="listbox">
+          <div ref={list} id={listId} className="list-choices" role="listbox">
             {rows.map((row, index) => (
               <div
                 key={row.path}
                 id={`${listId}-${index}`}
-                className="palette-item"
+                className="list-choice"
                 role="option"
                 aria-selected={index === highlight}
                 data-highlighted={index === highlight ? "" : undefined}
@@ -497,14 +479,11 @@ function WorkspaceSheet({
   );
 }
 
-const SERVER_HINTS = [
-  keyHint("Move", "sheet.up", "sheet.down"),
-  keyHint("Check", "new_workspace.check"),
-  keyHint("Next profile", "new_workspace.profile"),
-  keyHint("Copy from", "new_workspace.copy_from"),
-];
-
 const NO_PROFILE_VALUE = "none";
+
+/** Says how to check a server, since checking is the filter's Tab and nothing on screen shows it. */
+const noneChecked = (key: string | undefined) =>
+  key ? `None checked: ${key} checks one, or add them on its page later` : "None checked: add them on its page later";
 
 /** The last step of adding a workspace: which of the library's servers its agents get, and
  * with which profile. Typing filters them, and another workspace's can be copied. Nothing
@@ -584,12 +563,11 @@ function WorkspaceServersStep({
     <Sheet
       where={`MCP servers for ${folderName(target.path)}`}
       action={target.creating ? "Create workspace" : "Add workspace"}
-      hint={checked > 0 ? `${checked} checked` : "None checked: add them on its page later"}
+      hint={checked > 0 ? `${checked} checked` : noneChecked(keysLabel("new_workspace.check"))}
       canSubmit
       run={run}
       onClose={onClose}
       onDone={onDone}
-      hints={SERVER_HINTS}
       input={query}
     >
       <input
@@ -627,18 +605,14 @@ function WorkspaceServersStep({
             <span className="sheet-label">Copy</span>
             <Picker
               label="Copy another workspace's servers"
+              title={titled("Copy another workspace's servers", "new_workspace.copy_from")}
               className="picker"
               value={null}
               open={copyOpen}
               onOpenChange={setCopyOpen}
               onChange={copyFrom}
               finalFocus={input}
-              trigger={
-                <>
-                  Copy from workspace...
-                  <Keys action="new_workspace.copy_from" />
-                </>
-              }
+              trigger="Copy from workspace..."
             >
               {sources.map((w) => (
                 <Choice
@@ -652,7 +626,7 @@ function WorkspaceServersStep({
           </div>
         </div>
       )}
-      <div ref={list} className="palette-list" role="listbox" aria-multiselectable aria-label="MCP servers">
+      <div ref={list} className="list-choices" role="listbox" aria-multiselectable aria-label="MCP servers">
         {shown.length === 0 && <p className="sheet-group-empty">No server matches</p>}
         {shown.map((server, index) => {
           const entry = selection[server.id];
@@ -660,7 +634,7 @@ function WorkspaceServersStep({
           return (
             <div
               key={server.id}
-              className="palette-item"
+              className="list-choice"
               role="option"
               aria-selected={entry !== undefined}
               data-highlighted={index === current ? "" : undefined}
@@ -678,18 +652,14 @@ function WorkspaceServersStep({
                 <span onClick={(event) => event.stopPropagation()}>
                   <Picker
                     label={`Profile for ${server.name}`}
+                    title={titled("Profile", "new_workspace.profile")}
                     className="picker"
                     value={entry.profile_id ?? NO_PROFILE_VALUE}
                     open={profileFor === server.id}
                     onOpenChange={(open) => setProfileFor(open ? server.id : null)}
                     onChange={(value) => setProfile(server, value === NO_PROFILE_VALUE ? null : value)}
                     finalFocus={input}
-                    trigger={
-                      <>
-                        {profiles.find((p) => p.id === entry.profile_id)?.name ?? NO_PROFILE}
-                        {index === current && <Keys action="new_workspace.profile" />}
-                      </>
-                    }
+                    trigger={profiles.find((p) => p.id === entry.profile_id)?.name ?? NO_PROFILE}
                   >
                     {profiles.map((p) => (
                       <Choice key={p.id} value={p.id} label={p.name} />
@@ -698,7 +668,6 @@ function WorkspaceServersStep({
                   </Picker>
                 </span>
               )}
-              {index === current && <Keys action="new_workspace.check" />}
             </div>
           );
         })}
@@ -734,7 +703,6 @@ function CloseSheet({
       }
       onClose={onClose}
       onDone={onDone}
-      hints={[keyHint("Confirm", "global.close_tab")]}
       onKeyDown={(event) => {
         const form = event.currentTarget;
         act(event, "global.close_tab", () => form.requestSubmit());
@@ -757,7 +725,7 @@ function ConfirmSheet({
       where={sheet.where}
       action={sheet.action}
       canSubmit
-      confirmKey="sheet.confirm"
+      dangerous
       returnsFocus
       run={() => request(sheet.machineId, sheet.command)}
       onClose={onClose}
@@ -829,7 +797,7 @@ function ArchiveSheet({
       action={sure ? (losses.length ? "Archive and lose it" : "Archive topic") : "Confirm"}
       hint={sure && losses.length ? "It can't be brought back." : archiveSummary(sheet.risk)}
       canSubmit
-      confirmKey="sheet.confirm"
+      dangerous
       run={async () => {
         if (!sure) {
           setSure(true);

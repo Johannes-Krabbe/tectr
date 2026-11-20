@@ -1,9 +1,8 @@
 import { Select } from "@base-ui/react/select";
-import { type AgentChoice, type AgentDraft, AgentForm, type ExtraPicker } from "./AgentForm";
+import { type AgentChoice, type AgentDraft, AgentForm } from "./AgentForm";
 import { type Device, errorText, request, type Topic } from "./engine";
 import { isOnline } from "./model";
 import { Choice, Picker } from "./ui/Picker";
-import { Keys } from "./ui/StatusIcon";
 
 type Place = "worktree" | "root";
 
@@ -13,11 +12,6 @@ const PLACE_LABEL: Record<Place, string> = {
 };
 
 const PLACES: Place[] = ["root", "worktree"];
-
-const EXTRA_PICKERS: ExtraPicker[] = [
-  { name: "workspace", label: "Workspace", action: "new_topic.pick_workspace" },
-  { name: "place", label: "Where to work", action: "new_topic.pick_place" },
-];
 
 /** The new agent's draft, plus where the topic goes. */
 export interface NewTopicForm extends AgentDraft {
@@ -107,7 +101,6 @@ export function NewTopic({
         onDraft={choose}
         ready={workspace !== undefined}
         autoFocus
-        extraPickers={EXTRA_PICKERS}
         onStart={start}
         onCancel={onCancel}
         onSettings={onSettings}
@@ -128,7 +121,6 @@ export function NewTopic({
                   {device?.state && (
                     <span className="create-device">{device.state.machine.name}</span>
                   )}
-                  <Keys action="new_topic.pick_workspace" />
                 </>
               }
             >
@@ -157,12 +149,7 @@ export function NewTopic({
               className="button"
               value={place}
               onChange={(value) => choose({ at_root: value === "root" })}
-              trigger={
-                <>
-                  <span>{PLACE_LABEL[place]}</span>
-                  <Keys action="new_topic.pick_place" />
-                </>
-              }
+              trigger={<span>{PLACE_LABEL[place]}</span>}
             >
               {PLACES.map((option) => (
                 <Choice key={option} value={option} label={PLACE_LABEL[option]} />

@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useRef, useState } from "react";
+import { type RefObject, useRef, useState } from "react";
 import {
   errorText,
   type PermissionMode,
@@ -6,46 +6,20 @@ import {
   request,
   type Session,
 } from "./engine";
-import { act, type ActionId, titled } from "./keybinds";
-import { inSidebar } from "./keys";
 import { effortForModel, modelLabel, MODES } from "./model";
-import { hint, type Hint } from "./shortcuts";
 import { Choice, Picker } from "./ui/Picker";
 
 type PickerName = "model" | "effort" | "mode";
 
-const PICKER_KEYS: [ActionId, PickerName][] = [
-  ["pane.pick_model", "model"],
-  ["pane.pick_effort", "effort"],
-  ["pane.pick_mode", "mode"],
-];
-
-/** The pickers `SessionPickers` has for this session, for the shortcut line. */
-export function sessionPickerHints(
-  provider: Provider | undefined,
-  session: Session,
-  online: boolean,
-): Hint[] {
-  if (!provider || !online) return [];
-  const model = provider.models.find((m) => m.id === session.model);
-  const hints: Hint[] = [];
-  if (provider.models.length > 0) hints.push(hint("Model", "pane.pick_model"));
-  if (model?.efforts.length) hints.push(hint("Effort", "pane.pick_effort"));
-  if (MODES.some((option) => provider.modes.includes(option.mode))) {
-    hints.push(hint("Permission mode", "pane.pick_mode"));
-  }
-  return hints;
-}
-
 /** What a running session uses, which can change at any time. The labels only move once the
- * agent has changed, so they always say what's running. */
+ * agent has changed, so they always say what's running. They have no keys of their own: Tab
+ * from the message box reaches them. */
 export function SessionPickers({
   machineId,
   session,
   provider,
   online,
   input,
-  transcript,
   onError,
 }: {
   machineId: string;
@@ -54,32 +28,13 @@ export function SessionPickers({
   provider: Provider | undefined;
   online: boolean;
   input: RefObject<HTMLElement | null>;
-  transcript: RefObject<HTMLElement | null>;
   onError: (message: string | null) => void;
 }) {
   const [picking, setPicking] = useState<PickerName | null>(null);
   const [busy, setBusy] = useState(false);
-  // Choosing by key goes back to whichever had the keyboard, and by pointer to the message box.
+  // Choosing goes back to the message box, which is where the next thing to do is.
   const returnFocus = useRef<HTMLElement | null>(null);
   const usable = provider !== undefined && online && !busy;
-  const live = useRef(usable);
-  live.current = usable;
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (inSidebar() || document.querySelector(".sheet")) return;
-      PICKER_KEYS.some(([id, picker]) =>
-        act(event, id, () => {
-          if (!live.current) return;
-          returnFocus.current =
-            document.activeElement === input.current ? input.current : transcript.current;
-          setPicking((shown) => (shown === picker ? null : picker));
-        }),
-      );
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   if (!provider) return null;
 
@@ -130,7 +85,7 @@ export function SessionPickers({
         <Picker
           {...pickerProps("model")}
           label="Model"
-          title={titled("Model", "pane.pick_model")}
+          title="Model"
           value={session.model}
           onChange={(id) => {
             const next = provider.models.find((m) => m.id === id);
@@ -149,7 +104,7 @@ export function SessionPickers({
         <Picker
           {...pickerProps("effort")}
           label="Effort"
-          title={titled("Effort", "pane.pick_effort")}
+          title="Effort"
           value={session.effort ?? null}
           onChange={(id) => void change({ effort: id })}
           trigger={effort ? `${effort.name} effort` : "Default effort"}
@@ -163,7 +118,7 @@ export function SessionPickers({
         <Picker
           {...pickerProps("mode")}
           label="Permission mode"
-          title={titled("Permission mode", "pane.pick_mode")}
+          title="Permission mode"
           value={session.mode}
           onChange={(value) => void change({ mode: value as PermissionMode })}
           trigger={mode?.label ?? "Unknown mode"}

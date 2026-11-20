@@ -1,7 +1,14 @@
-import { type MouseEvent, useEffect, useRef, useState } from "react";
-import { type Device, type McpServer, request, type Topic, type Workspace, type WorkspaceMcp } from "./engine";
-import { act, type ActionId, keysLabel } from "./keybinds";
-import { inPane } from "./keys";
+import { type Ref, useEffect, useRef, useState } from "react";
+import {
+  type ArchivedTopic,
+  type Device,
+  errorText,
+  type McpServer,
+  request,
+  type Topic,
+  type Workspace,
+  type WorkspaceMcp,
+} from "./engine";
 import {
   addableServers,
   authLabel,
@@ -23,32 +30,22 @@ import {
 import { McpAddSheet } from "./McpAdd";
 import {
   actionMenu,
-  actOnServer,
   McpProfileSheet,
   McpServerSheet,
   type RowAction,
   useMcpRequests,
 } from "./McpServers";
 import { isOnline, STATE_LABEL, tabsOf, topicState } from "./model";
-import { type PaletteItem, useScreenPaletteItems } from "./Palette";
-import { hint, useHints } from "./shortcuts";
 import { Icon } from "./ui/Icon";
 import { MenuButton, type MenuGroups, RightClickMenu } from "./ui/Menu";
 import { Choice, Picker } from "./ui/Picker";
+import { onRowKeys, SettingRow, Switch, useRovingList } from "./ui/SettingsPage";
 import { StatusIcon } from "./ui/StatusIcon";
-
-/** A list to choose from in the palette's place. */
-export interface PagePicker {
-  placeholder: string;
-  empty: string;
-  items: PaletteItem[];
-}
 
 type PageRow =
   | { kind: "topic"; topic: Topic }
-  | { kind: "server"; item: WorkspaceServer }
-  /** What an empty section offers instead of rows, reachable like a row. */
-  | { kind: "action"; id: string; icon: "add" | "copy"; label: string; run: () => void };
+  /** What an empty section offers instead of rows. */
+  | { kind: "action"; id: string; label: string; run: () => void };
 
 type Form =
   | { kind: "add" }
@@ -64,29 +61,35 @@ const NONE = "none";
 
 const counted = (count: number, thing: string) => `${count} ${thing}${count === 1 ? "" : "s"}`;
 
+const archivedOn = (ms: number) =>
+  new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+/** What a library server is, in the line under its name. */
+const serverDetail = (server: McpServer) => {
+  const agent = connectorAgent(server);
+  if (agent) return `${agent} connector`;
+  return [mcpSummary(server.transport), server.profiles?.map((p) => p.name).join(", ")]
+    .filter(Boolean)
+    .join(", ");
+};
+
 /** The home folder as `~`, which is how people read their own paths. */
 const homeShort = (path: string) => path.replace(/^\/(Users|home)\/[^/]+(?=\/|$)/, "~");
 
-/** A tooltip that teaches the key without putting it on screen. */
-const withKey = (label: string, action: ActionId) => {
-  const keys = keysLabel(action);
-  return keys ? `${label}  ${keys}` : label;
-};
-
-/** A workspace's own page: its topics, and the MCP servers its agents get. Keys stay out of
- * sight: every action is a quiet button or in a menu, and tooltips and menus name the keys. */
+/** A workspace's own page: its topics, and the MCP servers its agents get. The topics are one
+ * Tab stop with the arrows moving through them. Every server's switch, profile and menu is a
+ * control used where it sits, in the Tab order. What's archived and what the library has to add
+ * open in place under their lists, so nothing floats over the page. */
 export function WorkspacePage({
   device,
   workspace,
   onOpenTopic,
   onNewTopic,
-  onPicker,
 }: {
   device: Device;
   workspace: Workspace;
   onOpenTopic: (topicId: string) => void;
   onNewTopic: () => void;
-  onPicker: (picker: PagePicker) => void;
 }) {
   const state = device.state;
   const machineId = state?.machine.id;
@@ -94,13 +97,25 @@ export function WorkspacePage({
   const deviceName = state?.machine.name ?? device.url;
   const servers = state ? workspaceServers(state, workspace) : [];
   const requests = useMcpRequests(machineId);
-  const [cursor, setCursor] = useState(0);
   const [form, setForm] = useState<Form>(null);
   // The server whose profile dropdown is open.
   const [profileFor, setProfileFor] = useState<string | null>(null);
-  // A server just added, which the cursor goes to once it's in the list.
+  // A server just added, which is scrolled into view once it's in the list.
   const [landOn, setLandOn] = useState<string | null>(null);
   const page = useRef<HTMLDivElement>(null);
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  // Null while they're being asked for.
+  const [archived, setArchived] = useState<ArchivedTopic[] | null>(null);
+  const [archivedError, setArchivedError] = useState<string | null>(null);
+  // Whether the library is open under the servers. Until someone says, it's open while the
+  // workspace has none, which is when adding is what the section is for.
+  const [libraryChoice, setLibraryChoice] = useState<boolean | null>(null);
+  const libraryOpen = libraryChoice ?? servers.length === 0;
+  const [copyOpen, setCopyOpen] = useState(false);
+  // Opening the library from a button elsewhere takes the keyboard there once it has rendered.
+  const focusLibrary = useRef(false);
+  const libraryArea = useRef<HTMLDivElement>(null);
+  const archivedToggle = useRef<HTMLButtonElement>(null);
 
   const library = state?.mcp_servers ?? [];
   /** Each other workspace that would add something, with what copying it would make. */
@@ -111,66 +126,53 @@ export function WorkspacePage({
     return gained.length > 0 ? [{ other, next, gained }] : [];
   });
 
-  const copyFrom = () => {
-    if (!online) return;
-    onPicker({
-      placeholder: `Copy MCP servers into ${workspace.name} from`,
-      empty: `No other workspace on ${deviceName} has servers this one doesn't`,
-      items: copySources.map(({ other, next, gained }) => ({
-        id: `copy/${other.id}`,
-        label: other.name,
-        detail: `Adds ${gained.map((s) => s.name).join(", ")}`,
-        run: () => void setMcp(next, WHOLE_LIST, "Copying"),
-      })),
-    });
-  };
-
   const emptyTopics: PageRow[] = [
-    { kind: "action", id: "new-topic", icon: "add", label: "New topic", run: () => onNewTopic() },
+    { kind: "action", id: "new-topic", label: "New topic", run: () => onNewTopic() },
   ];
-  const emptyServers: PageRow[] = [
-    {
-      kind: "action",
-      id: "add-server",
-      icon: "add",
-      label: "Add an MCP server",
-      run: () => addFromLibrary(),
-    },
-  ];
-  // Copying only shows up where it helps: in an empty list, with somewhere to copy from.
-  if (copySources.length > 0) {
-    emptyServers.push({
-      kind: "action",
-      id: "copy-servers",
-      icon: "copy",
-      label: "Copy from another workspace",
-      run: () => copyFrom(),
-    });
-  }
   const topicRows: PageRow[] =
     workspace.topics.length > 0 || !online
       ? workspace.topics.map((topic): PageRow => ({ kind: "topic", topic }))
       : emptyTopics;
-  const serverRows: PageRow[] =
-    servers.length > 0 || !online
-      ? servers.map((item): PageRow => ({ kind: "server", item }))
-      : emptyServers;
-  const rows = [...topicRows, ...serverRows];
+  const addable = state ? addableServers(state, workspace) : [];
+  const topics = useRovingList(topicRows.length);
 
-  const selected = Math.max(Math.min(cursor, rows.length - 1), 0);
-  const current = rows[selected];
+  // Asked for each time the list opens, because archiving happens anywhere.
+  useEffect(() => {
+    if (!archivedOpen || !machineId || !online) return;
+    let shown = true;
+    setArchived(null);
+    setArchivedError(null);
+    request(machineId, { command: "list_archived_topics" })
+      .then((output) => {
+        if (!shown) return;
+        const topics = output.output === "archived_topics" ? output.topics : [];
+        setArchived(
+          topics
+            .filter((topic) => topic.workspace_id === workspace.id)
+            .sort((a, b) => b.archived_at_ms - a.archived_at_ms),
+        );
+      })
+      .catch((reason) => {
+        if (shown) setArchivedError(errorText(reason));
+      });
+    return () => {
+      shown = false;
+    };
+  }, [archivedOpen, machineId, online, workspace.id]);
 
   useEffect(() => {
-    if (!landOn) return;
-    const index = rows.findIndex((row) => row.kind === "server" && row.item.server.id === landOn);
-    if (index === -1) return;
-    setCursor(index);
-    setLandOn(null);
+    if (!focusLibrary.current) return;
+    focusLibrary.current = false;
+    libraryArea.current?.querySelector<HTMLElement>("[data-setting]")?.focus();
   });
 
   useEffect(() => {
-    page.current?.querySelector(".keybind.current")?.scrollIntoView({ block: "nearest" });
-  }, [selected]);
+    if (!landOn) return;
+    const row = page.current?.querySelector(`[data-server="${landOn}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "nearest" });
+    setLandOn(null);
+  });
 
   const setMcp = (next: Record<string, WorkspaceMcp>, busyId: string, doing: string) =>
     requests.run(busyId, doing, {
@@ -195,55 +197,48 @@ export function WorkspacePage({
     }
   };
 
-  const addFromLibrary = () => {
-    if (!online || !state) return;
-    const items: PaletteItem[] = addableServers(state, workspace).map((server) => ({
-      id: `add/${server.id}`,
-      label: server.name,
-      detail: connectorAgent(server)
-        ? `${connectorAgent(server)} connector`
-        : [mcpSummary(server.transport), server.profiles?.map((p) => p.name).join(", ")]
-            .filter(Boolean)
-            .join(", "),
-      run: () => void addServer(server),
-    }));
-    items.push({
-      id: "add/new",
-      label: "New server...",
-      detail: "Paste a URL, a command or JSON from the docs",
-      always: true,
-      run: () => setForm({ kind: "add" }),
+  /** Opens the library under the servers and gives it the keyboard, for the section's + and the
+   * page menu. */
+  const openLibrary = () => {
+    if (!online) return;
+    focusLibrary.current = true;
+    setLibraryChoice(true);
+  };
+
+  const copyFrom = (workspaceId: string) => {
+    const source = copySources.find(({ other }) => other.id === workspaceId);
+    if (source && online) void setMcp(source.next, WHOLE_LIST, "Copying");
+  };
+
+  const restore = async (topic: ArchivedTopic) => {
+    const output = await requests.run(`archived/${topic.id}`, "Restoring", {
+      command: "restore_topic",
+      topic_id: topic.id,
     });
-    onPicker({
-      placeholder: `Add an MCP server to ${workspace.name}`,
-      empty: "Every server in the library is here already",
-      items,
-    });
+    if (!output) return;
+    setArchived((now) => now?.filter((other) => other.id !== topic.id) ?? null);
+    onOpenTopic(topic.id);
   };
 
   const serverActions = ({ server, entry, profile }: WorkspaceServer): RowAction[] => {
     if (!online) return [];
     const actions: RowAction[] = [
       {
+        id: "toggle",
         label: entry.enabled ? "Turn off" : "Turn on",
-        action: "mcp.toggle",
         run: () => setEntry(server, { ...entry, enabled: !entry.enabled }),
       },
     ];
     if (canHaveProfiles(server)) {
       actions.push(
-        { label: "Profile", action: "mcp.profile", run: () => setProfileFor(server.id) },
-        {
-          label: "New profile",
-          action: "mcp.new_profile",
-          run: () => setForm({ kind: "profile", server }),
-        },
+        { id: "profile", label: "Profile", run: () => setProfileFor(server.id) },
+        { id: "new-profile", label: "New profile", run: () => setForm({ kind: "profile", server }) },
       );
     }
     if (canLogIn(server) && (profile || server.needs_login)) {
       actions.push({
+        id: "login",
         label: profile?.auth === "logged_in" ? "Log in again" : "Log in",
-        action: "mcp.login",
         // A login belongs to a profile, so without one, logging in makes one.
         run: () =>
           profile ? requests.logIn(server, profile, server.id) : setForm({ kind: "profile", server }),
@@ -251,117 +246,23 @@ export function WorkspacePage({
     }
     if (profile && canLogOut(server, profile)) {
       actions.push({
+        id: "logout",
         label: "Log out",
-        action: "mcp.logout",
         run: () => requests.logOut(server, profile, server.id),
       });
     }
     if (canEdit(server)) {
-      actions.push({ label: "Edit", action: "mcp.edit", run: () => setForm({ kind: "edit", server }) });
+      actions.push({ id: "edit", label: "Edit", run: () => setForm({ kind: "edit", server }) });
     }
     actions.push({
+      id: "remove",
       label: "Remove from workspace",
-      action: "mcp.remove",
       run: () => setEntry(server, null, "Removing"),
     });
     return actions;
   };
 
-  const rowActions = (row: PageRow): RowAction[] =>
-    row.kind === "topic"
-      ? [{ label: "Open", action: "workspace.open", run: () => onOpenTopic(row.topic.id) }]
-      : row.kind === "action"
-        ? [{ label: row.label, action: "workspace.open", run: row.run }]
-        : serverActions(row.item);
-
-  const listActions: RowAction[] = online
-    ? [{ label: "Add server", action: "mcp.add", run: addFromLibrary }]
-    : [];
-  if (online && copySources.length > 0) {
-    listActions.push({ label: "Copy from workspace...", action: "mcp.copy_from", run: copyFrom });
-  }
-
-  const inTopics = current?.kind === "topic" || (current?.kind === "action" && current.id === "new-topic");
-  /** One key for adding, which opens whatever the section the cursor is in adds. */
-  const addHere = () => (inTopics ? onNewTopic() : addFromLibrary());
-
-  useHints("pane", [
-    ...(current ? rowActions(current).map(({ label, action }) => hint(label, action)) : []),
-    // The add key adds to the section the cursor is in.
-    hint(inTopics ? "New topic" : "Add server", "mcp.add"),
-    ...listActions
-      .filter(({ action }) => action !== "mcp.add")
-      .map(({ label, action }) => hint(label.replace("...", ""), action)),
-    hint("Move", "workspace.up", "workspace.down"),
-    hint("First, last", "workspace.first", "workspace.last"),
-  ]);
-
-  // Running one from the palette lands on its row, where its key works.
-  const paletteItems: PaletteItem[] = listActions.map(({ action, run }) => ({
-    id: `workspace/${workspace.id}/${action}`,
-    label:
-      action === "mcp.add"
-        ? `Add an MCP server to ${workspace.name}`
-        : `Copy MCP servers into ${workspace.name} from another workspace`,
-    keys: keysLabel(action),
-    run,
-  }));
-  for (const [index, row] of rows.entries()) {
-    if (row.kind !== "server") continue;
-    for (const { label, action, run } of serverActions(row.item)) {
-      paletteItems.push({
-        id: `workspace/${workspace.id}/${row.item.server.id}/${action}`,
-        label: `${label}: ${row.item.server.name}`,
-        detail: `MCP server in ${workspace.name}`,
-        keys: row === current ? keysLabel(action) : undefined,
-        run: () => {
-          setCursor(index);
-          run();
-        },
-      });
-    }
-  }
-  useScreenPaletteItems(paletteItems);
-
-  useEffect(() => {
-    if (form || profileFor) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (!inPane(event)) return;
-      const moveTo = (index: number) => () =>
-        setCursor(Math.max(Math.min(index, rows.length - 1), 0));
-      const commands: [ActionId, () => void][] = [
-        ["workspace.up", moveTo(selected - 1)],
-        ["workspace.down", moveTo(selected + 1)],
-        ["workspace.first", moveTo(0)],
-        ["workspace.last", moveTo(rows.length - 1)],
-        // Enter does what the row is for: going into a topic, or choosing a server's profile.
-        [
-          "workspace.open",
-          () => {
-            if (current?.kind === "topic") onOpenTopic(current.topic.id);
-            else if (current?.kind === "action") current.run();
-            else if (current && online && canHaveProfiles(current.item.server)) {
-              setProfileFor(current.item.server.id);
-            }
-          },
-        ],
-        ...listActions.map(({ action, run }): [ActionId, () => void] =>
-          action === "mcp.add" ? [action, addHere] : [action, run],
-        ),
-      ];
-      if (commands.some(([id, run]) => act(event, id, run))) return;
-      if (current?.kind === "server") actOnServer(event, serverActions(current.item));
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-
-  const pointAt = (index: number) => (event: MouseEvent<HTMLElement>) => {
-    // Moving, rather than entering: a row scrolling under a pointer that isn't moving must
-    // not take the selection.
-    if (event.movementX === 0 && event.movementY === 0) return;
-    setCursor(index);
-  };
+  const canCopy = online && copySources.length > 0;
 
   const topicRow = (topic: Topic, index: number) => {
     const status = topicState(topic, online);
@@ -371,9 +272,9 @@ export function WorkspacePage({
     return (
       <button
         key={topic.id}
-        className={`keybind workspace-row ${index === selected ? "current" : ""}`}
-        tabIndex={-1}
-        onMouseMove={pointAt(index)}
+        className="setting-line workspace-topic"
+        {...topics.item(index)}
+        data-setting=""
         onClick={() => onOpenTopic(topic.id)}
       >
         <StatusIcon state={status} />
@@ -386,110 +287,218 @@ export function WorkspacePage({
     );
   };
 
-  const actionRow = (row: Extract<PageRow, { kind: "action" }>, index: number) => (
+  /** A row that makes something, like the empty section's New topic: an add icon and what it
+   * makes, an ordinary button in the Tab order. */
+  const addRow = (id: string, label: string, run: () => void) => (
     <button
-      key={row.id}
-      className={`keybind workspace-row workspace-empty ${index === selected ? "current" : ""}`}
-      tabIndex={-1}
+      key={id}
+      className="setting-line workspace-empty"
+      data-setting=""
       disabled={!online}
-      onMouseMove={pointAt(index)}
-      onClick={row.run}
+      onClick={run}
     >
-      <Icon name={row.icon} />
-      <span className="name">{row.label}</span>
+      <Icon name="add" />
+      <span className="name">{label}</span>
     </button>
   );
 
-  const serverRow = (item: WorkspaceServer, index: number) => {
+  /** Opens and closes what's under a list, saying how much is there. */
+  const disclosure = (
+    label: string,
+    open: boolean,
+    onToggle: () => void,
+    count?: number,
+    ref?: Ref<HTMLButtonElement>,
+  ) => (
+    <button
+      ref={ref}
+      className="workspace-disclosure"
+      aria-expanded={open}
+      data-setting=""
+      disabled={!online}
+      onClick={onToggle}
+    >
+      <Icon name={open ? "fold" : "unfold"} />
+      <span>{label}</span>
+      {count !== undefined && count > 0 && <span className="workspace-count">{count}</span>}
+    </button>
+  );
+
+  const archivedRows = () => {
+    if (archivedError) return <p className="error workspace-error">{archivedError}</p>;
+    if (archived === null) return <p className="settings-note workspace-note">Loading</p>;
+    if (archived.length === 0) return <p className="settings-note workspace-note">No archived topics</p>;
+    return (
+      <div className="settings-rows">
+        {archived.map((topic) => {
+          const id = `archived/${topic.id}`;
+          const busy = requests.busy[id];
+          return (
+            <SettingRow
+              key={topic.id}
+              label={topic.name}
+              dim
+              meta={<span className="meta">{busy ?? `Archived ${archivedOn(topic.archived_at_ms)}`}</span>}
+              error={requests.errors[id]}
+            >
+              <button
+                className="button small"
+                disabled={!online || busy !== undefined}
+                onClick={() => void restore(topic)}
+              >
+                Restore
+              </button>
+            </SettingRow>
+          );
+        })}
+      </div>
+    );
+  };
+
+  /** What the device's library has that this workspace doesn't, each a row away from added,
+   * then copying another workspace's, then making a new one. */
+  const libraryRows = () => (
+    <div ref={libraryArea} className="settings-rows workspace-library">
+      {addable.length === 0 && (
+        <p className="settings-note workspace-note">Every server in the library is here</p>
+      )}
+      {addable.map((server) => {
+        const busy = requests.busy[server.id];
+        return (
+          <SettingRow
+            key={server.id}
+            label={server.name}
+            detail={serverDetail(server)}
+            meta={busy ? <span className="meta">{busy}</span> : undefined}
+            error={requests.errors[server.id]}
+          >
+            <button
+              className="button small"
+              disabled={!online || busy !== undefined}
+              onClick={() => void addServer(server)}
+            >
+              Add
+            </button>
+          </SettingRow>
+        );
+      })}
+      {copySources.length > 0 && (
+        <SettingRow
+          label="Copy from another workspace"
+          meta={requests.busy[WHOLE_LIST] ? <span className="meta">{requests.busy[WHOLE_LIST]}</span> : undefined}
+        >
+          <Picker
+            label={`Copy MCP servers into ${workspace.name} from`}
+            className="picker"
+            value={null}
+            disabled={!online}
+            open={copyOpen}
+            onOpenChange={setCopyOpen}
+            onChange={copyFrom}
+            trigger={
+              <>
+                <span className="dim">Workspace</span>
+                <Icon name="fold" />
+              </>
+            }
+          >
+            {copySources.map(({ other, gained }) => (
+              <Choice
+                key={other.id}
+                value={other.id}
+                label={other.name}
+                meta={`Adds ${gained.map((s) => s.name).join(", ")}`}
+              />
+            ))}
+          </Picker>
+        </SettingRow>
+      )}
+      {addRow("new-server", "New server...", () => setForm({ kind: "add" }))}
+    </div>
+  );
+
+  const serverRow = (item: WorkspaceServer) => {
     const { server, entry, profile } = item;
-    const isCurrent = index === selected;
     const busy = requests.busy[server.id];
     const auth = entryAuth(server, profile);
     const agent = connectorAgent(server);
     const hasProfiles = (server.profiles?.length ?? 0) > 0;
+    const failed = requests.errors[server.id];
     return (
-      <div
-        key={server.id}
-        className={`keybind workspace-row ${isCurrent ? "current" : ""} ${entry.enabled ? "" : "off"}`}
-        data-server={server.id}
-        onMouseMove={pointAt(index)}
-      >
-        <span className="server-name">{server.name}</span>
-        <span className="server-summary code">{agent ? `${agent} connector` : mcpSummary(server.transport)}</span>
-        {busy ? (
-          <span className="meta">{busy}</span>
-        ) : requests.errors[server.id] ? (
-          <span className="meta bad" title={requests.errors[server.id]}>
-            Failed
-          </span>
-        ) : (
-          auth === "needs_login" &&
-          online && (
+      <div key={server.id} data-server={server.id}>
+        <SettingRow
+          label={server.name}
+          detail={agent ? `${agent} connector` : mcpSummary(server.transport)}
+          dim={!entry.enabled}
+          error={failed}
+          // Left turns it off and right on, the way its switch slides.
+          onStep={(direction) => {
+            const enabled = direction > 0;
+            if (online && enabled !== entry.enabled) setEntry(server, { ...entry, enabled });
+          }}
+          meta={busy ? <span className="meta">{busy}</span> : undefined}
+          quiet={
+            <MenuButton
+              label={`Actions for ${server.name}`}
+              className="icon-button"
+              groups={actionMenu(serverActions(item))}
+            >
+              <Icon name="more" />
+            </MenuButton>
+          }
+        >
+          {!busy && auth === "needs_login" && online && (
             <button
               className="picker alert"
-              tabIndex={-1}
-              title={withKey("Log in", "mcp.login")}
-              onMouseDown={(event) => event.preventDefault()}
               onClick={() =>
                 profile ? requests.logIn(server, profile, server.id) : setForm({ kind: "profile", server })
               }
             >
               Log in
             </button>
-          )
-        )}
-        {canHaveProfiles(server) && (
-          <Picker
-            label={`Profile ${server.name} uses`}
-            // Without profiles there's nothing to choose yet, so it only shows on the row in use.
-            className={`picker ${hasProfiles ? "" : "row-quiet"}`}
-            value={profile?.id ?? NONE}
+          )}
+          {canHaveProfiles(server) && (
+            <Picker
+              label={`Profile ${server.name} uses`}
+              className="picker"
+              value={profile?.id ?? NONE}
+              disabled={!online}
+              open={profileFor === server.id}
+              onOpenChange={(open) => setProfileFor(open ? server.id : null)}
+              onChange={(value) => {
+                setProfileFor(null);
+                if (value === NEW_PROFILE) setForm({ kind: "profile", server });
+                else setEntry(server, { ...entry, profile_id: value === NONE ? undefined : value });
+              }}
+              trigger={
+                <>
+                  <span className={profile ? "" : "dim"}>
+                    {profile ? profile.name : hasProfiles ? NO_PROFILE : "Profile"}
+                  </span>
+                  <Icon name="fold" />
+                </>
+              }
+            >
+              {(server.profiles ?? []).map((p) => (
+                <Choice
+                  key={p.id}
+                  value={p.id}
+                  label={p.name}
+                  meta={authLabel(p.auth === "logged_in" ? "logged_in" : null) ?? undefined}
+                />
+              ))}
+              <Choice value={NONE} label={NO_PROFILE} />
+              <Choice value={NEW_PROFILE} label="New profile..." />
+            </Picker>
+          )}
+          <Switch
+            label={`${server.name} on in ${workspace.name}`}
+            title={entry.enabled ? "Turn off" : "Turn on"}
+            checked={entry.enabled}
             disabled={!online}
-            open={profileFor === server.id}
-            onOpenChange={(open) => setProfileFor(open ? server.id : null)}
-            onChange={(value) => {
-              setProfileFor(null);
-              if (value === NEW_PROFILE) setForm({ kind: "profile", server });
-              else setEntry(server, { ...entry, profile_id: value === NONE ? undefined : value });
-            }}
-            finalFocus={page}
-            trigger={
-              <>
-                <span className={profile ? "" : "dim"}>{profile ? profile.name : "Profile"}</span>
-                <Icon name="fold" />
-              </>
-            }
-          >
-            {(server.profiles ?? []).map((p) => (
-              <Choice
-                key={p.id}
-                value={p.id}
-                label={p.name}
-                meta={authLabel(p.auth === "logged_in" ? "logged_in" : null) ?? undefined}
-              />
-            ))}
-            <Choice value={NONE} label={NO_PROFILE} />
-            <Choice value={NEW_PROFILE} label="New profile..." />
-          </Picker>
-        )}
-        <button
-          className="switch"
-          tabIndex={-1}
-          role="switch"
-          aria-checked={entry.enabled}
-          aria-label={`${server.name} on in ${workspace.name}`}
-          title={withKey(entry.enabled ? "Turn off" : "Turn on", "mcp.toggle")}
-          disabled={!online}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => setEntry(server, { ...entry, enabled: !entry.enabled })}
-        />
-        <MenuButton
-          label={`Actions for ${server.name}`}
-          className="icon-button row-menu"
-          groups={actionMenu(serverActions(item))}
-        >
-          <Icon name="more" />
-        </MenuButton>
+            onChange={(enabled) => setEntry(server, { ...entry, enabled })}
+          />
+        </SettingRow>
       </div>
     );
   };
@@ -500,35 +509,46 @@ export function WorkspacePage({
     return item ? actionMenu(serverActions(item)) : [];
   };
 
-  const renderRow = (row: PageRow, index: number) =>
-    row.kind === "topic"
-      ? topicRow(row.topic, index)
-      : row.kind === "server"
-        ? serverRow(row.item, index)
-        : actionRow(row, index);
+  const openArchived = () => {
+    setArchivedOpen(true);
+    archivedToggle.current?.focus();
+  };
 
   const pageMenu: MenuGroups = online
     ? [
         [
-          { id: "new-topic", label: "New topic", keys: keysLabel("global.new_topic"), run: onNewTopic },
-          ...listActions.map(({ action, run }) => ({
-            id: action,
-            label: action === "mcp.add" ? "Add MCP server" : "Copy MCP servers from...",
-            keys: keysLabel(action),
-            run,
-          })),
+          { id: "new-topic", label: "New topic", run: onNewTopic },
+          { id: "archived-topics", label: "Show archived topics", run: openArchived },
+        ],
+        [
+          { id: "add-server", label: "Add MCP server", run: openLibrary },
+          // Few enough to name them all, so the menu holds them rather than a list of its own.
+          ...(canCopy
+            ? [
+                {
+                  id: "copy-servers",
+                  label: "Copy MCP servers from",
+                  run: () => {},
+                  items: copySources.map(({ other }) => ({
+                    id: `copy/${other.id}`,
+                    label: other.name,
+                    run: () => copyFrom(other.id),
+                  })),
+                },
+              ]
+            : []),
         ],
       ]
     : [];
 
-  const section = (title: string, count: number, add: { label: string; action: ActionId; run: () => void }) => (
+  const section = (title: string, count: number, add: { label: string; run: () => void }) => (
     <div className="workspace-section-head">
       <h2 className="workspace-section-title">{title}</h2>
       {count > 0 && <span className="workspace-count">{count}</span>}
       <button
         className="icon-button"
         disabled={!online}
-        title={withKey(add.label, add.action)}
+        title={add.label}
         aria-label={add.label}
         onClick={add.run}
       >
@@ -542,13 +562,10 @@ export function WorkspacePage({
       <div
         ref={page}
         className="pane settings workspace-page"
+        // Where the keyboard lands when the page opens, so Tab and the row keys start from the
+        // top. Not a Tab stop. Esc goes back to the sidebar, which App does for every pane.
         tabIndex={-1}
-        // A click anywhere on the page gives it the keyboard, which is what shows the selection.
-        onMouseDown={(event) => {
-          if (!event.currentTarget.contains(document.activeElement)) {
-            event.currentTarget.focus({ preventScroll: true });
-          }
-        }}
+        onKeyDown={(event) => onRowKeys(event)}
       >
         <div className="settings-in workspace-in">
           <header className="workspace-head">
@@ -570,24 +587,39 @@ export function WorkspacePage({
           <section className="workspace-section">
             {section("Topics", workspace.topics.length, {
               label: "New topic",
-              action: "global.new_topic",
               run: onNewTopic,
             })}
-            <div className="keybinds">{topicRows.map((row, index) => renderRow(row, index))}</div>
-            {/* Restoring from here comes later. It's here so the page has its place. */}
-            <button className="workspace-link" tabIndex={-1} title="Not built yet">
-              Archived topics
-            </button>
+            {/* One Tab stop, with the row keys moving through the topics and on to the servers. */}
+            <div className="settings-rows">
+              {topicRows.map((row, index) =>
+                row.kind === "topic" ? topicRow(row.topic, index) : addRow(row.id, row.label, row.run),
+              )}
+            </div>
+            {disclosure(
+              "Archived topics",
+              archivedOpen,
+              () => setArchivedOpen((open) => !open),
+              undefined,
+              archivedToggle,
+            )}
+            {archivedOpen && archivedRows()}
           </section>
           <section className="workspace-section">
             {section("MCP servers", servers.length, {
               label: "Add MCP server",
-              action: "mcp.add",
-              run: addFromLibrary,
+              run: openLibrary,
             })}
-            <RightClickMenu render={<div className="keybinds" />} groupsAt={serverMenuAt}>
-              {serverRows.map((row, index) => renderRow(row, topicRows.length + index))}
-            </RightClickMenu>
+            {servers.length > 0 && (
+              <RightClickMenu render={<div className="settings-rows" />} groupsAt={serverMenuAt}>
+                {servers.map(serverRow)}
+              </RightClickMenu>
+            )}
+            {online && state && (
+              <>
+                {disclosure("Add from the library", libraryOpen, () => setLibraryChoice(!libraryOpen), addable.length)}
+                {libraryOpen && libraryRows()}
+              </>
+            )}
             {requests.errors[WHOLE_LIST] && <p className="error workspace-error">{requests.errors[WHOLE_LIST]}</p>}
           </section>
         </div>

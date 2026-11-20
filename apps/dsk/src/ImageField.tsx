@@ -28,7 +28,7 @@ import {
   tokensIn,
 } from "./imageTokens";
 import { imageFiles, prepareImage, sendImages, useImageUrl } from "./images";
-import { act, keysLabel, useSettings } from "./keybinds";
+import { act, claim, useSettings } from "./keybinds";
 import { focusPane } from "./keys";
 import { Icon } from "./ui/Icon";
 import type { VimMode } from "./vim";
@@ -39,8 +39,6 @@ export type OpenImages = (images: PromptImage[], index: number) => void;
 interface Peek {
   image: PromptImage;
   anchor: Element;
-  /** It came from the cursor, so the key that opens it is worth showing. */
-  fromCursor?: boolean;
 }
 
 const PEEK_WIDTH = 320;
@@ -66,7 +64,6 @@ function ImagePeek({ machineId, peek }: { machineId: string | undefined; peek: P
     el.style.left = `${left}px`;
   });
 
-  const open = keysLabel("composer.open_image");
   return (
     <div className="image-peek" ref={box} aria-hidden="true">
       <div
@@ -80,7 +77,6 @@ function ImagePeek({ machineId, peek }: { machineId: string | undefined; peek: P
         <span>
           {image.width} x {image.height}
         </span>
-        {peek.fromCursor && open && <span className="image-keys">{open} to open</span>}
       </div>
     </div>
   );
@@ -112,7 +108,6 @@ function ImageThumb({
       <button
         type="button"
         className="image-thumb-open"
-        tabIndex={-1}
         aria-label={`Open image #${image.number}`}
         // The message box keeps the keyboard, and its cursor.
         onMouseDown={(event) => event.preventDefault()}
@@ -125,6 +120,7 @@ function ImageThumb({
         <button
           type="button"
           className="image-remove"
+          // It only shows on hover. From the keyboard, Backspace beside its token removes it.
           tabIndex={-1}
           aria-label={`Remove image #${image.number}`}
           onMouseDown={(event) => event.preventDefault()}
@@ -156,10 +152,8 @@ export interface ImageField {
   clear(): void;
   /** Takes a paste of images. Says whether it took it. */
   onPaste(event: ClipboardEvent<HTMLTextAreaElement>): boolean;
-  /** Removing a token whole, and opening images. Says whether it took the press. */
+  /** Removing a token whole. Says whether it took the press. */
   onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>, vim: VimMode | null): boolean;
-  /** Opens the image beside the cursor, or every image in the box. */
-  openAtCursor(): void;
   remove(number: number): void;
   attach(files: File[]): void;
   onOpen: OpenImages;
@@ -229,14 +223,6 @@ export function useImageField({
     }
   };
 
-  const openAtCursor = () => {
-    const el = input.current;
-    if (!el || images.length === 0) return;
-    const token = el.selectionStart === el.selectionEnd ? tokenAt(el.value, el.selectionStart) : undefined;
-    const image = token && known.get(token.number);
-    onOpen(images, image ? Math.max(0, images.indexOf(image)) : 0);
-  };
-
   return {
     known,
     images,
@@ -250,7 +236,6 @@ export function useImageField({
       return true;
     },
     onKeyDown(event, vim) {
-      if (act(event, "composer.open_image", openAtCursor)) return true;
       // Vim's own keys decide what Backspace does outside insert mode.
       if (vim !== null && vim !== "insert") return false;
       const forward = event.key === "Delete";
@@ -265,7 +250,6 @@ export function useImageField({
       document.execCommand("delete");
       return true;
     },
-    openAtCursor,
     remove,
     attach: (files) => void attach(files),
     onOpen,
@@ -346,7 +330,7 @@ export function ImageComposer({
   const stillPointed = pointed?.anchor.isConnected ? pointed : null;
   const peek: Peek | null =
     stillPointed ??
-    (besideImage && cursorAnchor ? { image: besideImage, anchor: cursorAnchor, fromCursor: true } : null);
+    (besideImage && cursorAnchor ? { image: besideImage, anchor: cursorAnchor } : null);
   const active = peek?.image.number;
 
   const [dropping, setDropping] = useState(false);
@@ -456,9 +440,19 @@ export function PromptBubble({
               <span
                 key={index}
                 className={`you-token ${piece.image.number === active ? "on" : ""}`}
+                // Without thumbnails the token is the only way in, so Tab reaches it then.
+                role={showThumbs ? undefined : "button"}
+                tabIndex={showThumbs ? undefined : 0}
                 onMouseEnter={(event) => setPeek({ image: piece.image, anchor: event.currentTarget })}
                 onMouseLeave={() => setPeek(null)}
                 onClick={() => onOpen(all, all.indexOf(piece.image))}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  // It's a button to the person pressing it, so Enter isn't also the pane's.
+                  claim(event);
+                  onOpen(all, all.indexOf(piece.image));
+                }}
               >
                 {piece.text}
               </span>
@@ -519,8 +513,7 @@ export function ImageViewer({
       onKeyDown={(event) => {
         if (act(event, "image.prev", () => step(-1))) return;
         if (act(event, "image.next", () => step(1))) return;
-        if (act(event, "image.close", onClose)) return;
-        act(event, "composer.open_image", onClose);
+        act(event, "image.close", onClose);
       }}
       onClick={onClose}
     >

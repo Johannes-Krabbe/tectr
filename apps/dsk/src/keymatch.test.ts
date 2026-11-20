@@ -4,7 +4,6 @@ import {
   chordMatches,
   chordOf,
   formatChord,
-  formatKeys,
   formatSequence,
   isBareChord,
   type KeyPress,
@@ -141,47 +140,6 @@ test("labels read the way each platform writes them", () => {
   assert.equal(formatChord("enter", true), "↵");
   assert.equal(formatChord("mod+shift+n", false), "Ctrl+Shift+N");
   assert.equal(formatChord("mod+plus", true), "⌘+");
-});
-
-const keys = (...list: string[]) => list.map((key) => ({ key, hold_ms: 0, repeat: false }));
-
-test("a pair of keys reads as one", () => {
-  assert.equal(formatKeys(keys("k", "j"), true), "K/J");
-  assert.equal(formatKeys(keys("up", "down"), true), "↑/↓");
-  assert.equal(formatKeys(keys("g g", "shift+g"), true), "gg/⇧G");
-});
-
-test("a pair only says its shared modifiers once", () => {
-  assert.equal(formatKeys(keys("alt+k", "alt+j"), true), "⌥K/J");
-  assert.equal(formatKeys(keys("alt+k", "alt+j"), false), "Alt+K/J");
-  assert.equal(formatKeys(keys("mod+[", "mod+]"), true), "⌘[/]");
-  assert.equal(formatKeys(keys("mod+k", "alt+j"), true), "⌘K/⌥J");
-});
-
-test("numbers in a row read as a range", () => {
-  const tabs = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `mod+${n}`);
-  assert.equal(formatKeys(keys(...tabs), true), "⌘1-9");
-  assert.equal(formatKeys(keys(...tabs), false), "Ctrl+1-9");
-  assert.equal(formatKeys(keys("1", "2", "3"), true), "1-3");
-  assert.equal(formatKeys(keys("g 1", "g 2"), true), "g1-2");
-  assert.equal(formatKeys(keys("mod+1"), true), "⌘1");
-});
-
-test("a range doesn't cover keys it doesn't have", () => {
-  assert.equal(formatKeys(keys("mod+1", "mod+2", "mod+4", "mod+5"), true), "⌘1-2/4-5");
-  assert.equal(formatKeys(keys("mod+1", "alt+2"), true), "⌘1/⌥2");
-  assert.equal(formatKeys(keys("mod+2", "mod+1"), true), "⌘2/1");
-});
-
-test("holding is said once, and only where it applies", () => {
-  const held = { key: "mod+w", hold_ms: 500, repeat: false };
-  assert.equal(formatKeys([held], true), "Hold ⌘W");
-  assert.equal(formatKeys([held, { ...held, key: "mod+q" }], true), "Hold ⌘W/Q");
-  assert.equal(formatKeys([held, ...keys("mod+q")], true), "Hold ⌘W/⌘Q");
-  assert.equal(
-    formatKeys([{ ...held, key: "mod+1" }, { ...held, key: "mod+2" }], true),
-    "Hold ⌘1-2",
-  );
 });
 
 test("only keys that start with Cmd reach the app from a terminal", () => {

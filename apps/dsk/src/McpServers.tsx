@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { type KeyboardEvent, useEffect, useState } from "react";
+import { type KeyboardEvent, useState } from "react";
 import {
   type Command,
   type CommandOutput,
@@ -10,8 +10,7 @@ import {
   type McpServer,
   request,
 } from "./engine";
-import { act, type ActionId, keysLabel, notify } from "./keybinds";
-import { inPane } from "./keys";
+import { act, notify } from "./keybinds";
 import {
   authLabel,
   canEdit,
@@ -41,13 +40,10 @@ import {
 } from "./mcp";
 import { McpAddSheet } from "./McpAdd";
 import { isOnline } from "./model";
-import { type PaletteItem, useScreenPaletteItems } from "./Palette";
 import { Sheet } from "./Sheets";
-import { hint, type Hint, SETTINGS_MOVES, useHints } from "./shortcuts";
 import { Icon } from "./ui/Icon";
 import { type MenuGroups, MenuButton, RightClickMenu } from "./ui/Menu";
-import { GoInHint, listMoves, SettingsPage } from "./ui/SettingsPage";
-import { Keys } from "./ui/StatusIcon";
+import { SettingRow, SettingsGroupBox, SettingsPage } from "./ui/SettingsPage";
 
 /** Requests about servers and their profiles, each one's progress and last error kept by the
  * ID of what it's about. */
@@ -118,33 +114,19 @@ export function useMcpRequests(machineId: string | undefined) {
 
 export type McpRequests = ReturnType<typeof useMcpRequests>;
 
-/** Something a row can do, with the key that does the same. */
+/** Something a row can do. These are done now and then, so they're in the row's menu rather
+ * than keys. */
 export interface RowAction {
+  id: string;
   label: string;
-  action: ActionId;
   run: () => void;
-}
-
-/** Runs whichever of a row's actions this press is the key for. */
-export function actOnServer(
-  event: globalThis.KeyboardEvent | KeyboardEvent,
-  actions: { action: ActionId; run: () => void }[],
-): boolean {
-  return actions.some(({ action, run }) => act(event, action, run));
 }
 
 /** A row's actions as its menu shows them. */
 export const actionMenu = (actions: RowAction[]): MenuGroups =>
-  actions.length > 0
-    ? [actions.map(({ label, action, run }) => ({ id: action, label, keys: keysLabel(action), run }))]
-    : [];
+  actions.length > 0 ? [actions.map(({ id, label, run }) => ({ id, label, run }))] : [];
 
 const TYPES: McpDraft["type"][] = ["stdio", "http"];
-
-const FORM_HINTS: Hint[] = [
-  hint("Save", "mcp_form.save"),
-  hint("Stdio or HTTP", "mcp_form.switch_type"),
-];
 
 // Enter adds a line in a box of lines, so saving from one takes the save key.
 const lines = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -167,7 +149,6 @@ export function McpServerSheet({
 }) {
   const [draft, setDraft] = useState<McpDraft>(() => draftOf(server));
   const change = (next: Partial<McpDraft>) => setDraft((current) => ({ ...current, ...next }));
-  const switchType = () => change({ type: draft.type === "stdio" ? "http" : "stdio" });
 
   const save = async (): Promise<CommandOutput> => {
     const built = transportOf(draft);
@@ -227,12 +208,10 @@ export function McpServerSheet({
       run={save}
       onClose={onClose}
       onDone={() => {}}
-      hints={FORM_HINTS}
       input={JSON.stringify(draft)}
       onKeyDown={(event) => {
         const form = event.currentTarget;
-        if (act(event, "mcp_form.save", () => form.requestSubmit())) return;
-        act(event, "mcp_form.switch_type", switchType);
+        act(event, "mcp_form.save", () => form.requestSubmit());
       }}
     >
       <input
@@ -256,14 +235,13 @@ export function McpServerSheet({
                 type="button"
                 className="picker"
                 aria-pressed={draft.type === type}
-                tabIndex={-1}
+                // A click leaves the keyboard in the field being typed in. Tab still reaches it.
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => change({ type })}
               >
                 {type === "stdio" ? "Stdio" : "HTTP"}
               </button>
             ))}
-            <Keys action="mcp_form.switch_type" />
           </span>
         </div>
         {draft.type === "stdio" ? (
@@ -283,8 +261,6 @@ export function McpServerSheet({
     </Sheet>
   );
 }
-
-const PROFILE_HINTS: Hint[] = [hint("Save", "mcp_form.save")];
 
 /** Whether saving a new profile goes on to log it in. A server that asks for a login gets one
  * right away, because a profile without it is no use to agents. */
@@ -348,7 +324,6 @@ export function McpProfileSheet({
       run={save}
       onClose={onClose}
       onDone={() => {}}
-      hints={PROFILE_HINTS}
       input={`${name}\n${values}`}
       onKeyDown={(event) => {
         const form = event.currentTarget;
@@ -406,39 +381,25 @@ const usedLabel = (names: string[]) =>
 
 /** The device's library of servers, with the profiles workspaces choose between, and its
  * agents' connectors. Which workspace gets which is on each workspace's page. */
-export function McpSettings({
-  device,
-  active,
-  onActivate,
-  onLeave,
-}: {
-  device: Device;
-  /** This section has the keyboard, rather than the list of sections. */
-  active: boolean;
-  onActivate: () => void;
-  onLeave: () => void;
-}) {
+export function McpSettings({ device }: { device: Device }) {
   const state = device.state;
   const machineId = state?.machine.id;
   const online = isOnline(device);
   const servers = state ? libraryServers(state) : [];
   const connected = state ? connectors(state) : [];
-  // One list for the keyboard: each server, then its profiles, then the connectors.
+  // Each server, then its profiles under it.
   const serverRows: LibraryRow[] = servers.flatMap((server) => [
     { server },
     ...(server.profiles ?? []).map((profile) => ({ server, profile })),
   ]);
-  const rows: LibraryRow[] = [...serverRows, ...connected.map((server) => ({ server }))];
+  const connectorRows: LibraryRow[] = connected.map((server) => ({ server }));
+  const rows: LibraryRow[] = [...serverRows, ...connectorRows];
   const requests = useMcpRequests(machineId);
-  const [cursor, setCursor] = useState(0);
   const [form, setForm] = useState<Form>(null);
   const [importing, setImporting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   // What the last import or refresh couldn't do. What it did is a toast.
   const [importError, setImportError] = useState<string | null>(null);
-
-  const selected = Math.max(Math.min(cursor, rows.length - 1), 0);
-  const current = rows[selected];
   const deviceName = state?.machine.name ?? device.url;
 
   const add = () => {
@@ -486,130 +447,54 @@ export function McpSettings({
     if (profile) {
       actions.push({
         label: "Edit",
-        action: "mcp.edit",
+        id: "edit",
         run: () => setForm({ kind: "profile", server, profile }),
       });
       if (canLogIn(server)) {
         actions.push({
           label: profile.auth === "logged_in" ? "Log in again" : "Log in",
-          action: "mcp.login",
+          id: "login",
           run: () => requests.logIn(server, profile),
         });
       }
       if (canLogOut(server, profile)) {
         actions.push({
           label: "Log out",
-          action: "mcp.logout",
+          id: "logout",
           run: () => requests.logOut(server, profile),
         });
       }
       actions.push({
         label: "Remove",
-        action: "mcp.remove",
+        id: "remove",
         run: () => requests.removeProfile(server, profile),
       });
       return actions;
     }
     if (canEdit(server)) {
-      actions.push({ label: "Edit", action: "mcp.edit", run: () => setForm({ kind: "edit", server }) });
+      actions.push({ id: "edit", label: "Edit", run: () => setForm({ kind: "edit", server }) });
     }
     if (canHaveProfiles(server)) {
       actions.push({
         // Logging in makes a profile, so a server that wants one says so here.
         label: server.needs_login && !server.profiles?.length ? "Log in" : "New profile",
-        action: "mcp.new_profile",
+        id: "new-profile",
         run: () => setForm({ kind: "profile", server }),
       });
     }
     if (canRemove(server)) {
-      actions.push({ label: "Remove", action: "mcp.remove", run: () => requests.remove(server) });
+      actions.push({ id: "remove", label: "Remove", run: () => requests.remove(server) });
     }
     return actions;
   };
 
-  useHints(
-    "pane",
-    active
-      ? [
-          ...(online
-            ? [hint("Add", "mcp.add"), hint("Import", "mcp.import"), hint("Connectors", "mcp.connectors")]
-            : []),
-          ...(current ? rowActions(current).map(({ label, action }) => hint(label, action)) : []),
-          ...SETTINGS_MOVES,
-        ]
-      : null,
-  );
-
-  // Running one from the palette lands in this section, where its key works.
-  const paletteItems: PaletteItem[] = [];
-  if (online) {
-    const then = (run: () => void) => () => {
-      onActivate();
-      run();
-    };
-    paletteItems.push(
-      {
-        id: "mcp-add",
-        label: `Add an MCP server on ${deviceName}`,
-        keys: keysLabel("mcp.add"),
-        run: then(add),
-      },
-      {
-        id: "mcp-import",
-        label: `Import MCP servers on ${deviceName}`,
-        detail: "From Claude Code, Codex and OpenCode",
-        keys: keysLabel("mcp.import"),
-        run: then(() => void runImport()),
-      },
-      {
-        id: "mcp-connectors",
-        label: `Refresh connectors on ${deviceName}`,
-        detail: "The claude.ai connectors and ChatGPT apps of Claude and Codex",
-        keys: keysLabel("mcp.connectors"),
-        run: then(() => void runRefresh()),
-      },
-    );
-    for (const row of rows) {
-      const what = row.profile ? `${row.server.name} profile ${row.profile.name}` : row.server.name;
-      for (const { label, action, run } of rowActions(row)) {
-        paletteItems.push({
-          id: `mcp/${rowId(row)}/${action}`,
-          label: `${label}: ${what}`,
-          detail: connectorAgent(row.server)
-            ? `${connectorAgent(row.server)} connector`
-            : "MCP server library",
-          keys: row === current && active ? keysLabel(action) : undefined,
-          run: then(run),
-        });
-      }
-    }
-  }
-  useScreenPaletteItems(paletteItems);
-
-  useEffect(() => {
-    if (active) document.querySelector(".keybind.current")?.scrollIntoView({ block: "nearest" });
-  }, [selected, active]);
-
-  useEffect(() => {
-    if (!active || form) return;
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (!inPane(event)) return;
-      const commands: [ActionId, () => void][] = [
-        ...listMoves(selected, rows.length, setCursor, onLeave),
-        ["mcp.add", add],
-        ["mcp.import", () => void runImport()],
-        ["mcp.connectors", () => void runRefresh()],
-      ];
-      if (commands.some(([id, run]) => act(event, id, run))) return;
-      if (current) actOnServer(event, rowActions(current));
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
+  /** Logging in is the one thing a row that needs it is waiting for, so it's on the row itself. */
+  const logIn = ({ server, profile }: LibraryRow) => {
+    if (profile) requests.logIn(server, profile);
+    else setForm({ kind: "profile", server });
+  };
 
   const row = (target: LibraryRow) => {
-    const index = rows.indexOf(target);
-    const isCurrent = active && index === selected;
     const { server, profile } = target;
     const id = rowId(target);
     const busy = requests.busy[id];
@@ -618,66 +503,48 @@ export function McpSettings({
     const needsLogin = login === "needs_login";
     const agent = connectorAgent(server);
     const used = usedBy(state ?? EMPTY_STATE, server.id, profile?.id);
+    const showsAuth = auth && (profile || !server.profiles?.length);
+    const name = profile ? profile.name : server.name;
     return (
-      <div
-        key={id}
-        className={`keybind ${profile ? "nested" : ""} ${isCurrent ? "current" : ""}`}
-        data-row={id}
-        // Moving, rather than entering: a row scrolling under a pointer that
-        // isn't moving must not take the keyboard or the selection.
-        onMouseMove={(event) => {
-          if (event.movementX === 0 && event.movementY === 0) return;
-          setCursor(index);
-          onActivate();
-        }}
-      >
-        <span className={`name ${profile ? "" : "code"}`}>{profile ? profile.name : server.name}</span>
-        {!profile && <span className="server-summary">{mcpSummary(server.transport)}</span>}
-        {busy ? (
-          <span className="meta">{busy}</span>
-        ) : requests.errors[id] ? (
-          <span className="meta bad">Failed</span>
-        ) : auth && (profile || !server.profiles?.length) ? (
-          <span className={`meta ${needsLogin ? "alert" : ""}`}>{auth}</span>
-        ) : (
-          agent && <span className="meta">{agent}</span>
-        )}
-        <span className="meta" title={used.join(", ")}>
-          {usedLabel(used)}
-        </span>
-        <MenuButton
-          label={`Actions for ${profile ? profile.name : server.name}`}
-          className="icon-button row-menu"
-          groups={actionMenu(rowActions(target))}
+      <div key={id} data-row={id}>
+        <SettingRow
+          label={profile ? name : <span className="code">{name}</span>}
+          detail={profile ? undefined : mcpSummary(server.transport)}
+          nested={profile !== undefined}
+          error={requests.errors[id]}
+          meta={
+            <>
+              {busy ? (
+                <span className="meta">{busy}</span>
+              ) : showsAuth && !(needsLogin && online && canLogIn(server)) ? (
+                <span className={`meta ${needsLogin ? "alert" : ""}`}>{auth}</span>
+              ) : (
+                agent && <span className="meta">{agent}</span>
+              )}
+              <span className="meta" title={used.join(", ")}>
+                {usedLabel(used)}
+              </span>
+            </>
+          }
+          quiet={
+            <MenuButton
+              label={`Actions for ${name}`}
+              className="icon-button"
+              groups={actionMenu(rowActions(target))}
+            >
+              <Icon name="more" />
+            </MenuButton>
+          }
         >
-          <Icon name="more" />
-        </MenuButton>
+          {!busy && showsAuth && needsLogin && online && canLogIn(server) && (
+            <button className="picker alert" onClick={() => logIn(target)}>
+              Log in
+            </button>
+          )}
+        </SettingRow>
       </div>
     );
   };
-
-  const doing = current && requests.busy[rowId(current)];
-  const rowError = current && requests.errors[rowId(current)];
-  const footer = active ? (
-    <>
-      {rowError ? (
-        <span className="settings-actions-what error">{rowError}</span>
-      ) : (
-        <span className="settings-actions-what code">
-          {current ? (doing ?? mcpSummary(current.server.transport)) : ""}
-        </span>
-      )}
-      {current &&
-        rowActions(current).map(({ label, action, run }) => (
-          <button key={action} className="button" disabled={doing !== undefined} onClick={run}>
-            {label}
-            <Keys action={action} />
-          </button>
-        ))}
-    </>
-  ) : (
-    <GoInHint />
-  );
 
   const groupsAt = (target: Element): MenuGroups => {
     const id = target.closest<HTMLElement>("[data-row]")?.dataset.row;
@@ -687,57 +554,56 @@ export function McpSettings({
 
   return (
     <>
-      <SettingsPage error={importError} footer={footer}>
+      <SettingsPage error={importError}>
         {!online && <p className="settings-note">This device is offline</p>}
-        <section className="settings-group">
-          {/* What applies to the whole list sits with it. The bar at the bottom is only for
-              the selected row. */}
-          <div className="settings-group-head">
-            <h3 className="settings-group-title">Servers</h3>
-            {/* With nothing set up yet, bringing over what the agents already had is the first step. */}
-            <button
-              className={`button ${servers.length === 0 ? "primary" : ""}`}
-              disabled={!online || importing}
-              onClick={() => void runImport()}
-            >
-              {importing ? "Importing" : "Import"}
-              {active && <Keys action="mcp.import" />}
-            </button>
-            <button
-              className={`button ${servers.length === 0 ? "" : "primary"}`}
-              disabled={!online}
-              onClick={add}
-            >
-              Add
-              {active && <Keys action="mcp.add" />}
-            </button>
-          </div>
+        <SettingsGroupBox
+          title="Servers"
+          actions={
+            <>
+              {/* With nothing set up yet, bringing over what the agents already had is the first step. */}
+              <button
+                className={`button ${servers.length === 0 ? "primary" : ""}`}
+                disabled={!online || importing}
+                onClick={() => void runImport()}
+              >
+                {importing ? "Importing" : "Import"}
+              </button>
+              <button
+                className={`button ${servers.length === 0 ? "" : "primary"}`}
+                disabled={!online}
+                onClick={add}
+              >
+                Add
+              </button>
+            </>
+          }
+        >
           <p className="settings-note">
             Workspaces choose which of these their agents get, and with which profile, on their
             own page.
           </p>
           {online && servers.length === 0 && <p className="settings-note">No servers yet</p>}
-          <RightClickMenu render={<div className="keybinds" />} groupsAt={groupsAt}>
+          <RightClickMenu render={<div className="settings-rows" />} groupsAt={groupsAt}>
             {serverRows.map(row)}
           </RightClickMenu>
-        </section>
-        <section className="settings-group">
-          <div className="settings-group-head">
-            <h3 className="settings-group-title">Connectors</h3>
+        </SettingsGroupBox>
+        <SettingsGroupBox
+          title="Connectors"
+          actions={
             <button
               className={`button ${connected.length === 0 ? "primary" : ""}`}
               disabled={!online || refreshing}
               onClick={() => void runRefresh()}
             >
               {refreshing ? "Refreshing" : "Refresh"}
-              {active && <Keys action="mcp.connectors" />}
             </button>
-          </div>
+          }
+        >
           {online && connected.length === 0 && <p className="settings-note">No connectors yet</p>}
-          <RightClickMenu render={<div className="keybinds" />} groupsAt={groupsAt}>
-            {rows.slice(serverRows.length).map(row)}
+          <RightClickMenu render={<div className="settings-rows" />} groupsAt={groupsAt}>
+            {connectorRows.map(row)}
           </RightClickMenu>
-        </section>
+        </SettingsGroupBox>
       </SettingsPage>
       {form?.kind === "edit" && machineId && (
         <McpServerSheet

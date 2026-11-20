@@ -4,6 +4,7 @@ import type { DiffRow } from "./diff.ts";
 import {
   currentIndex,
   fileGroups,
+  filesMatching,
   fileRows,
   findMatches,
   fingerprint,
@@ -202,4 +203,12 @@ test("the hunk the keys act on stays in the file at the top", () => {
 test("a renamed file stages both its paths", () => {
   assert.deepEqual(pathsOf({ ...file("new", true), old_path: "old" }), ["new", "old"]);
   assert.deepEqual(pathsOf(file("a", false)), ["a"]);
+});
+
+test("going to a file matches every word of its path, in any case", () => {
+  const paths = ["apps/dsk/src/DiffPane.tsx", "apps/dsk/src/diff.ts", "README.md"];
+  assert.deepEqual(filesMatching(paths, "diff"), [0, 1]);
+  assert.deepEqual(filesMatching(paths, "dsk pane"), [0]);
+  assert.deepEqual(filesMatching(paths, "  "), [0, 1, 2]);
+  assert.deepEqual(filesMatching(paths, "nothing"), []);
 });

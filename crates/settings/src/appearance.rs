@@ -316,13 +316,6 @@ const CURSORS: &[Choice] = &[
 
 const FIELDS: &[Field] = &[
     Field {
-        id: "general.show_shortcuts",
-        group: "interface",
-        label: "Show keyboard shortcuts",
-        default: DefaultValue::Flag(false),
-        kind: Kind::Toggle,
-    },
-    Field {
         id: "general.remote_path_delay",
         group: "interface",
         label: "Remote path suggestions delay",
@@ -1823,19 +1816,6 @@ mod tests {
                 field.id
             );
         }
-    }
-
-    #[test]
-    fn the_shortcut_line_is_off_until_the_file_turns_it_on() {
-        let shown = |values: &Values| {
-            let fields = values.resolve().fields;
-            let field = fields.iter().find(|f| f.id == "general.show_shortcuts");
-            field.map(|field| field.value.clone())
-        };
-        assert_eq!(shown(&Values::default()), Some(Value::Flag(false)));
-        let (values, problems) = parsed("[general]\nshow_shortcuts = true\n");
-        assert_eq!(problems, Vec::<String>::new());
-        assert_eq!(shown(&values), Some(Value::Flag(true)));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   clientKey,
   type Command,
@@ -10,8 +10,7 @@ import {
   type ProviderModel,
   request,
 } from "./engine";
-import { act, type ActionId } from "./keybinds";
-import { inPane } from "./keys";
+import { act } from "./keybinds";
 import { McpSettings } from "./McpServers";
 import {
   awakeUntil,
@@ -26,16 +25,17 @@ import {
 } from "./model";
 import { isLoopback } from "./pathInput";
 import { DEVICE_SECTIONS, sectionOf } from "./settingsNav";
-import { hint, type Hint, SETTINGS_MOVES, useHints } from "./shortcuts";
+import { Icon } from "./ui/Icon";
+import { MenuButton } from "./ui/Menu";
 import { Choice, Picker } from "./ui/Picker";
 import {
-  GoInHint,
-  listMoves,
+  SettingRow,
+  SettingsGroupBox,
   SettingsLayout,
   type SettingsNav,
   SettingsPage,
+  Switch,
 } from "./ui/SettingsPage";
-import { Keys } from "./ui/StatusIcon";
 import { useNow } from "./ui/useNow";
 
 /** A candidate, or a provider this daemon no longer knows how to run. */
@@ -58,44 +58,6 @@ function describe(provider: Provider): string {
 const defaultModelOf = (provider: Provider): ProviderModel | undefined =>
   provider.models.find((m) => m.id === provider.default_model) ?? provider.models[0];
 
-/** Selected rows scroll into view as the cursor moves. */
-export function useScrollToCurrent(selected: number, active: boolean) {
-  useEffect(() => {
-    if (active) document.querySelector(".keybind.current")?.scrollIntoView({ block: "nearest" });
-  }, [selected, active]);
-}
-
-/** One row of a device settings list, which takes the cursor and the keyboard when the
- * pointer moves over it. */
-export function Row({
-  current,
-  onPoint,
-  children,
-}: {
-  current: boolean;
-  onPoint: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <div
-      className={`keybind ${current ? "current" : ""}`}
-      // Moving, rather than entering: a row scrolling under a pointer that isn't moving must
-      // not take the keyboard or the selection.
-      onMouseMove={(event) => {
-        if (event.movementX !== 0 || event.movementY !== 0) onPoint();
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-// Focus stays off controls in a row, so Enter does what the settings say rather than pressing them.
-export const keepFocus = (event: React.MouseEvent) => event.preventDefault();
-
-/** A value of the device's general settings that's typed right in its row. */
-export type DeviceField = "name" | "awake";
-
 /** The settings of one device. They live on its daemon, so every client sees the same ones.
  * Its sections are in the same list as the app's. */
 export function DeviceSettings({
@@ -103,9 +65,6 @@ export function DeviceSettings({
   machineId,
   section: shown,
   nav,
-  editing,
-  onEdit,
-  onEditEnd,
   onPair,
   onForget,
 }: {
@@ -113,326 +72,188 @@ export function DeviceSettings({
   machineId: string;
   section: string | undefined;
   nav: SettingsNav;
-  /** What's being typed in place, which the palette can start from anywhere. */
-  editing: DeviceField | null;
-  onEdit: (field: DeviceField) => void;
-  onEditEnd: () => void;
   /** Shows a code that lets another machine in. */
   onPair: () => void;
   /** Stops this app reaching the device. */
   onForget: () => void;
 }) {
   const section = sectionOf(DEVICE_SECTIONS, shown).id;
-  // Whether the section has the keyboard, rather than the list of sections.
-  const [inside, setInside] = useState(false);
-
-  useEffect(() => {
-    if (editing) setInside(true);
-  }, [editing]);
-
-  const props = {
-    device,
-    active: inside,
-    onActivate: () => setInside(true),
-    onLeave: () => {
-      setInside(false);
-      // Going back to the list of sections drops what was typed.
-      if (editing) onEditEnd();
-    },
-  };
-
   return (
-    <SettingsLayout
-      nav={nav}
-      current={{ kind: "device_settings", machineId, section }}
-      inside={inside}
-      onInside={(next) => (next ? setInside(true) : props.onLeave())}
-    >
-      {section === "general" && (
-        <General {...props} editing={editing} onEdit={onEdit} onEditEnd={onEditEnd} />
-      )}
-      {section === "providers" && <Providers {...props} />}
-      {section === "mcp" && <McpSettings {...props} />}
-      {section === "pairing" && <Pairing {...props} onPair={onPair} onForget={onForget} />}
+    <SettingsLayout nav={nav} current={{ kind: "device_settings", machineId, section }}>
+      {section === "general" && <General device={device} />}
+      {section === "providers" && <Providers device={device} />}
+      {section === "mcp" && <McpSettings device={device} />}
+      {section === "pairing" && <Pairing device={device} onPair={onPair} onForget={onForget} />}
     </SettingsLayout>
   );
 }
 
-interface SectionProps {
-  device: Device;
-  /** This section has the keyboard, rather than the list of sections. */
-  active: boolean;
-  onActivate: () => void;
-  onLeave: () => void;
-}
+const CUSTOM = "custom";
+const STOP = "stop";
 
-interface GeneralRow {
-  id: string;
-  label: string;
-  value: string;
-  action: string;
-  role?: "switch";
-  run: () => void;
-  /** Typed right in the row while this is being edited. */
-  field?: DeviceField;
-}
-
-/** The device's own name and power settings. The name and how long to keep it awake are
- * typed right in their rows. */
-function General({
-  device,
-  active,
-  onActivate,
-  onLeave,
-  editing: editingField,
-  onEdit,
-  onEditEnd,
-}: SectionProps & {
-  editing: DeviceField | null;
-  onEdit: (field: DeviceField) => void;
-  onEditEnd: () => void;
-}) {
+/** The device's own name and power settings, each changed right in its row. */
+function General({ device }: { device: Device }) {
   const state = device.state;
   const online = isOnline(device);
-  const [cursor, setCursor] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  // What's typed, once something is. Until then the name's box shows the name, so focusing
-  // selects it.
-  const [draft, setDraft] = useState<string | null>(null);
-  // Saving unmounts the input, whose blur would otherwise save a second time.
-  const finished = useRef(false);
-  const keepAwake = state ? keepsAwake(state) : true;
-  const editing = online && state ? editingField : null;
+  // What's typed in the name's box, once something is. Until then it shows the name.
+  const [name, setName] = useState<string | null>(null);
+  // Typing a time of one's own, rather than choosing one of the suggestions.
+  const [customTime, setCustomTime] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
   const now = useNow(state?.awake_until_ms !== undefined);
   const awakeTill = awakeUntil(state, now);
 
-  useEffect(() => {
-    if (!editingField) return;
-    finished.current = false;
-    setDraft(null);
-    setError(null);
-    setCursor(editingField === "awake" ? 2 : 0);
-  }, [editingField]);
+  if (!state) {
+    return <SettingsPage>{!online && <p className="settings-note">This device is offline</p>}</SettingsPage>;
+  }
+  const deviceId = state.machine.id;
 
-  const endEdit = (save: boolean, typed = draft) => {
-    if (finished.current || !editing) return;
-    finished.current = true;
-    onEditEnd();
-    if (!save || !state || typed === null) return;
-    const machineId = state.machine.id;
-    if (editing === "awake") {
-      const seconds = parseDuration(typed);
-      if (seconds === null) {
-        setError("Type a time such as 2h, 90m or 1h30m, up to 7 days");
-        return;
-      }
-      keepAwakeFor(seconds);
-      return;
-    }
+  const saveName = () => {
+    const typed = name;
+    setName(null);
     // Leaving the hostname it shows as it is isn't choosing it, so it can go on following it.
-    if (typed.trim() === state.machine.name) return;
+    if (typed === null || typed.trim() === state.machine.name || !online) return;
     setError(null);
-    request(machineId, { command: "rename_machine", name: typed }).catch((reason) =>
+    request(deviceId, { command: "rename_machine", name: typed }).catch((reason) =>
       setError(errorText(reason)),
     );
   };
 
   const toggleKeepAwake = () => {
-    if (!state || !online) return;
+    if (!online) return;
     setError(null);
-    request(state.machine.id, {
+    request(deviceId, {
       command: "set_device_settings",
       settings: withKeepAwakeToggled(state),
     }).catch((reason) => setError(errorText(reason)));
   };
 
   const keepAwakeFor = (seconds: number | null) => {
-    if (!state || !online) return;
+    if (!online) return;
     setError(null);
-    request(state.machine.id, { command: "keep_awake_for", seconds }).catch((reason) =>
+    request(deviceId, { command: "keep_awake_for", seconds }).catch((reason) =>
       setError(errorText(reason)),
     );
   };
-  const stopKeepingAwake = () => {
-    if (awakeTill !== null) keepAwakeFor(null);
+
+  const keepAwakeForTyped = (typed: string) => {
+    const seconds = parseDuration(typed);
+    if (seconds === null) {
+      setError("Type a time such as 2h, 90m or 1h30m, up to 7 days");
+      return;
+    }
+    setCustomTime(null);
+    keepAwakeFor(seconds);
   };
 
-  const rows: GeneralRow[] = state
-    ? [
-        {
-          id: "name",
-          label: "Name",
-          value: state.machine.name,
-          action: "Rename",
-          run: () => onEdit("name"),
-          field: "name",
-        },
-        {
-          id: "keep_awake",
-          label: "Keep awake while agents work",
-          value: keepAwake ? "On" : "Off",
-          action: "Switch",
-          role: "switch",
-          run: toggleKeepAwake,
-        },
-        {
-          id: "awake_for",
-          label: "Keep awake for a while",
-          value: awakeTill === null ? "Off" : `${timeLeft(awakeTill - now)} left`,
-          action: awakeTill === null ? "Set" : "Change",
-          run: () => onEdit("awake"),
-          field: "awake",
-        },
-      ]
-    : [];
-  const selected = Math.max(Math.min(cursor, rows.length - 1), 0);
-  const row: GeneralRow | undefined = rows[selected];
-
-  useScrollToCurrent(selected, active);
-  useHints(
-    "pane",
-    editing
-      ? [hint("Save", "sheet.submit"), hint("Cancel", "sheet.cancel")]
-      : active
-        ? [...(row && online ? [hint(row.action, "settings.edit")] : []), ...SETTINGS_MOVES]
-        : null,
-  );
-
-  useEffect(() => {
-    if (!active || editing) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (!inPane(event)) return;
-      const commands: [ActionId, () => void][] = listMoves(selected, rows.length, setCursor, onLeave);
-      if (online) {
-        if (row) commands.push(["settings.edit", row.run]);
-        // The palette shows these keys for this device, so they work wherever the row is.
-        commands.push(
-          ["device.rename", () => onEdit("name")],
-          ["device.toggle_keep_awake", toggleKeepAwake],
-          ["device.keep_awake_for", () => onEdit("awake")],
-          ["device.stop_keep_awake", stopKeepingAwake],
-        );
-      }
-      commands.some(([id, run]) => act(event, id, run));
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-
-  const footer = editing ? (
-    <>
-      <span className="settings-actions-what" />
-      <button className="button primary" onMouseDown={keepFocus} onClick={() => endEdit(true)}>
-        Save
-        <Keys action="sheet.submit" />
-      </button>
-      <button className="button" onMouseDown={keepFocus} onClick={() => endEdit(false)}>
-        Cancel
-        <Keys action="sheet.cancel" />
-      </button>
-    </>
-  ) : active && row ? (
-    <>
-      <span className="settings-actions-what" />
-      {row.id === "awake_for" && awakeTill !== null && (
-        <button className="button" disabled={!online} onClick={stopKeepingAwake}>
-          Stop
-          <Keys action="device.stop_keep_awake" />
-        </button>
-      )}
-      <button className="button" disabled={!online} onClick={row.run}>
-        {row.action}
-        <Keys action="settings.edit" />
-      </button>
-    </>
-  ) : (
-    <GoInHint />
-  );
-
-  const input = (field: DeviceField) => (
-    <input
-      className={`settings-input ${field === "awake" ? "short" : ""}`}
-      autoFocus
-      value={draft ?? (field === "name" ? (state?.machine.name ?? "") : "")}
-      aria-label={field === "name" ? "Device name" : "How long to keep it awake"}
-      placeholder={field === "name" ? "hostname" : "2h, 90m, 1d"}
-      spellCheck={false}
-      autoCorrect="off"
-      autoCapitalize="off"
-      onFocus={(event) => event.target.select()}
-      onChange={(event) => setDraft(event.target.value)}
-      // Switching to another app blurs it too, and that isn't being done with it. A time
-      // only counts once it's confirmed, so wandering off doesn't keep a laptop awake.
-      onBlur={() => {
-        if (document.hasFocus()) endEdit(field === "name");
-      }}
-      onKeyDown={(event) => {
-        if (act(event, "sheet.submit", () => endEdit(true))) return;
-        if (act(event, "sheet.cancel", () => endEdit(false))) return;
-      }}
-    />
-  );
+  const chooseTime = (value: string) => {
+    setPicking(false);
+    if (value === CUSTOM) setCustomTime("");
+    else if (value === STOP) keepAwakeFor(null);
+    else keepAwakeForTyped(value);
+  };
 
   return (
-    <SettingsPage error={error} footer={footer}>
+    <SettingsPage error={error}>
       {!online && <p className="settings-note">This device is offline</p>}
-      <section className="settings-group">
-        <h3 className="settings-group-title">Device</h3>
-        <div className="keybinds">
-          {rows.map((r, index) => {
-            const current = active && index === selected;
-            return (
-              <Row
-                key={r.id}
-                current={current}
-                onPoint={() => {
-                  setCursor(index);
-                  onActivate();
-                }}
-              >
-                <span className="name">{r.label}</span>
-                {editing && r.field === editing ? (
-                  <>
-                    {editing === "awake" &&
-                      KEEP_AWAKE_SUGGESTIONS.map((suggestion) => (
-                        <button
-                          key={suggestion}
-                          className="picker"
-                          tabIndex={-1}
-                          onMouseDown={keepFocus}
-                          onClick={() => endEdit(true, suggestion)}
-                        >
-                          {suggestion}
-                        </button>
-                      ))}
-                    {input(editing)}
-                  </>
-                ) : (
-                  <button
-                    className="picker"
-                    tabIndex={-1}
-                    disabled={!online}
-                    role={r.role}
-                    aria-checked={r.role ? r.value === "On" : undefined}
-                    aria-label={r.label}
-                    onMouseDown={keepFocus}
-                    onClick={r.run}
-                  >
-                    {r.value}
-                    {current && online && <Keys action="settings.edit" />}
-                  </button>
-                )}
-              </Row>
-            );
-          })}
-        </div>
-      </section>
+      <SettingsGroupBox title="Device">
+        <SettingRow label="Name">
+          <input
+            className="settings-input"
+            value={name ?? state.machine.name}
+            disabled={!online}
+            aria-label="Device name"
+            placeholder="hostname"
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            onChange={(event) => setName(event.target.value)}
+            // Switching to another app blurs it too, and that isn't being done with it.
+            onBlur={() => {
+              if (document.hasFocus()) saveName();
+            }}
+            onKeyDown={(event) => {
+              // Done typing hands the keyboard to the row, so the row keys carry on from here.
+              // Leaving the box is what saves.
+              const box = event.currentTarget;
+              const toRow = () => box.closest<HTMLElement>("[data-setting]")?.focus();
+              if (act(event, "sheet.submit", toRow)) return;
+              act(event, "sheet.cancel", () => {
+                setName(null);
+                // Reverted first, so the blur that follows has nothing to save.
+                requestAnimationFrame(toRow);
+              });
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Keep awake while agents work"
+          // Left turns it off and right on, the way its switch slides.
+          onStep={(direction) => {
+            if ((direction > 0) !== keepsAwake(state)) toggleKeepAwake();
+          }}
+        >
+          <Switch
+            label="Keep awake while agents work"
+            checked={keepsAwake(state)}
+            disabled={!online}
+            onChange={toggleKeepAwake}
+          />
+        </SettingRow>
+        <SettingRow label="Keep awake for a while">
+          {customTime !== null ? (
+            <input
+              className="settings-input short"
+              autoFocus
+              value={customTime}
+              aria-label="How long to keep it awake"
+              placeholder="2h, 90m, 1d"
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+              onChange={(event) => setCustomTime(event.target.value)}
+              // A time only counts once it's confirmed, so wandering off doesn't keep a laptop
+              // awake.
+              onBlur={() => {
+                if (document.hasFocus()) setCustomTime(null);
+              }}
+              onKeyDown={(event) => {
+                if (act(event, "sheet.submit", () => keepAwakeForTyped(customTime))) return;
+                act(event, "sheet.cancel", () => setCustomTime(null));
+              }}
+            />
+          ) : (
+            <Picker
+              label="Keep awake for a while"
+              className="picker"
+              value={null}
+              disabled={!online}
+              open={picking}
+              onOpenChange={setPicking}
+              onChange={chooseTime}
+              trigger={
+                <>
+                  {awakeTill === null ? "Off" : `${timeLeft(awakeTill - now)} left`}
+                  <Icon name="fold" />
+                </>
+              }
+            >
+              {KEEP_AWAKE_SUGGESTIONS.map((suggestion) => (
+                <Choice key={suggestion} value={suggestion} label={`For ${suggestion}`} />
+              ))}
+              <Choice value={CUSTOM} label="For a custom time..." />
+              {awakeTill !== null && <Choice value={STOP} label="Stop" />}
+            </Picker>
+          )}
+        </SettingRow>
+      </SettingsGroupBox>
     </SettingsPage>
   );
 }
 
 /** The agents this device can run, the added ones first. */
-function Providers({ device, active, onActivate, onLeave }: SectionProps) {
+function Providers({ device }: { device: Device }) {
   const machineId = device.state?.machine.id;
   const online = isOnline(device);
   const providers = device.state?.providers ?? [];
@@ -440,20 +261,11 @@ function Providers({ device, active, onActivate, onLeave }: SectionProps) {
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [checkError, setCheckError] = useState<string | null>(null);
-  const [cursor, setCursor] = useState(0);
-  const [picking, setPicking] = useState<"model" | "effort" | null>(null);
 
   const all = candidates ? rowsOf(candidates, providers) : [];
   const isAdded = (row: ProviderCandidate) => providers.some((p) => p.agent === row.agent);
   const added = all.filter(isAdded);
   const available = all.filter((row) => !isAdded(row));
-  // The cursor moves through both groups as one list.
-  const rows = [...added, ...available];
-  const selected = Math.max(Math.min(cursor, rows.length - 1), 0);
-  const row: ProviderCandidate | undefined = rows[selected];
-  const provider = row && providers.find((p) => p.agent === row.agent);
-  const model = provider && defaultModelOf(provider);
-  const doing = row && busy[row.agent];
 
   // Checking starts nothing. An agent only starts once it's added.
   useEffect(() => {
@@ -517,156 +329,132 @@ function Providers({ device, active, onActivate, onLeave }: SectionProps) {
     });
   };
 
-  const canPickModel = (provider?.models.length ?? 0) > 0;
-  const canPickEffort = (model?.efforts.length ?? 0) > 0;
-  const confirmLabel = provider ? "Refresh" : row && !row.missing ? "Add" : null;
-
-  const rowHints: Hint[] = [];
-  if (row && online) {
-    if (confirmLabel) rowHints.push(hint(confirmLabel, "device.confirm"));
-    if (provider) rowHints.push(hint("Remove", "device.remove"));
-    if (canPickModel) rowHints.push(hint("Model", "device.pick_model"));
-    if (canPickEffort) rowHints.push(hint("Effort", "device.pick_effort"));
-  }
-  useHints("pane", active ? [...rowHints, ...SETTINGS_MOVES] : null);
-  useScrollToCurrent(selected, active);
-
-  useEffect(() => {
-    if (!active || picking) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (!inPane(event)) return;
-      const commands: [ActionId, () => void][] = listMoves(selected, rows.length, setCursor, onLeave);
-      if (row && online) {
-        commands.push(["device.confirm", () => add(row)], ["device.remove", () => remove(row)]);
-        if (canPickModel) commands.push(["device.pick_model", () => setPicking("model")]);
-        if (canPickEffort) commands.push(["device.pick_effort", () => setPicking("effort")]);
-      }
-      commands.some(([id, fn]) => act(event, id, fn));
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-
-  const footer =
-    active && row ? (
-      <>
-        {errors[row.agent] ? (
-          <span className="settings-actions-what error">{errors[row.agent]}</span>
-        ) : (
-          <span className="settings-actions-what">
-            {doing ?? (provider ? `${row.name}, ${describe(provider)}` : (row.missing ?? row.name))}
-          </span>
-        )}
-        {confirmLabel && (
-          <button
-            className={`button ${provider ? "" : "primary"}`}
-            disabled={!online || doing !== undefined}
-            onClick={() => add(row)}
-          >
-            {confirmLabel}
-            <Keys action="device.confirm" />
-          </button>
-        )}
-        {provider && (
-          <button className="button" disabled={!online || doing !== undefined} onClick={() => remove(row)}>
-            Remove
-            <Keys action="device.remove" />
-          </button>
-        )}
-      </>
-    ) : (
-      <GoInHint />
-    );
-
-  const renderRow = (target: ProviderCandidate) => {
-    const index = rows.indexOf(target);
-    const current = active && index === selected;
+  const addedRow = (target: ProviderCandidate) => {
     const own = providers.find((p) => p.agent === target.agent);
-    const ownModel = own && defaultModelOf(own);
-    const ownEffort = own && ownModel ? defaultEffort(own, ownModel) : undefined;
-    const label = busy[target.agent];
-    const point = () => {
-      setCursor(index);
-      onActivate();
-    };
-    const onOpenChange = (which: "model" | "effort") => (open: boolean) => {
-      point();
-      setPicking(open ? which : null);
-    };
+    if (!own) return null;
+    const ownModel = defaultModelOf(own);
+    const ownEffort = ownModel ? defaultEffort(own, ownModel) : undefined;
+    const doing = busy[target.agent];
+    const usable = online && doing === undefined;
     return (
-      <Row key={target.agent} current={current} onPoint={point}>
-        <span className="name">{target.name}</span>
-        {label ? (
-          <span className="meta">{label}</span>
-        ) : errors[target.agent] ? (
-          <span className="meta bad">Failed</span>
-        ) : (
-          <span className="meta">{own ? describe(own) : target.missing}</span>
-        )}
-        {own && ownModel && (
-          <Picker
+      <SettingRow
+        key={target.agent}
+        label={target.name}
+        // Left and right go through the default model, as they do through any dropdown's choices.
+        onStep={(direction) => {
+          const at = own.models.findIndex((m) => m.id === ownModel?.id);
+          const next = own.models[at + direction];
+          if (usable && next) setDefaultModel(own, next.id);
+        }}
+        meta={<span className="meta">{doing ?? describe(own)}</span>}
+        error={errors[target.agent]}
+        quiet={
+          <MenuButton
+            label={`Actions for ${own.name}`}
+            className="icon-button"
+            disabled={!usable}
+            groups={[
+              [
+                { id: "refresh", label: "Refresh", run: () => add(target) },
+                { id: "remove", label: "Remove", run: () => remove(target) },
+              ],
+            ]}
+          >
+            <Icon name="more" />
+          </MenuButton>
+        }
+      >
+        {ownModel && (
+          <ProviderPicker
             label={`Default model for ${own.name}`}
-            className="picker"
             value={ownModel.id}
-            open={current && picking === "model"}
-            onOpenChange={onOpenChange("model")}
+            disabled={!usable}
+            trigger={modelLabel(own, ownModel)}
+            choices={own.models.map((m) => ({ value: m.id, label: modelLabel(own, m) }))}
             onChange={(id) => setDefaultModel(own, id)}
-            finalFocus={false}
-            trigger={
-              <>
-                {modelLabel(own, ownModel)}
-                {current && <Keys action="device.pick_model" />}
-              </>
-            }
-          >
-            {own.models.map((m) => (
-              <Choice key={m.id} value={m.id} label={modelLabel(own, m)} />
-            ))}
-          </Picker>
+          />
         )}
-        {own && ownModel && ownEffort && (
-          <Picker
+        {ownModel && ownEffort && (
+          <ProviderPicker
             label={`Default effort for ${own.name}`}
-            className="picker"
             value={ownEffort.id}
-            open={current && picking === "effort"}
-            onOpenChange={onOpenChange("effort")}
+            disabled={!usable}
+            trigger={ownEffort.name}
+            choices={ownModel.efforts.map((e) => ({ value: e.id, label: e.name }))}
             onChange={(id) => setDefaultEffort(own, id)}
-            finalFocus={false}
-            trigger={
-              <>
-                {ownEffort.name}
-                {current && <Keys action="device.pick_effort" />}
-              </>
-            }
-          >
-            {ownModel.efforts.map((e) => (
-              <Choice key={e.id} value={e.id} label={e.name} />
-            ))}
-          </Picker>
+          />
         )}
-      </Row>
+      </SettingRow>
+    );
+  };
+
+  const availableRow = (target: ProviderCandidate) => {
+    const doing = busy[target.agent];
+    return (
+      <SettingRow
+        key={target.agent}
+        label={target.name}
+        meta={doing || target.missing ? <span className="meta">{doing ?? target.missing}</span> : undefined}
+        error={errors[target.agent]}
+      >
+        {!target.missing && (
+          <button
+            className="button small"
+            disabled={!online || doing !== undefined}
+            onClick={() => add(target)}
+          >
+            Add
+          </button>
+        )}
+      </SettingRow>
     );
   };
 
   return (
-    <SettingsPage error={checkError} footer={footer}>
+    <SettingsPage error={checkError}>
       {!online && <p className="settings-note">This device is offline</p>}
       {online && !candidates && !checkError && <p className="settings-note">Checking this device</p>}
-      {added.length > 0 && (
-        <section className="settings-group">
-          <h3 className="settings-group-title">Added</h3>
-          <div className="keybinds">{added.map(renderRow)}</div>
-        </section>
-      )}
+      {added.length > 0 && <SettingsGroupBox title="Added">{added.map(addedRow)}</SettingsGroupBox>}
       {available.length > 0 && (
-        <section className="settings-group">
-          <h3 className="settings-group-title">Available</h3>
-          <div className="keybinds">{available.map(renderRow)}</div>
-        </section>
+        <SettingsGroupBox title="Available">{available.map(availableRow)}</SettingsGroupBox>
       )}
-      {candidates && rows.length === 0 && <p className="settings-note">No agents found on this device</p>}
+      {candidates && all.length === 0 && <p className="settings-note">No agents found on this device</p>}
     </SettingsPage>
+  );
+}
+
+/** A dropdown of a provider's defaults, which keeps whether it's open to itself. */
+function ProviderPicker({
+  label,
+  value,
+  disabled,
+  trigger,
+  choices,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  disabled: boolean;
+  trigger: string;
+  choices: { value: string; label: string }[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Picker
+      label={label}
+      className="picker"
+      value={value}
+      disabled={disabled}
+      open={open}
+      onOpenChange={setOpen}
+      onChange={onChange}
+      trigger={trigger}
+    >
+      {choices.map((choice) => (
+        <Choice key={choice.value} value={choice.value} label={choice.label} />
+      ))}
+    </Picker>
   );
 }
 
@@ -674,22 +462,19 @@ function Providers({ device, active, onActivate, onLeave }: SectionProps) {
  * on another device this app's own row is how it stops reaching that device. */
 function Pairing({
   device,
-  active,
-  onActivate,
-  onLeave,
   onPair,
   onForget,
-}: SectionProps & { onPair: () => void; onForget: () => void }) {
+}: {
+  device: Device;
+  onPair: () => void;
+  onForget: () => void;
+}) {
   const state = device.state;
   const online = isOnline(device);
   const local = isLoopback(device.url);
-  const canPair = online && local;
   const clients: PairedClient[] = state?.paired_clients ?? [];
-  const [cursor, setCursor] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [ownKey, setOwnKey] = useState<string | null>(null);
-  const selected = Math.max(Math.min(cursor, clients.length - 1), 0);
-  const client: PairedClient | undefined = clients[selected];
   const isThisApp = (c: PairedClient) => c.key === ownKey;
 
   useEffect(() => {
@@ -698,8 +483,8 @@ function Pairing({
       .catch(() => setOwnKey(null));
   }, []);
 
-  const remove = (target: PairedClient | undefined) => {
-    if (!target || !state || !online) return;
+  const remove = (target: PairedClient) => {
+    if (!state || !online) return;
     if (isThisApp(target)) {
       onForget();
       return;
@@ -710,87 +495,46 @@ function Pairing({
     );
   };
 
-  useScrollToCurrent(selected, active);
-  useHints(
-    "pane",
-    active
-      ? [
-          ...(canPair ? [hint("Pair", "pairing.add")] : []),
-          ...(client && online ? [hint("Remove", "pairing.remove")] : []),
-          ...SETTINGS_MOVES,
-        ]
-      : null,
-  );
-
-  useEffect(() => {
-    if (!active) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (!inPane(event)) return;
-      const commands: [ActionId, () => void][] = listMoves(selected, clients.length, setCursor, onLeave);
-      if (canPair) commands.push(["pairing.add", onPair]);
-      if (online) commands.push(["pairing.remove", () => remove(client)]);
-      if (!local) commands.push(["pairing.forget", onForget]);
-      commands.some(([id, run]) => act(event, id, run));
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-
-  const about = !client
-    ? undefined
-    : isThisApp(client)
-      ? "Stops this app reaching this device."
-      : "Disconnects it, and it can only come back by pairing again.";
-  const footer =
-    active && client ? (
-      <>
-        <span className="settings-actions-what">{about}</span>
-        <button className="button" disabled={!online} onClick={() => remove(client)}>
-          Remove
-          <Keys action="pairing.remove" />
-        </button>
-      </>
-    ) : (
-      <GoInHint />
-    );
-
   return (
-    <SettingsPage error={error} footer={footer}>
+    <SettingsPage error={error}>
       {!online && <p className="settings-note">This device is offline</p>}
-      <section className="settings-group">
-        <div className="settings-group-head">
-          <h3 className="settings-group-title">Machines that can connect</h3>
-          {local && (
+      <SettingsGroupBox
+        title="Machines that can connect"
+        actions={
+          local && (
             <button
               className={`button ${clients.length === 0 ? "primary" : ""}`}
-              disabled={!canPair}
-              onMouseDown={keepFocus}
+              disabled={!online}
               onClick={onPair}
             >
               Pair
-              {active && <Keys action="pairing.add" />}
             </button>
-          )}
-        </div>
+          )
+        }
+      >
         {clients.length === 0 && <p className="settings-note">No machines paired</p>}
-        <div className="keybinds">
-          {clients.map((c, index) => (
-            <Row
-              key={c.key}
-              current={active && index === selected}
-              onPoint={() => {
-                setCursor(index);
-                onActivate();
-              }}
-            >
-              <span className="name">{isThisApp(c) ? `${c.name} (this app)` : c.name}</span>
-              <span className="meta">
-                Paired {new Date(c.paired_at_ms).toLocaleDateString()}
-              </span>
-            </Row>
-          ))}
-        </div>
-      </section>
+        {clients.map((c) => (
+          <SettingRow
+            key={c.key}
+            label={isThisApp(c) ? `${c.name} (this app)` : c.name}
+            meta={<span className="meta">Paired {new Date(c.paired_at_ms).toLocaleDateString()}</span>}
+            quiet={
+              <button
+                className="button small"
+                disabled={!online}
+                title={
+                  isThisApp(c)
+                    ? "Stops this app reaching this device."
+                    : "Disconnects it, and it can only come back by pairing again."
+                }
+                onClick={() => remove(c)}
+              >
+                Remove
+              </button>
+            }
+          />
+        ))}
+      </SettingsGroupBox>
     </SettingsPage>
   );
 }

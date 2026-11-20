@@ -1,13 +1,11 @@
-import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useRef, useState } from "react";
 import { type Device, errorText, type PermissionMode, type PromptImage } from "./engine";
 import { ImageComposer, ImageViewer, useImageField } from "./ImageField";
 import { sendImages } from "./images";
-import { act, type ActionId, textBoxKey, titled } from "./keybinds";
+import { textBoxKey, titled } from "./keybinds";
 import { defaultEffort, isOnline, modelLabel, MODES } from "./model";
-import { hint, type Hint, useHints } from "./shortcuts";
 import { refusedPrompt } from "./slashCommands";
 import { Choice, Picker } from "./ui/Picker";
-import { Keys } from "./ui/StatusIcon";
 import { useVim, VimModeLabel } from "./VimBox";
 
 /** What's been chosen and typed for a new agent so far. Only what was changed is here: the
@@ -35,38 +33,24 @@ export interface AgentChoice {
   images: PromptImage[];
 }
 
-/** What a screen's own picker needs to open from its key and close back to the message box. */
+/** What a screen's own picker needs to close back to the message box. */
 export interface PickerControl {
   finalFocus: RefObject<HTMLTextAreaElement | null>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-/** A picker a screen adds above the message box, such as the new topic's workspace. */
-export interface ExtraPicker {
-  name: string;
-  label: string;
-  action: ActionId;
-}
-
 const NO_IMAGES: PromptImage[] = [];
 
-const AGENT_PICKERS: { name: string; label: string; action: ActionId }[] = [
-  { name: "provider", label: "Provider", action: "new_topic.pick_provider" },
-  { name: "model", label: "Model", action: "new_topic.pick_model" },
-  { name: "effort", label: "Effort", action: "new_topic.pick_effort" },
-  { name: "mode", label: "Permission mode", action: "new_topic.pick_mode" },
-];
-
 /** The first prompt for a new agent and what it runs on. The new topic screen and a new tab
- * share it, so starting an agent looks and works the same wherever it happens. */
+ * share it, so starting an agent looks and works the same wherever it happens. The pickers have
+ * no keys of their own: Tab from the prompt reaches them. */
 export function AgentForm({
   device,
   draft,
   onDraft,
   ready = true,
   autoFocus = false,
-  extraPickers = [],
   selects,
   onStart,
   onCancel,
@@ -78,7 +62,6 @@ export function AgentForm({
   /** Whatever else the screen needs before it can start, such as a workspace. */
   ready?: boolean;
   autoFocus?: boolean;
-  extraPickers?: ExtraPicker[];
   selects?: (control: (name: string) => PickerControl) => ReactNode;
   /** Starts the agent. A thrown error stays on the form, so it can be tried again. */
   onStart: (choice: AgentChoice) => Promise<void>;
@@ -128,38 +111,6 @@ export function AgentForm({
     open: picking === name,
     onOpenChange: (open) => setPicking(open ? name : null),
   });
-
-  const shown = new Set(extraPickers.map((p) => p.name));
-  if (provider) shown.add("provider");
-  if (model) shown.add("model");
-  if (efforts.length > 0) shown.add("effort");
-  if (mode) shown.add("mode");
-  const pickers = [...extraPickers, ...AGENT_PICKERS];
-  const pickerHints: Hint[] = pickers
-    .filter((p) => shown.has(p.name))
-    .map((p) => hint(p.label, p.action));
-  useHints("pane", [...pickerHints, hint("Sidebar", "pane.back")]);
-  useHints("typing", [
-    ...(canStart ? [hint("Start", "new_topic.start")] : []),
-    hint("New line", "new_topic.newline"),
-    hint("Cancel", "new_topic.cancel"),
-    ...(field.images.length > 0 ? [hint("Open image", "composer.open_image")] : []),
-    ...pickerHints,
-  ]);
-
-  // Read through a ref, because the listener is added once.
-  const keys = useRef(pickers);
-  keys.current = pickers;
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (document.querySelector(".sheet")) return;
-      keys.current.some(({ name, action }) =>
-        act(event, action, () => setPicking((open) => (open === name ? null : name))),
-      );
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   async function start() {
     if (!canStart) return;
@@ -238,7 +189,7 @@ export function AgentForm({
                 <Picker
                   {...control("provider")}
                   label="Provider"
-                  title={titled("Provider", "new_topic.pick_provider")}
+                  title="Provider"
                   className="picker"
                   value={provider.agent}
                   onChange={(agent) => onDraft({ agent })}
@@ -252,7 +203,7 @@ export function AgentForm({
                   <Picker
                     {...control("model")}
                     label="Model"
-                    title={titled("Model", "new_topic.pick_model")}
+                    title="Model"
                     className="picker"
                     value={model.id}
                     onChange={(model) => onDraft({ model })}
@@ -267,7 +218,7 @@ export function AgentForm({
                   <Picker
                     {...control("effort")}
                     label="Effort"
-                    title={titled("Effort", "new_topic.pick_effort")}
+                    title="Effort"
                     className="picker"
                     value={effort?.id ?? null}
                     onChange={(effort) => onDraft({ effort })}
@@ -282,7 +233,7 @@ export function AgentForm({
                   <Picker
                     {...control("mode")}
                     label="Permission mode"
-                    title={titled("Permission mode", "new_topic.pick_mode")}
+                    title="Permission mode"
                     className="picker"
                     value={mode.mode}
                     onChange={(value) => {
@@ -310,9 +261,13 @@ export function AgentForm({
             <VimModeLabel mode={vim.shown} />
           </div>
         </div>
-        <button className="button primary create-start" type="submit" disabled={!canStart}>
+        <button
+          className="button primary create-start"
+          type="submit"
+          disabled={!canStart}
+          title={titled("Start", "new_topic.start")}
+        >
           {busy ? "Starting" : "Start"}
-          <Keys action="new_topic.start" />
         </button>
         {device?.state && !online && (
           <p className="error">{device.state.machine.name} is offline</p>

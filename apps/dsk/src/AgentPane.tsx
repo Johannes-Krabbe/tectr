@@ -16,16 +16,7 @@ import {
   useSessionEvents,
   type Worktree,
 } from "./engine";
-import {
-  act,
-  type ActionId,
-  isTextField,
-  keysLabel,
-  showsSteps,
-  textBoxKey,
-  titled,
-  toggleSteps,
-} from "./keybinds";
+import { act, type ActionId, isTextField, keysLabel, showsSteps, textBoxKey, titled } from "./keybinds";
 import { inPane } from "./keys";
 import {
   type AnswerEnd,
@@ -38,67 +29,32 @@ import {
   transcriptTiming,
 } from "./model";
 import { FOLLOW_WITHIN, keepFollowing, newScroller } from "./motion";
-import { useScreenPaletteItems } from "./Palette";
-import { sessionPickerHints, SessionPickers } from "./SessionPickers";
-import { hint, type Hint, optionNumbersHint, useHints } from "./shortcuts";
+import { SessionPickers } from "./SessionPickers";
 import { refusedPrompt } from "./slashCommands";
 import { useSyncedText } from "./syncedText";
 import { Icon } from "./ui/Icon";
-import { Keys, StatusIcon } from "./ui/StatusIcon";
+import { StatusIcon } from "./ui/StatusIcon";
 import { useVim, VimModeLabel } from "./VimBox";
 
 /** How far one press scrolls the transcript, in pixels. */
 const SCROLL_STEP = 90;
 
-const SCROLL_HINTS: Hint[] = [
-  hint("Scroll", "pane.up", "pane.down"),
-  hint("Half screen", "pane.half_up", "pane.half_down"),
-  hint("Whole screen", "pane.page_up", "pane.page_down"),
-  hint("Top, bottom", "pane.first", "pane.last"),
-];
-
-const COMPOSER_HINTS: Hint[] = [
-  hint("Send", "composer.send"),
-  hint("New line", "composer.newline"),
-  hint("Leave", "composer.blur"),
-];
-
 function primaryOption(options: PermissionOption[]): PermissionOption | undefined {
   return options.find((option) => option.kind === "allow_once") ?? options[0];
 }
 
-/** The action that answers with this option by what it does. Options without one, such
- * as a second "allow once", answer by number. */
-function decisionAction(
-  option: PermissionOption,
-  options: PermissionOption[],
-): ActionId | undefined {
-  const first = (...kinds: PermissionOption["kind"][]) =>
-    kinds.map((kind) => options.find((o) => o.kind === kind)).find(Boolean);
-  if (option === first("allow_once")) return "permission.allow_once";
-  if (option === first("allow_always")) return "permission.allow_always";
-  if (option === first("reject_once", "reject_always")) return "permission.reject";
-  return undefined;
-}
-
-const numberAction = (index: number) =>
-  index < 9 ? (`permission.option_${index + 1}` as ActionId) : undefined;
-
-/** The action to show on an option's button: what it does, or else its number. */
-const optionAction = (option: PermissionOption, index: number, options: PermissionOption[]) => {
-  const decision = decisionAction(option, options);
-  return decision && keysLabel(decision) ? decision : numberAction(index);
-};
-
-function requestHints({ options }: Approval): Hint[] {
-  return [
-    ...options.flatMap((option, index) => {
-      const action = optionAction(option, index, options);
-      return action ? [hint(option.name, action)] : [];
-    }),
-    optionNumbersHint(options.length),
-  ];
-}
+// Answering is by number, which works for every request, whatever its options are.
+const OPTION_ACTIONS: ActionId[] = [
+  "permission.option_1",
+  "permission.option_2",
+  "permission.option_3",
+  "permission.option_4",
+  "permission.option_5",
+  "permission.option_6",
+  "permission.option_7",
+  "permission.option_8",
+  "permission.option_9",
+];
 
 /** Something an agent needs from you. Its keys are live. */
 function RequestCard({ machineId, approval }: { machineId: string; approval: Approval }) {
@@ -121,9 +77,7 @@ function RequestCard({ machineId, approval }: { machineId: string; approval: App
     const onKey = (event: KeyboardEvent) => {
       if (!inPane(event)) return;
       approval.options.some((option, index) => {
-        const decision = decisionAction(option, approval.options);
-        if (decision && act(event, decision, () => answer(option))) return true;
-        const number = numberAction(index);
+        const number = OPTION_ACTIONS[index];
         return number !== undefined && act(event, number, () => answer(option));
       });
     };
@@ -140,15 +94,17 @@ function RequestCard({ machineId, approval }: { machineId: string; approval: App
       <pre className="request-what">{approval.tool_call.title ?? "Untitled tool call"}</pre>
       <div className="actions">
         {approval.options.map((option, index) => {
-          const action = optionAction(option, index, approval.options);
+          // Its number reads as where it is in the list, and is also the key that picks it.
+          const action = OPTION_ACTIONS[index];
+          const key = action && keysLabel(action);
           return (
             <button
               key={option.id}
               className={`button ${option === primary ? "primary" : ""}`}
               onClick={() => answer(option)}
             >
+              {key && <span className="request-number">{key}</span>}
               {option.name}
-              {action && <Keys action={action} />}
             </button>
           );
         })}
@@ -223,10 +179,6 @@ export function AgentPane({
     onOpen: openImages,
   });
   imagesFor.current = field.imagesFor;
-  const openSent = () => openImages(sentImages, sentImages.length - 1);
-  // The key handler is set up once, so it reaches the current images through a ref.
-  const openSentNow = useRef(openSent);
-  openSentNow.current = openSent;
   const log = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -246,9 +198,6 @@ export function AgentPane({
   const [folds, setFolds] = useState(NO_FOLDS);
   useEffect(() => setFolds(NO_FOLDS), [stepsShown]);
   const fold = foldState(items, folds, stepsShown);
-  // The key handler is set up once, so it reaches this render's folds through a ref.
-  const toggleTurn = useRef(() => {});
-  toggleTurn.current = () => setFolds(fold.toggleTurn());
 
   const state = sessionState(session, online);
   const live = state === "working" || state === "waiting";
@@ -263,7 +212,6 @@ export function AgentPane({
     onSend: (text) => void send(text),
   });
 
-  const lastAnswer = items.filter((item): item is AnswerEnd => item.kind === "answer_end").pop();
   const blocked = (answer: AnswerEnd) => branchBlocked(answer, provider, session.agent, online);
   const branch = (answer: AnswerEnd) => {
     const reason = blocked(answer);
@@ -278,67 +226,6 @@ export function AgentPane({
       })
       .catch((reason) => setError(errorText(reason)));
   };
-  // The key handler is set up once, so it reaches the latest answer through a ref.
-  const branchLast = useRef(() => {});
-  branchLast.current = () => {
-    if (lastAnswer) branch(lastAnswer);
-  };
-
-  const answers = pending ? requestHints(pending) : [];
-  const pickers = sessionPickerHints(provider, session, online);
-  useHints("pane", [
-    ...answers,
-    hint("Write", "pane.compose"),
-    ...(sentImages.length > 0 ? [hint("Images", "pane.open_images")] : []),
-    hint(stepsShown ? "Fold steps" : "Show steps", "pane.toggle_steps"),
-    ...(lastAnswer ? [hint("Branch", "pane.branch")] : []),
-    ...(live ? [hint(fold.turnOpen ? "Fold this turn" : "Watch", "pane.toggle_turn")] : []),
-    ...SCROLL_HINTS,
-    ...pickers,
-    hint("Sidebar", "pane.back"),
-  ]);
-  // Keys that type never answer a request from here, and the line leaves those out itself.
-  useHints("typing", [
-    ...answers,
-    ...suggestions.hints,
-    ...COMPOSER_HINTS,
-    ...(field.images.length > 0 ? [hint("Open image", "composer.open_image")] : []),
-    ...pickers,
-  ]);
-  useScreenPaletteItems([
-    ...(lastAnswer
-      ? [
-          {
-            id: "branch",
-            label: "Branch from the last answer into a new tab",
-            detail: blocked(lastAnswer),
-            keys: keysLabel("pane.branch"),
-            run: () => branchLast.current(),
-          },
-        ]
-      : []),
-    ...(sentImages.length > 0
-      ? [
-          {
-            id: "open-images",
-            label: "Open the images in the conversation",
-            keys: keysLabel("pane.open_images"),
-            run: openSent,
-          },
-        ]
-      : []),
-    ...(field.images.length > 0
-      ? [
-          {
-            id: "open-draft-images",
-            label: "Open the images in the message box",
-            keys: keysLabel("composer.open_image"),
-            run: field.openAtCursor,
-          },
-        ]
-      : []),
-  ]);
-
   // Stay at the bottom unless the reader has scrolled up. This watches the size, because a
   // message keeps growing as it types out, long after the event that brought its text.
   useEffect(() => {
@@ -393,13 +280,6 @@ export function AgentPane({
     const onKey = (event: KeyboardEvent) => {
       if (!inPane(event)) return;
       if (act(event, "pane.compose", () => input.current?.focus())) return;
-      const toggled = act(event, "pane.toggle_steps", () => {
-        toggleSteps().catch((reason) => setError(errorText(reason)));
-      });
-      if (toggled) return;
-      if (act(event, "pane.toggle_turn", () => toggleTurn.current())) return;
-      if (act(event, "pane.open_images", () => openSentNow.current())) return;
-      if (act(event, "pane.branch", () => branchLast.current())) return;
       // In a text box, Ctrl+D and the like edit the text. Scrolling is for the transcript.
       if (!isTextField(event.target)) commands.some(([id, run]) => act(event, id, run));
     };
@@ -529,7 +409,7 @@ export function AgentPane({
               waiting={state === "waiting"}
               animate={animate}
               open={fold.turnOpen}
-              onToggle={() => toggleTurn.current()}
+              onToggle={() => setFolds(fold.toggleTurn())}
             />
           )}
         </div>
@@ -590,7 +470,6 @@ export function AgentPane({
               provider={provider}
               online={online}
               input={input}
-              transcript={log}
               onError={setError}
             />
             <div className="composer-context">
@@ -600,18 +479,34 @@ export function AgentPane({
                   {worktree.branch}
                 </span>
               )}
-              {onInterrupt && (
+              {/* One button for what pressing does now: Send once something's typed, which
+                  queues while the agent works, or else Stop while it works. */}
+              {message.text.trim() ? (
                 <button
-                  type="button"
-                  className="interrupt"
-                  title={titled("Interrupt", "global.interrupt")}
-                  aria-label="Interrupt"
-                  // It goes away once the turn stops, which would leave focus nowhere.
+                  type="submit"
+                  className="send"
+                  title={titled("Send", "composer.send")}
+                  aria-label="Send"
+                  disabled={!online || sending}
+                  // Focus stays in the box, so typing carries on after a click.
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={onInterrupt}
                 >
-                  <Icon name="stop" />
+                  <Icon name="send" />
                 </button>
+              ) : (
+                onInterrupt && (
+                  <button
+                    type="button"
+                    className="interrupt"
+                    title={titled("Interrupt", "global.interrupt")}
+                    aria-label="Interrupt"
+                    // It goes away once the turn stops, which would leave focus nowhere.
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={onInterrupt}
+                  >
+                    <Icon name="stop" />
+                  </button>
+                )
               )}
             </div>
           </div>

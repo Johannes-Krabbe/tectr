@@ -107,7 +107,8 @@ Each component in `design/spec/components.md` is built separately per platform, 
 | Desktop | iOS |
 |---|---|
 | Sidebar tree | `NavigationStack` and `List` |
-| ⌘K palette | `.searchable` |
+| A submenu | A nested system menu |
+| An inline list that expands in place, like archived topics | A disclosure section in the `List` |
 | Menu on a button or a right click | System context menu |
 | Creation sheet | `.sheet` with detents |
 | Tab strip and split | One tab at a time, switched from the title menu |
@@ -139,7 +140,7 @@ apps/ios/
 
 ## Not done yet
 
-- **Components:** both apps have the tokens, fonts, and root theme. Desktop has first versions of `StatusIcon`, `DeviceHeader`, `WorkspaceRow`, `TopicRow`, `RequestCard`, `ActivityLine`, `NewTab`, `Sheet`, `Button`, `Kbd`, `Sidebar`, `TabBar`, `Menu`, `Toast`, and the ⌘K palette, without the folded states. iOS has first versions of `StatusIcon`, `DeviceHeader`, `TopicRow`, `RequestCard`, `ActivityLine`, `ToolCallRow`, `DiffHunk` and `ThemeSwatch` in `TectrDesign`, and every screen working against the engine.
+- **Components:** both apps have the tokens, fonts, and root theme. Desktop has first versions of `StatusIcon`, `DeviceHeader`, `WorkspaceRow`, `TopicRow`, `RequestCard`, `ActivityLine`, `NewTab`, `Sheet`, `Button`, `Kbd`, `Sidebar`, `TabBar`, `Menu` with submenus, and `Toast`, without the folded states. iOS has first versions of `StatusIcon`, `DeviceHeader`, `TopicRow`, `RequestCard`, `ActivityLine`, `ToolCallRow`, `DiffHunk` and `ThemeSwatch` in `TectrDesign`, and every screen working against the engine.
 - **Automated token check:** nothing runs `mise run tokens:test` or the package tests in CI yet.
 
 ## Open questions

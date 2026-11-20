@@ -150,8 +150,13 @@ test("choices step through their list and stop at the ends", () => {
   const options = [{ value: "a", label: "A" }, { value: "b", label: "B" }];
   assert.equal(stepped(field, -1, options), "a");
   assert.equal(stepped(field, 1, options), "b");
-  const toggle: AppearanceField = { ...field, kind: { type: "toggle" }, value: true };
-  assert.equal(stepped(toggle, 1, []), false);
+});
+
+test("a switch goes off to the left and on to the right, whatever it was", () => {
+  const toggle: AppearanceField = { ...text("a", ""), kind: { type: "toggle" }, value: true };
+  assert.equal(stepped(toggle, -1, []), false);
+  assert.equal(stepped(toggle, 1, []), true);
+  assert.equal(stepped({ ...toggle, value: false }, 1, []), true);
 });
 
 test("a theme list holds that scheme's themes", () => {

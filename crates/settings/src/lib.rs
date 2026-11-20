@@ -40,10 +40,10 @@ const REFERENCE_INTRO: &str = "\
 const REFERENCE_KEYBINDS: &str = "\
 # Keybinds
 #
-#   new_topic = \"mod+n\"                         one key
+#   new_tab = \"mod+t\"                           one key
 #   down = [\"j\", \"down\"]                        several keys
 #   next_request = []                           no key at all
-#   allow_once = { key = \"y\", hold_ms = 500 }   has to be held for half a second
+#   option_1 = { key = \"1\", hold_ms = 500 }     has to be held for half a second
 #   down = { key = \"j\", repeat = false }        doesn't repeat while held
 #   first = [\"g g\", \"home\"]                     a sequence, with spaces between its keys
 #   last = \"G\"                                  a capital on its own means Shift, like Vim
@@ -54,7 +54,7 @@ const REFERENCE_KEYBINDS: &str = "\
 # \"?\" rather than \"shift+/\".
 #
 # A key without cmd, ctrl or alt doesn't fire while typing in a text field, except in the
-# sections for one: composer, new_topic, sheet and palette.
+# sections for one: composer, new_topic, sheet and picker.
 #
 # Sequences work like Vim's: the first key waits for the next until sequence_timeout_ms,
 # and a key that doesn't continue it drops what came before and acts on its own. They don't
@@ -430,34 +430,32 @@ mod tests {
     #[test]
     fn changing_nav_moves_everything_that_follows_it() {
         let (_folder, store) = store_with("[keybinds.nav]\ndown = \"n\"\n");
-        for id in ["sidebar.down", "pane.down", "settings.down"] {
+        for id in ["sidebar.down", "pane.down", "sections.down"] {
             assert_eq!(keys(&store, id), ["n"], "{id}");
         }
-        // Typing searches the palette and pickers, so they follow their own default instead.
-        for id in ["palette.down", "picker.down"] {
-            assert!(!keys(&store, id).contains(&"n".to_owned()), "{id}");
-        }
+        // Typing searches lists, so they follow their own default instead.
+        assert!(!keys(&store, "picker.down").contains(&"n".to_owned()));
     }
 
     #[test]
     fn lists_you_type_in_follow_their_own_nav_keys() {
         let (_folder, store) = store_with("");
-        assert!(keys(&store, "palette.down").contains(&"down".to_owned()));
+        assert!(keys(&store, "picker.down").contains(&"down".to_owned()));
         assert_eq!(
-            keys(&store, "palette.up").contains(&"ctrl+k".to_owned()),
+            keys(&store, "picker.up").contains(&"ctrl+k".to_owned()),
             cfg!(target_os = "macos")
         );
-        assert!(action(&store, "palette.down").bindings[0].repeat);
+        assert!(action(&store, "picker.down").bindings[0].repeat);
 
         let (_folder, store) = store_with("[keybinds.nav]\ninput_down = \"alt+j\"\n");
-        assert_eq!(keys(&store, "palette.down"), ["alt+j"]);
         assert_eq!(keys(&store, "picker.down"), ["alt+j"]);
+        assert_eq!(keys(&store, "sheet.down"), ["alt+j"]);
         assert_ne!(keys(&store, "sidebar.down"), ["alt+j"]);
 
         let (_folder, store) = store_with(
-            "[keybinds.nav]\ninput_down = \"alt+j\"\n[keybinds.palette]\ndown = \"alt+p\"\n",
+            "[keybinds.nav]\ninput_down = \"alt+j\"\n[keybinds.picker]\ndown = \"alt+p\"\n",
         );
-        assert_eq!(keys(&store, "palette.down"), ["alt+p"]);
+        assert_eq!(keys(&store, "picker.down"), ["alt+p"]);
     }
 
     #[test]
@@ -478,12 +476,12 @@ mod tests {
         assert_eq!(keys(&store, "sidebar.first"), ["g g"]);
         assert_eq!(keys(&store, "pane.last"), ["shift+g"]);
         store
-            .set_keybind("settings.reset", vec![on("g r")])
+            .set_keybind("sidebar.rename", vec![on("g r")])
             .unwrap();
         assert!(
             fs::read_to_string(store.path())
                 .unwrap()
-                .contains("reset = \"g r\"")
+                .contains("rename = \"g r\"")
         );
         assert_eq!(store.settings().problems, Vec::<String>::new());
     }
@@ -530,16 +528,6 @@ mod tests {
     }
 
     #[test]
-    fn a_palette_key_that_would_close_the_palette_is_flagged() {
-        let (_folder, store) = store_with("[keybinds.palette]\ndown = \"mod+k\"\n");
-        let problems = store.settings().problems.join("\n");
-        assert!(
-            problems.contains("global.palette and palette.down"),
-            "{problems}"
-        );
-    }
-
-    #[test]
     fn one_function_can_leave_nav_alone() {
         let (_folder, store) = store_with(
             "[keybinds.nav]\ndown = \"n\"\n[keybinds.sidebar]\ndown = [\"s\", \"down\"]\n",
@@ -553,12 +541,12 @@ mod tests {
     #[test]
     fn inherited_keys_repeat_like_nav_and_a_key_can_say_otherwise() {
         let (_folder, store) = store_with(
-            "[keybinds.permission]\nallow_once = { key = \"y\", hold_ms = 500 }\n\
+            "[keybinds.permission]\noption_1 = { key = \"y\", hold_ms = 500 }\n\
              [keybinds.pane]\ndown = { key = \"j\", repeat = false }\n",
         );
         assert!(action(&store, "sidebar.down").bindings[0].repeat);
         assert_eq!(
-            action(&store, "permission.allow_once").bindings,
+            action(&store, "permission.option_1").bindings,
             [Binding {
                 key: "y".to_owned(),
                 hold_ms: 500,
@@ -570,24 +558,24 @@ mod tests {
 
     #[test]
     fn an_empty_list_unbinds() {
-        let (_folder, store) = store_with("[keybinds.permission]\nallow_always = []\n");
-        assert!(keys(&store, "permission.allow_always").is_empty());
+        let (_folder, store) = store_with("[keybinds.permission]\noption_2 = []\n");
+        assert!(keys(&store, "permission.option_2").is_empty());
     }
 
     #[test]
     fn a_bad_entry_falls_back_and_says_so() {
         let (_folder, store) = store_with(
-            "[keybinds.global]\npalette = \"hyper+k\"\nnew_topic = \"mod+y\"\n\
+            "[keybinds.global]\nsettings = \"hyper+k\"\nclose_tab = \"mod+y\"\n\
              interrupt = { key = \"x\", hold_ms = 99999 }\nmissing = \"x\"\n\
              [keybinds.nope]\nx = \"y\"\n\
              [other]\nx = 1\n",
         );
-        assert_eq!(keys(&store, "global.palette"), ["mod+k", ":"]);
-        assert_eq!(keys(&store, "global.new_topic"), ["mod+y"]);
+        assert_eq!(keys(&store, "global.settings"), ["mod+,"]);
+        assert_eq!(keys(&store, "global.close_tab"), ["mod+y"]);
+        let interrupt = keys(&store, "global.interrupt");
         assert!(
-            keys(&store, "global.interrupt")
-                .iter()
-                .any(|key| key == "mod+.")
+            !interrupt.is_empty() && !interrupt.contains(&"x".to_owned()),
+            "{interrupt:?}"
         );
         let problems = store.settings().problems.join("\n");
         for expected in [
@@ -603,39 +591,39 @@ mod tests {
 
     #[test]
     fn a_syntax_error_keeps_the_last_good_settings() {
-        let (_folder, mut store) = store_with("[keybinds.global]\npalette = \"mod+y\"\n");
-        fs::write(store.path(), "[keybinds.global\npalette =").unwrap();
+        let (_folder, mut store) = store_with("[keybinds.global]\nsettings = \"mod+y\"\n");
+        fs::write(store.path(), "[keybinds.global\nsettings =").unwrap();
         assert!(store.reload());
-        assert_eq!(keys(&store, "global.palette"), ["mod+y"]);
+        assert_eq!(keys(&store, "global.settings"), ["mod+y"]);
         assert!(store.settings().problems[0].contains("syntax error"));
 
         // And the screen won't write over a file someone's in the middle of fixing.
         let error = store
-            .set_keybind("global.palette", vec![on("mod+z")])
+            .set_keybind("global.settings", vec![on("mod+z")])
             .unwrap_err();
         assert!(error.contains("syntax error"));
         assert_eq!(
             fs::read_to_string(store.path()).unwrap(),
-            "[keybinds.global\npalette ="
+            "[keybinds.global\nsettings ="
         );
     }
 
     #[test]
     fn deleting_the_file_goes_back_to_the_defaults() {
-        let (_folder, mut store) = store_with("[keybinds.global]\npalette = \"mod+y\"\n");
+        let (_folder, mut store) = store_with("[keybinds.global]\nsettings = \"mod+y\"\n");
         fs::remove_file(store.path()).unwrap();
         assert!(store.reload());
-        assert_eq!(keys(&store, "global.palette"), ["mod+k", ":"]);
+        assert_eq!(keys(&store, "global.settings"), ["mod+,"]);
         assert!(!store.reload());
     }
 
     #[test]
     fn saving_keeps_comments_layout_and_other_sections() {
         let original = "# My settings\n\n[appearance] # for later\nmode = \"dark\"\n\n\
-                        [keybinds.global]\n# I like this one\npalette = \"mod+y\"\n";
+                        [keybinds.global]\n# I like this one\nsettings = \"mod+y\"\n";
         let (_folder, mut store) = store_with(original);
         store
-            .set_keybind("global.new_topic", vec![on("mod+g")])
+            .set_keybind("global.close_tab", vec![on("mod+g")])
             .unwrap();
         store
             .set_keybind("sidebar.add", vec![on("x"), on("mod+x")])
@@ -649,21 +637,21 @@ mod tests {
         ] {
             assert!(saved.contains(kept), "{kept} in:\n{saved}");
         }
-        assert!(saved.contains("new_topic = \"mod+g\""), "{saved}");
+        assert!(saved.contains("close_tab = \"mod+g\""), "{saved}");
         assert!(saved.contains("[keybinds.sidebar]"), "{saved}");
         assert!(saved.contains("add = [\"x\", \"mod+x\"]"), "{saved}");
-        assert_eq!(keys(&store, "global.palette"), ["mod+y"]);
+        assert_eq!(keys(&store, "global.settings"), ["mod+y"]);
     }
 
     #[test]
     fn saving_includes_an_edit_made_since_the_last_read() {
         let (_folder, mut store) = store_with("");
-        fs::write(store.path(), "[keybinds.global]\npalette = \"mod+y\"\n").unwrap();
+        fs::write(store.path(), "[keybinds.global]\nsettings = \"mod+y\"\n").unwrap();
         store
-            .set_keybind("global.new_topic", vec![on("mod+g")])
+            .set_keybind("global.close_tab", vec![on("mod+g")])
             .unwrap();
-        assert_eq!(keys(&store, "global.palette"), ["mod+y"]);
-        assert_eq!(keys(&store, "global.new_topic"), ["mod+g"]);
+        assert_eq!(keys(&store, "global.settings"), ["mod+y"]);
+        assert_eq!(keys(&store, "global.close_tab"), ["mod+g"]);
     }
 
     #[test]
@@ -671,7 +659,7 @@ mod tests {
         let (_folder, mut store) = store_with("");
         store
             .set_keybind(
-                "permission.reject",
+                "permission.option_3",
                 vec![Binding {
                     key: "n".to_owned(),
                     hold_ms: 800,
@@ -682,10 +670,13 @@ mod tests {
         // `repeat` matches this action's default, so it isn't written.
         let saved = fs::read_to_string(store.path()).unwrap();
         assert!(
-            saved.contains("reject = { key = \"n\", hold_ms = 800 }"),
+            saved.contains("option_3 = { key = \"n\", hold_ms = 800 }"),
             "{saved}"
         );
-        assert_eq!(action(&store, "permission.reject").bindings[0].hold_ms, 800);
+        assert_eq!(
+            action(&store, "permission.option_3").bindings[0].hold_ms,
+            800
+        );
 
         // sidebar.down follows nav.down, which repeats, so true is the short form here.
         store
@@ -716,7 +707,7 @@ mod tests {
         assert!(store.set_keybind("global.nope", vec![on("x")]).is_err());
         assert!(
             store
-                .set_keybind("global.palette", vec![on("hyper+x")])
+                .set_keybind("global.settings", vec![on("hyper+x")])
                 .is_err()
         );
     }
@@ -724,10 +715,10 @@ mod tests {
     #[test]
     fn resetting_removes_the_value_and_a_section_left_empty() {
         let (_folder, mut store) =
-            store_with("[keybinds.global]\npalette = \"mod+y\"\n[keybinds.pane]\nup = \"u\"\n");
-        store.reset_keybind("global.palette").unwrap();
-        assert_eq!(keys(&store, "global.palette"), ["mod+k", ":"]);
-        assert!(!action(&store, "global.palette").customized);
+            store_with("[keybinds.global]\nsettings = \"mod+y\"\n[keybinds.pane]\nup = \"u\"\n");
+        store.reset_keybind("global.settings").unwrap();
+        assert_eq!(keys(&store, "global.settings"), ["mod+,"]);
+        assert!(!action(&store, "global.settings").customized);
         let saved = fs::read_to_string(store.path()).unwrap();
         assert!(!saved.contains("keybinds.global"), "{saved}");
         assert!(saved.contains("[keybinds.pane]"), "{saved}");
@@ -736,16 +727,16 @@ mod tests {
     #[test]
     fn conflicts_are_reported_only_where_the_keys_are_live_together() {
         let (_folder, store) = store_with(
-            "[keybinds.global]\npalette = \"mod+y\"\nnew_topic = \"mod+y\"\n\
-             [keybinds.pane]\nup = \"y\"\n",
+            "[keybinds.global]\nsettings = \"mod+y\"\nclose_tab = \"mod+y\"\n\
+             [keybinds.pane]\nup = \"1\"\n",
         );
         let problems = store.settings().problems.join("\n");
         assert!(
-            problems.contains("global.palette and global.new_topic"),
+            problems.contains("global.settings and global.close_tab"),
             "{problems}"
         );
-        // pane.up shares Y with permission.allow_once, and both are live at once.
-        assert!(problems.contains("permission.allow_once"), "{problems}");
+        // pane.up shares 1 with permission.option_1, and both are live at once.
+        assert!(problems.contains("permission.option_1"), "{problems}");
         // new_tab.agent and sidebar.add share A by default, but they're never live at once.
         assert!(!problems.contains("new_tab.agent"), "{problems}");
     }
@@ -832,7 +823,7 @@ mod tests {
 
     #[test]
     fn appearance_saving_refuses_bad_input_and_leaves_the_file_alone() {
-        let mine = "version = 2\n# Mine\n[keybinds.global]\npalette = \"mod+y\"\n";
+        let mine = "version = 2\n# Mine\n[keybinds.global]\nsettings = \"mod+y\"\n";
         let (_folder, mut store) = store_with(mine);
         for (id, value) in [
             ("nope", Value::Flag(true)),
@@ -850,7 +841,7 @@ mod tests {
             assert!(store.set_appearance(id, value).is_err(), "{id}");
         }
         // Resetting names a setting too, and nothing else in the file.
-        for id in ["nope", "keybinds", "keybinds.global.palette", "appearance"] {
+        for id in ["nope", "keybinds", "keybinds.global.settings", "appearance"] {
             assert!(store.reset_appearance(id).is_err(), "{id}");
         }
         assert_eq!(fs::read_to_string(store.path()).unwrap(), mine);
@@ -931,14 +922,14 @@ mod tests {
 mode = \"dark\"
 
 [appearance.layout]
-show_shortcuts = true
+remote_path_delay = 200
 
 # Vim everywhere
 [appearance.vim]
 enabled = true
 
 [keybinds.global]
-new_topic = \"mod+g\"
+close_tab = \"mod+g\"
 ";
 
     fn kept(store: &Store) -> Option<String> {
@@ -963,12 +954,12 @@ new_topic = \"mod+g\"
         let (_folder, store) = store_with(OLD);
         assert_eq!(store.settings().problems, Vec::<String>::new());
         assert_eq!(
-            appearance_value(&store, "general.show_shortcuts"),
-            Value::Flag(true)
+            appearance_value(&store, "general.remote_path_delay"),
+            Value::Number(200.0)
         );
         assert_eq!(appearance_value(&store, "vim.enabled"), Value::Flag(true));
         assert_eq!(store.forced_scheme(), Some(Scheme::Dark));
-        assert_eq!(keys(&store, "global.new_topic"), ["mod+g"]);
+        assert_eq!(keys(&store, "global.close_tab"), ["mod+g"]);
 
         let saved = fs::read_to_string(store.path()).unwrap();
         assert!(
@@ -980,7 +971,7 @@ new_topic = \"mod+g\"
             "{saved}"
         );
         assert!(
-            saved.contains("[general]\nshow_shortcuts = true\n"),
+            saved.contains("[general]\nremote_path_delay = 200\n"),
             "{saved}"
         );
         assert!(!saved.contains("appearance.layout"), "{saved}");
@@ -1036,7 +1027,7 @@ new_topic = \"mod+g\"
         for refused in [
             store.set_appearance("vim.enabled", Value::Flag(false)),
             store.reset_appearance("vim.enabled"),
-            store.set_keybind("global.palette", vec![on("mod+y")]),
+            store.set_keybind("global.settings", vec![on("mod+y")]),
         ] {
             assert!(refused.unwrap_err().contains("newer tectr"));
         }
@@ -1083,7 +1074,7 @@ new_topic = \"mod+g\"
 
         let mut store = Store::open(link.clone());
         store
-            .set_keybind("global.palette", vec![on("mod+y")])
+            .set_keybind("global.settings", vec![on("mod+y")])
             .unwrap();
         assert!(
             fs::symlink_metadata(&link)

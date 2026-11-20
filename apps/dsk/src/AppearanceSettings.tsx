@@ -11,21 +11,9 @@ import {
   type Theme,
 } from "./appearance";
 import { errorText } from "./engine";
-import {
-  act,
-  type ActionId,
-  loadInstalledFonts,
-  resetAppearance,
-  saveAppearance,
-  tryAppearance,
-  useSettings,
-} from "./keybinds";
-import { inPane } from "./keys";
-import { hint, SETTINGS_MOVES, useHints } from "./shortcuts";
+import { loadInstalledFonts, resetAppearance, saveAppearance, tryAppearance, useSettings } from "./keybinds";
 import { Choice, Picker } from "./ui/Picker";
-import { GoInHint, listMoves, SettingsPage } from "./ui/SettingsPage";
-import { Icon } from "./ui/Icon";
-import { Keys } from "./ui/StatusIcon";
+import { ResetButton, SettingRow, SettingsGroupBox, SettingsPage, Stepper, Switch } from "./ui/SettingsPage";
 
 // Reading the fonts takes a moment and they rarely change, so once per run is enough.
 let fontsOnce: Promise<InstalledFont[]> | null = null;
@@ -103,34 +91,17 @@ function Preview() {
 }
 
 /** One page of the app's settings. The rows come from the settings crate, so one added there
- * shows up here. What can be done to the selected row stays in the bar at the bottom. A row
- * is its label and its value, with nothing explaining it.
- * `children` is what the page has besides rows, and comes after them. */
-export function AppearanceSettings({
-  page,
-  active,
-  onActivate,
-  onLeave,
-  children,
-}: {
-  page: string;
-  /** This list has the keyboard, rather than the sections beside it. */
-  active: boolean;
-  onActivate: () => void;
-  onLeave: () => void;
-  children?: ReactNode;
-}) {
+ * shows up here. A row is its label and its control, used right where it is, and a reset button
+ * when it differs from the default. `children` is what the page has besides rows. */
+export function AppearanceSettings({ page, children }: { page: string; children?: ReactNode }) {
   const settings = useSettings();
   const appearance = settings?.appearance;
   const { groups, rows } = appearance ? pageOf(appearance, page) : { groups: [], rows: [] };
   const fonts = useInstalledFonts();
-  const [cursor, setCursor] = useState(0);
   const [picking, setPicking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Choosing keeps the preview up until what was chosen arrives, so it doesn't flash back.
   const saving = useRef(false);
-  const selected = Math.max(Math.min(cursor, rows.length - 1), 0);
-  const row: AppearanceField | undefined = rows[selected];
 
   const options = (field: AppearanceField): Option[] =>
     optionsOf(field, appearance?.themes ?? [], fonts);
@@ -150,11 +121,6 @@ export function AppearanceSettings({
     resetAppearance(field.id).catch((reason) => setError(errorText(reason)));
   };
 
-  const change = (field: AppearanceField) => {
-    if (field.kind.type === "toggle") step(field, 1);
-    else if (field.kind.type !== "number") setPicking(field.id);
-  };
-
   const choose = (field: AppearanceField, value: string) => {
     saving.current = true;
     void save(field.id, value).finally(() => {
@@ -163,8 +129,7 @@ export function AppearanceSettings({
     });
   };
 
-  const onPickerOpen = (field: AppearanceField, index: number, open: boolean) => {
-    setCursor(index);
+  const onPickerOpen = (field: AppearanceField, open: boolean) => {
     setPicking(open ? field.id : null);
     if (open) return;
     // The list says it's closing and what was chosen in one go, in an order that's its own.
@@ -173,111 +138,35 @@ export function AppearanceSettings({
     });
   };
 
-  const isNumber = row?.kind.type === "number";
-  useHints(
-    "pane",
-    active && row
-      ? [
-          ...(isNumber
-            ? []
-            : [hint(row.kind.type === "toggle" ? "Switch" : "Choose", "settings.edit")]),
-          hint(isNumber ? "Lower, raise" : "Previous, next", "settings.decrease", "settings.increase"),
-          ...(row.customized ? [hint("Reset", "settings.reset")] : []),
-          ...SETTINGS_MOVES,
-        ]
-      : null,
-  );
-
   // Leaving the screen with something still being tried out mustn't leave it on.
   useEffect(() => () => tryAppearance(null), []);
-
-  useEffect(() => {
-    if (active) document.querySelector(".keybind.current")?.scrollIntoView({ block: "nearest" });
-  }, [selected, active]);
-
-  useEffect(() => {
-    if (!active || !row) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (!inPane(event)) return;
-      const commands: [ActionId, () => void][] = [
-        ...listMoves(selected, rows.length, setCursor, onLeave),
-        ["settings.edit", () => change(row)],
-        ["settings.decrease", () => step(row, -1)],
-        ["settings.increase", () => step(row, 1)],
-      ];
-      if (row.customized) commands.push(["settings.reset", () => reset(row)]);
-      commands.some(([id, run]) => act(event, id, run));
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-
-  const footer =
-    active && row ? (
-      <>
-        <span className="settings-actions-what" />
-        {row.kind.type === "number" ? (
-          <span className="settings-actions-what settings-actions-keys">
-            <Keys action="settings.decrease" />
-            <Keys action="settings.increase" />
-            Change
-          </span>
-        ) : (
-          <button className="button" onClick={() => change(row)}>
-            {row.kind.type === "toggle" ? "Switch" : "Choose"}
-            <Keys action="settings.edit" />
-          </button>
-        )}
-        <button className="button" disabled={!row.customized} onClick={() => reset(row)}>
-          Reset
-          <Keys action="settings.reset" />
-        </button>
-      </>
-    ) : (
-      <GoInHint />
-    );
 
   return (
     <>
       {page === "appearance" && <Preview />}
-      <SettingsPage error={error} footer={footer}>
+      <SettingsPage error={error}>
         {groups.map((group) => (
-          <section key={group.id} className="settings-group">
-            <h3 className="settings-group-title">{group.title}</h3>
-            <div className="keybinds">
-              {rows
-                .filter((field) => field.group === group.id)
-                .map((field) => {
-                  const index = rows.indexOf(field);
-                  const current = active && index === selected;
-                  return (
-                    <div
-                      key={field.id}
-                      className={`keybind ${current ? "current" : ""}`}
-                      // Moving, rather than entering: a row scrolling under a pointer that
-                      // isn't moving must not take the keyboard or the selection.
-                      onMouseMove={(event) => {
-                        if (event.movementX === 0 && event.movementY === 0) return;
-                        setCursor(index);
-                        onActivate();
-                      }}
-                    >
-                      <span className="name">{field.label}</span>
-                      {field.customized && <span className="meta">Changed</span>}
-                      <Control
-                        field={field}
-                        options={options(field)}
-                        current={current}
-                        open={current && picking === field.id}
-                        onOpenChange={(open) => onPickerOpen(field, index, open)}
-                        onChoose={(value) => choose(field, value)}
-                        onStep={(direction) => step(field, direction)}
-                      />
-                    </div>
-                  );
-                })}
-            </div>
-          </section>
+          <SettingsGroupBox key={group.id} title={group.title}>
+            {rows
+              .filter((field) => field.group === group.id)
+              .map((field) => (
+                <SettingRow
+                  key={field.id}
+                  label={field.label}
+                  onStep={(direction) => step(field, direction)}
+                >
+                  {field.customized && <ResetButton label={field.label} onReset={() => reset(field)} />}
+                  <Control
+                    field={field}
+                    options={options(field)}
+                    open={picking === field.id}
+                    onOpenChange={(open) => onPickerOpen(field, open)}
+                    onChoose={(value) => choose(field, value)}
+                    onStep={(direction) => step(field, direction)}
+                  />
+                </SettingRow>
+              ))}
+          </SettingsGroupBox>
         ))}
         {children}
       </SettingsPage>
@@ -288,7 +177,6 @@ export function AppearanceSettings({
 function Control({
   field,
   options,
-  current,
   open,
   onOpenChange,
   onChoose,
@@ -296,58 +184,29 @@ function Control({
 }: {
   field: AppearanceField;
   options: Option[];
-  current: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onChoose: (value: string) => void;
   onStep: (direction: -1 | 1) => void;
 }) {
   const { kind, label, id, value } = field;
-  // Focus stays off these, so Enter does what the settings say rather than pressing them.
-  const keepFocus = (event: React.MouseEvent) => event.preventDefault();
 
   if (kind.type === "number") {
     return (
-      <span className="stepper">
-        <button
-          className="stepper-button"
-          tabIndex={-1}
-          aria-label={`Lower ${label}`}
-          disabled={Number(value) <= kind.min}
-          onMouseDown={keepFocus}
-          onClick={() => onStep(-1)}
-        >
-          <Icon name="lower" />
-        </button>
-        <span className="stepper-value">{formatValue(field)}</span>
-        <button
-          className="stepper-button"
-          tabIndex={-1}
-          aria-label={`Raise ${label}`}
-          disabled={Number(value) >= kind.max}
-          onMouseDown={keepFocus}
-          onClick={() => onStep(1)}
-        >
-          <Icon name="raise" />
-        </button>
-      </span>
+      <Stepper
+        label={label}
+        value={Number(value)}
+        shown={formatValue(field)}
+        min={kind.min}
+        max={kind.max}
+        onStep={onStep}
+      />
     );
   }
 
   if (kind.type === "toggle") {
     return (
-      <button
-        className="picker"
-        tabIndex={-1}
-        role="switch"
-        aria-checked={value === true}
-        aria-label={label}
-        onMouseDown={keepFocus}
-        onClick={() => onStep(1)}
-      >
-        {formatValue(field)}
-        {current && <Keys action="settings.edit" />}
-      </button>
+      <Switch label={label} checked={value === true} onChange={(checked) => onStep(checked ? 1 : -1)} />
     );
   }
 
@@ -360,12 +219,10 @@ function Control({
       open={open}
       onOpenChange={onOpenChange}
       onChange={onChoose}
-      finalFocus={false}
       trigger={
         <>
           {chosen?.theme && <ThemeSwatch theme={chosen.theme} />}
           {chosen?.label ?? String(value)}
-          {current && <Keys action="settings.edit" />}
         </>
       }
     >

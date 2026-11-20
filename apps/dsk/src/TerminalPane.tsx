@@ -9,7 +9,6 @@ import { useEffect, useRef } from "react";
 import { shownValue } from "./appearance";
 import type { Terminal, TerminalColors } from "./engine";
 import { useSettings } from "./keybinds";
-import { hint, useHints } from "./shortcuts";
 import { binaryBytes, opaque, OUTPUT, readRecords, readReset, RESET } from "./terminalFrames";
 
 const ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
@@ -130,7 +129,6 @@ export function TerminalPane({
   const live = useRef<{ term: XTerm; fit: FitAddon; claim: () => void } | null>(null);
   // Rendering again when the settings change is what applies them below.
   useSettings();
-  useHints("pane", [hint("Sidebar", "global.toggle_sidebar")]);
 
   useEffect(() => {
     const element = host.current;

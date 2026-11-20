@@ -169,51 +169,6 @@ export function formatBinding(binding: Binding, mac: boolean): string {
   return binding.hold_ms > 0 ? `Hold ${label}` : label;
 }
 
-const numbered = (key: string) => /^(.*?)(\d)$/.exec(key);
-
-/** The next number after this one, pressed the same way, as ⌘2 is after ⌘1. */
-function continuesRange(previous: Binding, next: Binding): boolean {
-  const [before, after] = [numbered(previous.key), numbered(next.key)];
-  return (
-    before !== null &&
-    after !== null &&
-    before[1] === after[1] &&
-    Number(after[2]) === Number(before[2]) + 1 &&
-    previous.hold_ms === next.hold_ms
-  );
-}
-
-const modifiersOf = (key: string) => key.slice(0, key.lastIndexOf("+") + 1);
-
-function sharesModifiers(a: Binding, b: Binding): boolean {
-  return (
-    !isSequence(a.key) &&
-    !isSequence(b.key) &&
-    a.hold_ms === b.hold_ms &&
-    modifiersOf(a.key) === modifiersOf(b.key)
-  );
-}
-
-/** Keys that belong together, in the fewest characters: K/J, ⌥K/J, ⌘1-9. Holes in a range
- * split it, so a tab without a key reads ⌘1-6/8-9 rather than promising one it doesn't have. */
-export function formatKeys(bindings: Binding[], mac: boolean): string {
-  const out: string[] = [];
-  let last: Binding | undefined;
-  for (let start = 0; start < bindings.length; ) {
-    let end = start;
-    while (end + 1 < bindings.length && continuesRange(bindings[end], bindings[end + 1])) end++;
-    const first = bindings[start];
-    const label =
-      last && sharesModifiers(last, first)
-        ? formatChord(first.key.slice(modifiersOf(first.key).length), mac)
-        : formatBinding(first, mac);
-    out.push(end > start ? `${label}-${numbered(bindings[end].key)?.[2]}` : label);
-    last = bindings[end];
-    start = end + 1;
-  }
-  return out.join("/");
-}
-
 /** Whether a key starts with Cmd. Terminals get every other key, so only these reach the app
  * from one. */
 export function usesCommand(key: string): boolean {

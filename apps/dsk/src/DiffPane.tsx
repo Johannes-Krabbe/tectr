@@ -32,6 +32,7 @@ import {
   splitPath,
   STATUS_LETTER,
   STATUS_NAME,
+  filesMatching,
   totals,
 } from "./diff";
 import {
@@ -61,12 +62,9 @@ import type { SyntaxSpan } from "./markdown";
 import { diffItems, type Runnable, withRuns } from "./menus";
 import { topicWorktree } from "./model";
 import { newScroller } from "./motion";
-import { type PaletteItem, useScreenPaletteItems } from "./Palette";
 import type { SheetRequest } from "./Sheets";
-import { hint, useHints } from "./shortcuts";
 import { Icon } from "./ui/Icon";
 import { MenuButton } from "./ui/Menu";
-import { Keys } from "./ui/StatusIcon";
 import { useVim, VimModeLabel } from "./VimBox";
 
 const SCROLL_STEP = 90;
@@ -76,17 +74,6 @@ const ROW_GUESS_PX = 20;
 const SCOPES: { kind: "uncommitted" | "branch"; label: string }[] = [
   { kind: "uncommitted", label: "Uncommitted" },
   { kind: "branch", label: "Branch" },
-];
-
-const COMMIT_HINTS = [
-  hint("Commit", "commit.send"),
-  hint("Amend or not", "commit.toggle_amend"),
-  hint("Close", "commit.cancel"),
-];
-
-const SEARCH_HINTS = [
-  hint("Go to match", "diff_search.confirm"),
-  hint("Stop searching", "diff_search.cancel"),
 ];
 
 /** What was last read, with the scope and revision it was asked for, so a switch shows
@@ -145,15 +132,12 @@ export function DiffPane({
   topic,
   diff,
   online,
-  onPicker,
   onConfirm,
 }: {
   machineId: string;
   topic: Topic;
   diff: Diff;
   online: boolean;
-  /** Opens a list to choose from, as the palette does. */
-  onPicker: (picker: { placeholder: string; empty: string; items: PaletteItem[] }) => void;
   /** Asks before something that can't be undone. */
   onConfirm: (sheet: SheetRequest) => void;
 }) {
@@ -177,12 +161,19 @@ export function DiffPane({
   const vim = useVim(messageBox);
   const body = useRef<HTMLDivElement>(null);
   const searchBox = useRef<HTMLInputElement>(null);
+  // Going to a file filters the file list in place, from a box at its top.
+  const fileFilter = useRef<HTMLInputElement>(null);
+  const [fileQuery, setFileQuery] = useState("");
+  const [fileHighlight, setFileHighlight] = useState(0);
+  // The list was hidden and is only showing to go to a file, so it hides again after.
+  const [filesForFilter, setFilesForFilter] = useState(false);
+  const focusFilter = useRef(false);
   const jump = useRef<Jump | null>(null);
   const restored = useRef(false);
   const [scroller] = useState(() => newScroller(() => body.current, motionAllowed));
   const scope = diff.scope.kind;
   const revision = diff.revision ?? 0;
-  const showFiles = diffShowsFiles();
+  const showFiles = diffShowsFiles() || filesForFilter;
   const wraps = diffWraps();
 
   const setView = (change: (view: View) => Partial<View>) =>
@@ -224,6 +215,23 @@ export function DiffPane({
     [content, diff.scope],
   );
   const files = useMemo(() => groups.flatMap((group) => group.files), [groups]);
+  const filtering = fileQuery.trim() !== "";
+  const matchingFiles = useMemo(
+    () => filesMatching(files.map((file) => file.path), fileQuery),
+    [files, fileQuery],
+  );
+  const matchingSet = new Set(matchingFiles);
+  // The file Enter goes to: the highlighted match, which starts at the first.
+  const highlightedFile = filtering
+    ? matchingFiles[Math.max(Math.min(fileHighlight, matchingFiles.length - 1), 0)]
+    : undefined;
+
+  // A list shown only to go to a file renders before its filter can take the keyboard.
+  useEffect(() => {
+    if (!focusFilter.current || !fileFilter.current) return;
+    focusFilter.current = false;
+    fileFilter.current.focus();
+  });
   const rows = useMemo(
     () => files.map((file) => (file.body.kind === "text" ? fileRows(file.body.hunks) : null)),
     [files],
@@ -382,23 +390,25 @@ export function DiffPane({
     jump.current = { file: index };
   };
 
-  const pickFile = () =>
-    onPicker({
-      placeholder: "Go to a file",
-      empty: "No files",
-      items: files.map((file, index) => ({
-        id: `diff-file/${fileKey(file)}`,
-        label: file.path,
-        detail: [
-          file.staged ? "Staged" : "",
-          STATUS_NAME[file.status],
-          `+${file.added} -${file.removed}`,
-        ]
-          .filter(Boolean)
-          .join(", "),
-        run: () => jumpToFile(index),
-      })),
-    });
+  /** Puts the keyboard in the file list's filter, showing the list for this if it's hidden. */
+  const pickFile = () => {
+    if (files.length === 0) return;
+    if (!diffShowsFiles()) setFilesForFilter(true);
+    focusFilter.current = true;
+    setFileHighlight(0);
+    // Already showing, so there's no render to wait for.
+    fileFilter.current?.focus();
+  };
+
+  /** Done going to a file: the filter empties, a list shown only for it hides, and the keyboard
+   * goes back to the diff, at the file when there is one. */
+  const leaveFilter = (to?: number) => {
+    setFileQuery("");
+    setFileHighlight(0);
+    setFilesForFilter(false);
+    if (to !== undefined) jumpToFile(to);
+    body.current?.focus();
+  };
 
   /** Shows a match, unfolding its file if it has to. */
   const reveal = (index: number | null) => {
@@ -587,7 +597,6 @@ export function DiffPane({
       wraps,
       anyOpen,
       file: currentFile && {
-        path: currentFile.path,
         folded: isFolded(current),
         viewed: isViewed(current),
       },
@@ -621,53 +630,21 @@ export function DiffPane({
       "diff-wrap": () => void toggleDiffWrap().catch(saveFailed),
     },
   );
-  useScreenPaletteItems(
-    items.flat().map(({ id, inPalette, detail, key, run }) => ({
-      id,
-      label: inPalette,
-      detail,
-      keys: keysLabel(key),
-      run,
-    })),
-  );
-  useHints("pane", [
-    hint("Scroll", "diff.up", "diff.down"),
-    hint("Files", "diff.prev_file", "diff.next_file"),
-    hint(view.query ? "Matches" : "Hunks", "diff.prev_match", "diff.next_match"),
-    hint(currentFile && isFolded(current) ? "Unfold" : "Fold", "diff.toggle_file"),
-    hint("Viewed", "diff.viewed"),
-    ...(canEdit
-      ? [
-          hint(currentFile?.staged ? "Unstage hunk" : "Stage hunk", "diff.stage_hunk"),
-          hint("Commit", "diff.commit"),
-        ]
-      : []),
-    hint("Search", "diff.search"),
-    hint("Go to file", "diff.jump_file"),
-    hint("Scope", "diff.scope"),
-    hint("Sidebar", "pane.back"),
-  ]);
-  useHints("typing", searching ? SEARCH_HINTS : committing ? COMMIT_HINTS : null);
-
   // The handler is added once, so it reaches the current state through a ref.
   const latest = {
+    pickFile,
     toggleFile,
     toggleViewed,
-    toggleAll,
     copyPath,
-    pickFile,
     openSearch,
     stepMatch,
     stepTo,
-    switchScope,
-    saveFailed,
     go,
     tops,
     current,
     currentHunk,
     stageHunk,
     stageFile,
-    stageAll,
     discardHunk,
     discardFile,
     openCommit,
@@ -708,26 +685,17 @@ export function DiffPane({
       ["diff.last", scrollTo((el) => el.scrollHeight)],
       ["diff.next_file", stepTo("[data-file]", 1)],
       ["diff.prev_file", stepTo("[data-file]", -1)],
+      ["diff.jump_file", () => now().pickFile()],
       ["diff.next_hunk", stepTo("[data-hunk]", 1)],
       ["diff.prev_hunk", stepTo("[data-hunk]", -1)],
       ["diff.toggle_file", () => now().toggleFile(now().current)],
-      ["diff.toggle_all", () => now().toggleAll()],
       ["diff.viewed", () => now().toggleViewed(now().current)],
-      ["diff.copy_path", () => now().copyPath(now().current)],
-      ["diff.jump_file", () => now().pickFile()],
       ["diff.search", () => now().openSearch()],
       ["diff.next_match", () => now().stepMatch(1)],
       ["diff.prev_match", () => now().stepMatch(-1)],
-      ["diff.scope", () => now().switchScope()],
-      ["diff.toggle_files", () => void toggleDiffFiles().catch(now().saveFailed)],
-      ["diff.toggle_wrap", () => void toggleDiffWrap().catch(now().saveFailed)],
       ["diff.stage_hunk", () => now().stageHunk(now().current, now().currentHunk)],
       ["diff.stage_file", () => now().stageFile(now().current)],
-      ["diff.stage_all", () => now().stageAll()],
-      ["diff.discard_hunk", () => now().discardHunk(now().current, now().currentHunk)],
-      ["diff.discard_file", () => now().discardFile(now().current)],
       ["diff.commit", () => now().openCommit(false)],
-      ["diff.amend", () => now().openCommit(true)],
     ];
     const onKey = (event: KeyboardEvent) => {
       // In the search box, Ctrl+D and the like edit the text.
@@ -793,9 +761,7 @@ export function DiffPane({
               role="radio"
               aria-checked={scope === kind}
               className={`diff-scope ${scope === kind ? "chosen" : ""}`}
-              tabIndex={-1}
               disabled={!online}
-              title={scope === kind ? undefined : titled("Switch", "diff.scope")}
               onClick={() => scope !== kind && switchScope()}
             >
               {label}
@@ -819,7 +785,6 @@ export function DiffPane({
         {canEdit && (
           <button
             className="button small"
-            tabIndex={-1}
             disabled={!anyStaged}
             title={titled("Commit what's staged", "diff.commit")}
             onClick={() => openCommit(false)}
@@ -829,7 +794,6 @@ export function DiffPane({
         )}
         <button
           className="icon-button"
-          tabIndex={-1}
           title={titled("Search", "diff.search")}
           aria-label="Search"
           onClick={openSearch}
@@ -840,7 +804,7 @@ export function DiffPane({
           label="Diff actions"
           className="icon-button"
           groups={items.map((group) =>
-            group.map(({ id, label, key, run }) => ({ id, label, keys: keysLabel(key), run })),
+            group.map(({ id, label, key, run }) => ({ id, label, keys: key && keysLabel(key), run })),
           )}
         >
           <Icon name="more" />
@@ -890,9 +854,6 @@ export function DiffPane({
                 if (event.nativeEvent.isComposing) return;
                 if (vim.onKeyDown(event)) return;
                 if (act(event, "commit.send", () => void commit())) return;
-                if (act(event, "commit.toggle_amend", () => setCommitting({ amend: !committing.amend }))) {
-                  return;
-                }
                 act(event, "commit.cancel", closeCommit);
               }}
             />
@@ -900,27 +861,24 @@ export function DiffPane({
           </div>
           <div className="diff-commit-foot">
             {commitError && <span className="error">{commitError}</span>}
-            <label className="diff-commit-amend" title={titled("Amend or not", "commit.toggle_amend")}>
+            <label className="diff-commit-amend">
               <input
                 type="checkbox"
-                tabIndex={-1}
                 checked={committing.amend}
                 onChange={(event) => setCommitting({ amend: event.target.checked })}
               />
               Amend the last commit
             </label>
-            <button className="button" tabIndex={-1} onClick={closeCommit}>
+            <button className="button" title={titled("Cancel", "commit.cancel")} onClick={closeCommit}>
               Cancel
-              <Keys action="commit.cancel" />
             </button>
             <button
               className="button primary"
-              tabIndex={-1}
+              title={titled(committing.amend ? "Amend" : "Commit", "commit.send")}
               disabled={commitBusy}
               onClick={() => void commit()}
             >
               {committing.amend ? "Amend" : "Commit"}
-              <Keys action="commit.send" />
             </button>
           </div>
         </div>
@@ -938,19 +896,61 @@ export function DiffPane({
         <div className={`diff-view ${wraps ? "wrap" : ""}`}>
           {showFiles && content && (
             <nav className="diff-files" aria-label="Files">
-              {groups.map((group) => (
+              <input
+                ref={fileFilter}
+                className="diff-files-filter"
+                value={fileQuery}
+                placeholder="Go to a file"
+                aria-label="Go to a file"
+                title={titled("Go to a file", "diff.jump_file")}
+                spellCheck={false}
+                autoCorrect="off"
+                autoCapitalize="off"
+                onChange={(event) => {
+                  setFileQuery(event.target.value);
+                  setFileHighlight(0);
+                }}
+                // Wandering off with nothing typed puts a list shown only for this away again.
+                onBlur={() => {
+                  if (filesForFilter && !fileQuery) setFilesForFilter(false);
+                }}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing) return;
+                  const move = (step: 1 | -1) => () => {
+                    const count = matchingFiles.length;
+                    if (count > 0) setFileHighlight((Math.min(fileHighlight, count - 1) + step + count) % count);
+                  };
+                  // Keys of groups made for typing, since others never fire from a text box: the
+                  // suggestion keys of a sheet's path box, and the diff search's Enter and Esc.
+                  if (filtering && act(event, "sheet.up", move(-1))) return;
+                  if (filtering && act(event, "sheet.down", move(1))) return;
+                  if (act(event, "diff_search.confirm", () => leaveFilter(highlightedFile))) return;
+                  act(event, "diff_search.cancel", () => leaveFilter());
+                }}
+              />
+              {filtering && matchingFiles.length === 0 && <p className="diff-files-empty">No file matches</p>}
+              {groups.map((group) => {
+                const start = index;
+                index += group.files.length;
+                const shown = group.files.filter((_, offset) => !filtering || matchingSet.has(start + offset));
+                if (shown.length === 0) return null;
+                return (
                 <div key={group.title || "files"} className="diff-file-group">
                   {group.title && <h3 className="diff-group-title">{group.title}</h3>}
-                  {group.files.map((file) => {
-                    const at = index++;
+                  {group.files.map((file, offset) => {
+                    const at = start + offset;
+                    if (filtering && !matchingSet.has(at)) return null;
                     const { folder, name } = splitPath(file.path);
                     return (
                       <button
                         key={fileKey(file)}
                         className={`diff-file-link ${at === current ? "current" : ""} ${isViewed(at) ? "viewed" : ""}`}
+                        data-highlighted={at === highlightedFile ? "" : undefined}
                         tabIndex={-1}
                         title={file.path}
-                        onClick={() => jumpToFile(at)}
+                        // Leaves the filter's box with the keyboard until the click lands.
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => (filtering || filesForFilter ? leaveFilter(at) : jumpToFile(at))}
                       >
                         <span className={`diff-status ${file.status}`} title={STATUS_NAME[file.status]}>
                           {STATUS_LETTER[file.status]}
@@ -962,7 +962,8 @@ export function DiffPane({
                     );
                   })}
                 </div>
-              ))}
+                );
+              })}
             </nav>
           )}
           <div
@@ -1089,7 +1090,7 @@ const FileView = memo(function FileView({
         <button
           className="icon-button diff-file-action"
           tabIndex={-1}
-          title={titled("Copy the path", "diff.copy_path")}
+          title="Copy the path"
           aria-label={`Copy the path of ${file.path}`}
           onClick={(event) => {
             event.stopPropagation();
@@ -1115,7 +1116,7 @@ const FileView = memo(function FileView({
               <button
                 className="button small"
                 tabIndex={-1}
-                title={titled("Discard the file's changes", "diff.discard_file")}
+                title="Discard the file's changes"
                 onClick={(event) => {
                   event.stopPropagation();
                   onDiscardFile(index);
@@ -1177,7 +1178,7 @@ const FileView = memo(function FileView({
                                 <button
                                   className="button small"
                                   tabIndex={-1}
-                                  title={titled("Discard the hunk", "diff.discard_hunk")}
+                                  title="Discard the hunk"
                                   onClick={() => onDiscardHunk(index, row.hunk)}
                                 >
                                   Discard

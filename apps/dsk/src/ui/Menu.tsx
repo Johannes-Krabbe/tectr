@@ -1,9 +1,9 @@
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { Menu } from "@base-ui/react/menu";
 import { Fragment, type ReactElement, type ReactNode, type RefObject, useRef, useState } from "react";
-import { remapNative } from "../keybinds";
-import { useHints } from "../shortcuts";
-import { PICKER_HINTS, PICKER_KEYS } from "./Picker";
+import { type ActionId, remapNative } from "../keybinds";
+import { Icon } from "./Icon";
+import { PICKER_KEYS } from "./Picker";
 import { Kbd } from "./StatusIcon";
 
 export interface MenuItem {
@@ -11,15 +11,53 @@ export interface MenuItem {
   label: string;
   /** The key that does the same, so a menu also teaches it. */
   keys?: string;
+  /** What's chosen next, for an item like "Move to" with a few places to go. It opens beside
+   * the menu rather than running, and `run` is never called. */
+  items?: MenuItem[];
   run: () => void;
 }
 
 /** Groups of items, with a line between groups. */
 export type MenuGroups = MenuItem[][];
 
-/** Only rendered while its menu is open, which is what makes the hints follow it. */
-function Popup({ groups, ran }: { groups: MenuGroups; ran: RefObject<boolean> }) {
-  useHints("overlay", PICKER_HINTS);
+/** A picker's keys, plus going into a submenu and back out of it. */
+const MENU_KEYS: [ActionId, string][] = [
+  ...PICKER_KEYS,
+  ["nav.right", "ArrowRight"],
+  ["nav.left", "ArrowLeft"],
+];
+
+function Items({ group, ran }: { group: MenuItem[]; ran: RefObject<boolean> }) {
+  return group.map((item) =>
+    item.items ? (
+      <Menu.SubmenuRoot key={item.id}>
+        <Menu.SubmenuTrigger className="list-choice" disabled={item.items.length === 0}>
+          <span className="name">{item.label}</span>
+          <Icon name="unfold" />
+        </Menu.SubmenuTrigger>
+        <Menu.Portal>
+          <Menu.Positioner side="right" align="start" sideOffset={4}>
+            <List groups={[item.items]} ran={ran} />
+          </Menu.Positioner>
+        </Menu.Portal>
+      </Menu.SubmenuRoot>
+    ) : (
+      <Menu.Item
+        key={item.id}
+        className="list-choice"
+        onClick={() => {
+          ran.current = true;
+          item.run();
+        }}
+      >
+        <span className="name">{item.label}</span>
+        {item.keys && <Kbd>{item.keys}</Kbd>}
+      </Menu.Item>
+    ),
+  );
+}
+
+function List({ groups, ran }: { groups: MenuGroups; ran: RefObject<boolean> }) {
   return (
     <Menu.Popup
       // A dropdown like any other, to `overlayOpen` in keys.ts as well as to the eye.
@@ -27,32 +65,20 @@ function Popup({ groups, ran }: { groups: MenuGroups; ran: RefObject<boolean> })
       // Dismissing it puts focus back. An item decides where focus goes itself, and putting
       // it back would take it from the sheet that item just opened.
       finalFocus={() => !ran.current}
-      onKeyDownCapture={(event) => remapNative(event, PICKER_KEYS)}
+      onKeyDownCapture={(event) => remapNative(event, MENU_KEYS)}
     >
       {groups.map((group, index) => (
         <Fragment key={group[0]?.id ?? index}>
           {index > 0 && <Menu.Separator className="menu-separator" />}
-          {group.map((item) => (
-            <Menu.Item
-              key={item.id}
-              className="palette-item"
-              onClick={() => {
-                ran.current = true;
-                item.run();
-              }}
-            >
-              <span className="name">{item.label}</span>
-              {item.keys && <Kbd>{item.keys}</Kbd>}
-            </Menu.Item>
-          ))}
+          <Items group={group} ran={ran} />
         </Fragment>
       ))}
     </Menu.Popup>
   );
 }
 
-/** A button that opens a menu of things the palette also has, for reaching them by pointer.
- * It follows the same keys as a picker once it's open. */
+/** A button that opens a menu, which is where what's done now and then lives. It's in the Tab
+ * order like any button, and follows the same keys as a picker once it's open. */
 export function MenuButton({
   label,
   className,
@@ -80,13 +106,12 @@ export function MenuButton({
         aria-label={label}
         title={title}
         disabled={disabled || groups.length === 0}
-        tabIndex={-1}
       >
         {children}
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner align="end" sideOffset={4}>
-          <Popup groups={groups} ran={ran} />
+          <List groups={groups} ran={ran} />
         </Menu.Positioner>
       </Menu.Portal>
     </Menu.Root>
@@ -128,7 +153,7 @@ export function RightClickMenu({
       </ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Positioner>
-          {groups && <Popup groups={groups} ran={ran} />}
+          {groups && <List groups={groups} ran={ran} />}
         </ContextMenu.Positioner>
       </ContextMenu.Portal>
     </ContextMenu.Root>

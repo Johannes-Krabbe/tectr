@@ -9,16 +9,22 @@ We don't care about backwards compatibility, this app is only used by me and i a
 
 # tectr
 
-A fast desktop and mobile app for running, watching and steering many coding agents in parallel, across your own machines, with no central server. It is a **keyboard-first, highly customizable power user tool**.
+A fast desktop and mobile app for running, watching and steering many coding agents in parallel, across your own machines, with no central server. It is a **mouse-first, fully keyboard-usable, highly customizable power user tool**.
 
 Today: daemon, CLI, a first desktop app and a first iOS app, with pairing and remote connections over iroh. The push relay and diffing aren't built.
 
-## Power user rules
+## Interaction rules
 
-- Every action has a rebindable key and a palette entry. Nothing is mouse-only.
-- Nothing is palette-only either: every action also has a button, a menu item or a settings row. Prefer a menu or a control that shows on hover over permanent chrome.
-- New behavior and appearance choices are settings: `~/.config/tectr/dsk.toml`, with defaults in `dsk.defaults.toml`. The Settings UI and the file stay equal, and changes apply on save.
-- Favor speed and density over hand-holding: no onboarding or explanatory filler.
+Mouse first, keyboard complete. The UI has to explain itself: if an action needs a shortcut to be found, the UI is missing something, and a key won't fix that.
+
+- **Everything has a place to press.** Every action is a button, a menu item, a row or a settings row, where you'd look for it. Prefer a menu or a control that shows on hover over permanent chrome.
+- **Everything works by keyboard through focus.** Tab and Shift+Tab reach every control in a sensible order, Enter and Space press it, arrows move inside lists, menus and pickers, Esc backs out, and focus is always visible. That's how rare things are reached, like Tab to the effort picker. A list is one Tab stop with arrows inside it, so Tab never walks a hundred rows.
+- **Shortcuts are earned.** Only what's done many times a session in the main loop gets a key: moving between topics and tabs, opening and closing tabs, writing and sending, interrupting, answering an agent, and moving through lists, text and diffs. Choosing a model or effort, pairing, renaming a device or marking everything read gets none.
+- **One key per action.** No aliases and no second key that does what another already does, globally or locally. Moving is the one exception: it takes the arrow and Vim's letter for it.
+- **No command palette, and no floating search lists.** Finding things is the UI's job: the sidebar lists topics, menus list actions. Choosing from a few is a submenu or a dropdown. A longer list lives where it belongs, inline: archived topics expand under a workspace's topics, the MCP library under its servers, a diff's files filter in the file list, and importing is a page of its own in the new tab.
+- **Keys are taught where they apply.** Tooltips and menu items name an action's key when it has one. No key chips on rows or buttons, and no line of hints.
+- Keys that exist stay rebindable, and new behavior and appearance choices are settings: `~/.config/tectr/dsk.toml`, with defaults in `dsk.defaults.toml`. The Settings UI and the file stay equal, and changes apply on save.
+- Favor speed and density over hand-holding: no onboarding or explanatory filler. Intuitive means obvious, not chatty.
 
 ## Product model
 

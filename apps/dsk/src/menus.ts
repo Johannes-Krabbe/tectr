@@ -1,22 +1,19 @@
-// What can be done to a topic, and in the app as a whole, described once. The palette, the
-// menus and a right click all read this, so none of them can offer something the others don't.
+// What can be done to a topic, in the app as a whole and in a diff, described once. The menus
+// and a right click both read this, so neither can offer something the other doesn't.
 
 import type { ActionId } from "./keybinds";
 
 export interface ActionItem<Id extends string = string> {
   id: Id;
-  /** In a menu, where what it acts on is already clear. */
   label: string;
-  /** In the palette, which has to say. */
-  inPalette: string;
-  detail?: string;
-  /** The action whose key does the same. */
-  key: ActionId;
+  /** The action whose key does the same, for the few that have one. */
+  key?: ActionId;
 }
 
-/** An item with what runs it. */
+/** An item with what runs it, or with a few to choose from instead, like where to move. */
 export interface Runnable extends ActionItem {
   run: () => void;
+  items?: { id: string; label: string; run: () => void }[];
 }
 
 export type TopicItemId =
@@ -30,130 +27,41 @@ export type TopicItemId =
 /** What a topic on a reachable device offers, in the groups a menu shows them in. Archiving
  * comes last and on its own, away from everything that's safe to press. */
 export function topicItems(topic: {
-  name: string;
-  /** The workspace it's in, whose page has its MCP servers. */
-  workspace: string;
-  /** The branch of its worktree, if it has one. */
-  branch?: string;
   /** What marking it would do, and to how many tabs. Nothing with none. */
   toggle: { unread: boolean; count: number };
-  /** Its new tab is showing, where importing has a key of its own. */
-  onNewTab: boolean;
 }): ActionItem<TopicItemId>[][] {
-  const { name, toggle } = topic;
-  const state = toggle.unread ? "unread" : "read";
-  const organize: ActionItem<TopicItemId>[] = [
-    { id: "rename-topic", label: "Rename", inPalette: `Rename ${name}`, detail: "Topic", key: "sidebar.rename" },
-  ];
+  const { toggle } = topic;
+  const organize: ActionItem<TopicItemId>[] = [{ id: "rename-topic", label: "Rename", key: "sidebar.rename" }];
   if (toggle.count > 0) {
-    organize.push({
-      id: "toggle-unread",
-      label: `Mark ${state}`,
-      inPalette: `Mark ${name} ${state}`,
-      detail: "Topic",
-      key: "sidebar.toggle_unread",
-    });
+    const state = toggle.unread ? "unread" : "read";
+    organize.push({ id: "toggle-unread", label: `Mark ${state}`, key: "sidebar.toggle_unread" });
   }
-  organize.push({
-    id: "move-topic",
-    label: "Move to another folder",
-    inPalette: `Move ${name} to another folder`,
-    detail: topic.branch,
-    key: "global.move_topic",
-  });
+  organize.push({ id: "move-topic", label: "Move to another folder" });
   return [
     organize,
     [
-      {
-        id: "open-workspace",
-        label: "Workspace",
-        inPalette: `Open ${topic.workspace}`,
-        detail: "Workspace, with its MCP servers",
-        key: "global.open_workspace",
-      },
-      {
-        id: "import-conversation",
-        label: "Import a conversation",
-        inPalette: `Import a conversation into ${name}`,
-        detail: "Claude Code or Codex",
-        key: topic.onNewTab ? "new_tab.import" : "global.import_conversation",
-      },
+      { id: "open-workspace", label: "Open its workspace" },
+      { id: "import-conversation", label: "Import a conversation" },
     ],
-    [
-      { id: "archive-topic", label: "Archive", inPalette: `Archive ${name}`, detail: "Topic", key: "sidebar.archive" },
-    ],
+    [{ id: "archive-topic", label: "Archive", key: "sidebar.archive" }],
   ];
 }
 
-export type AppItemId =
-  | "next"
-  | "mark-all-read"
-  | "archived-topics"
-  | "reconnect"
-  | "add-device"
-  | "pair-machine";
+export type AppItemId = "next" | "mark-all-read";
 
-/** What isn't about one topic. Only what would do something right now is there, and adding a
- * device always is, so there's never nothing. */
+/** What's about every topic at once. Only what would do something right now is there, so with
+ * nothing waiting or unread there's nothing, and the menu isn't shown. Devices and pairing are
+ * in Settings, and archived topics on their workspace's page. */
 export function appItems(now: {
   /** Requests waiting on reachable devices. */
   requests: number;
   /** Topics with something unread. */
   unread: number;
-  /** A device is reachable, so its archive can be asked for. */
-  online: boolean;
-  /** A device isn't connected, so trying again now could bring it back. */
-  away?: boolean;
-  /** This machine's own device, which is where pairing starts. */
-  local?: string;
 }): ActionItem<AppItemId>[][] {
   const topics: ActionItem<AppItemId>[] = [];
-  if (now.requests > 0) {
-    topics.push({ id: "next", label: "Next request", inPalette: "Next request", key: "global.next_request" });
-  }
-  if (now.unread > 0) {
-    topics.push({
-      id: "mark-all-read",
-      label: "Mark every topic read",
-      inPalette: "Mark every topic read",
-      key: "global.mark_all_read",
-    });
-  }
-  if (now.online) {
-    topics.push({
-      id: "archived-topics",
-      label: "Restore an archived topic",
-      inPalette: "Restore an archived topic",
-      key: "global.archived_topics",
-    });
-  }
-  const devices: ActionItem<AppItemId>[] = [];
-  if (now.away) {
-    devices.push({
-      id: "reconnect",
-      label: "Reconnect",
-      inPalette: "Reconnect to offline devices",
-      key: "global.reconnect",
-    });
-  }
-  devices.push(
-    {
-      id: "add-device",
-      label: "Add a device",
-      inPalette: "Add a device",
-      detail: "From another machine",
-      key: "global.add_device",
-    },
-  );
-  if (now.local !== undefined) {
-    devices.push({
-      id: "pair-machine",
-      label: "Pair another machine",
-      inPalette: `Pair another machine with ${now.local}`,
-      key: "global.pair_machine",
-    });
-  }
-  return [topics, devices];
+  if (now.requests > 0) topics.push({ id: "next", label: "Next request", key: "global.next_request" });
+  if (now.unread > 0) topics.push({ id: "mark-all-read", label: "Mark every topic read" });
+  return [topics];
 }
 
 /** Gives every item what runs it. The record has to cover every ID, so an item can't be added
@@ -185,8 +93,8 @@ export type DiffItemId =
   | "diff-files"
   | "diff-wrap";
 
-/** What a diff tab offers, in its menu and the palette. A file's items act on the file at the
- * top of the view. */
+/** What a diff tab offers, in its menu. A file's items act on the file at the top of the
+ * view. */
 export function diffItems(diff: {
   /** What switching scope would show. */
   switchTo: "uncommitted" | "branch";
@@ -194,7 +102,7 @@ export function diffItems(diff: {
   wraps: boolean;
   /** Whether any file is unfolded, which folding every file would fold. */
   anyOpen: boolean;
-  file?: { path: string; folded: boolean; viewed: boolean };
+  file?: { folded: boolean; viewed: boolean };
   /** Only uncommitted changes can be staged and committed. */
   git?: {
     /** The file at the top: whether it's the staged half, and whether its hunks go apart. */
@@ -209,9 +117,9 @@ export function diffItems(diff: {
   const all = diff.anyOpen ? "Fold every file" : "Unfold every file";
   const groups: ActionItem<DiffItemId>[][] = [
     [
-      { id: "diff-scope", label: `Show ${scope}`, inPalette: `Show ${scope}`, detail: "Diff", key: "diff.scope" },
-      { id: "diff-search", label: "Search", inPalette: "Search the diff", detail: "Diff", key: "diff.search" },
-      { id: "diff-jump", label: "Go to a file", inPalette: "Go to a file in the diff", detail: "Diff", key: "diff.jump_file" },
+      { id: "diff-scope", label: `Show ${scope}` },
+      { id: "diff-search", label: "Search", key: "diff.search" },
+      { id: "diff-jump", label: "Go to a file", key: "diff.jump_file" },
     ],
   ];
   const { file } = diff;
@@ -219,44 +127,43 @@ export function diffItems(diff: {
     const fold = file.folded ? "Unfold" : "Fold";
     const viewed = file.viewed ? "Mark not viewed" : "Mark viewed";
     groups.push([
-      { id: "diff-fold", label: `${fold} this file`, inPalette: `${fold} ${file.path}`, detail: "Diff", key: "diff.toggle_file" },
-      { id: "diff-viewed", label: viewed, inPalette: `${viewed}: ${file.path}`, detail: "Diff", key: "diff.viewed" },
-      { id: "diff-copy", label: "Copy its path", inPalette: `Copy the path of ${file.path}`, detail: "Diff", key: "diff.copy_path" },
+      { id: "diff-fold", label: `${fold} this file`, key: "diff.toggle_file" },
+      { id: "diff-viewed", label: viewed, key: "diff.viewed" },
+      { id: "diff-copy", label: "Copy its path" },
     ]);
   }
   const { git } = diff;
   if (git) {
     const items: ActionItem<DiffItemId>[] = [];
-    const where = file ? `: ${file.path}` : "";
     if (git.file) {
       const verb = git.file.staged ? "Unstage" : "Stage";
       if (git.file.hunks) {
-        items.push({ id: "diff-stage-hunk", label: `${verb} this hunk`, inPalette: `${verb} the hunk at the top${where}`, detail: "Diff", key: "diff.stage_hunk" });
+        items.push({ id: "diff-stage-hunk", label: `${verb} this hunk`, key: "diff.stage_hunk" });
       }
-      items.push({ id: "diff-stage-file", label: `${verb} this file`, inPalette: `${verb} ${file?.path ?? "the file"}`, detail: "Diff", key: "diff.stage_file" });
+      items.push({ id: "diff-stage-file", label: `${verb} this file`, key: "diff.stage_file" });
     }
     if (git.anyUnstaged || git.anyStaged) {
       const all = git.anyUnstaged ? "Stage everything" : "Unstage everything";
-      items.push({ id: "diff-stage-all", label: all, inPalette: all, detail: "Diff", key: "diff.stage_all" });
+      items.push({ id: "diff-stage-all", label: all });
     }
     items.push(
-      { id: "diff-commit", label: "Commit", inPalette: "Commit what's staged", detail: "Diff", key: "diff.commit" },
-      { id: "diff-amend", label: "Amend the last commit", inPalette: "Amend the last commit", detail: "Diff", key: "diff.amend" },
+      { id: "diff-commit", label: "Commit", key: "diff.commit" },
+      { id: "diff-amend", label: "Amend the last commit" },
     );
     groups.push(items);
     if (git.file && !git.file.staged) {
       const discard: ActionItem<DiffItemId>[] = [];
       if (git.file.hunks) {
-        discard.push({ id: "diff-discard-hunk", label: "Discard this hunk", inPalette: `Discard the hunk at the top${where}`, detail: "Diff", key: "diff.discard_hunk" });
+        discard.push({ id: "diff-discard-hunk", label: "Discard this hunk" });
       }
-      discard.push({ id: "diff-discard-file", label: "Discard this file", inPalette: `Discard the changes to ${file?.path ?? "the file"}`, detail: "Diff", key: "diff.discard_file" });
+      discard.push({ id: "diff-discard-file", label: "Discard this file" });
       groups.push(discard);
     }
   }
   groups.push([
-    { id: "diff-fold-all", label: all, inPalette: all, detail: "Diff", key: "diff.toggle_all" },
-    { id: "diff-files", label: files, inPalette: files, detail: "Diff", key: "diff.toggle_files" },
-    { id: "diff-wrap", label: wrap, inPalette: wrap, detail: "Diff", key: "diff.toggle_wrap" },
+    { id: "diff-fold-all", label: all },
+    { id: "diff-files", label: files },
+    { id: "diff-wrap", label: wrap },
   ]);
   return groups;
 }
