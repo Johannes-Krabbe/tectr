@@ -10,6 +10,7 @@ mod awake;
 mod core;
 mod folders;
 mod git;
+mod github;
 mod http;
 mod images;
 mod import;

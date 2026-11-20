@@ -57,6 +57,104 @@ pub async fn create_repo(path: &Path) -> Result<()> {
     made.map(drop)
 }
 
+/// How a clone logs in to GitHub over HTTPS.
+pub enum CloneLogin {
+    /// Whatever the machine's git config says.
+    GitConfig,
+    /// `gh`, like `gh repo clone` does, since `gh auth login` doesn't always set git up.
+    Gh,
+}
+
+/// Clones `url` into `path`, which mustn't exist yet, telling `progress` what git is doing
+/// and how far along it is. Git can't ask for a password, because nobody would see it ask, so
+/// a missing login fails with git's message. Anything that fails takes the folder away again.
+pub async fn clone(
+    url: &str,
+    path: &Path,
+    login: CloneLogin,
+    mut progress: impl FnMut(&str, u8),
+) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut command = Command::new("git");
+    if matches!(login, CloneLogin::Gh) {
+        // The empty value drops the helpers configured before it, as `gh` itself does.
+        command.args([
+            "-c",
+            "credential.https://github.com.helper=",
+            "-c",
+            "credential.https://github.com.helper=!gh auth git-credential",
+        ]);
+    }
+    let mut child = command
+        .args(["clone", "--progress", "--"])
+        .arg(url)
+        .arg(path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("failed to run git. Is it installed?")?;
+
+    let mut stderr = child.stderr.take().context("git's output went missing")?;
+    let mut said = Vec::new();
+    let mut pending = Vec::new();
+    let mut buffer = [0u8; 4096];
+    loop {
+        let read = stderr.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        pending.extend_from_slice(&buffer[..read]);
+        // Git redraws its progress with carriage returns, and ends what it says with newlines.
+        while let Some(end) = pending.iter().position(|&b| b == b'\r' || b == b'\n') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            let line = String::from_utf8_lossy(&line[..line.len() - 1]);
+            match clone_progress(&line) {
+                Some((phase, percent)) => progress(phase, percent),
+                None if !line.trim().is_empty() => said.push(line.trim().to_owned()),
+                None => {}
+            }
+        }
+    }
+    said.extend(
+        Some(String::from_utf8_lossy(&pending).trim().to_owned()).filter(|l| !l.is_empty()),
+    );
+    let status = child.wait().await?;
+    if status.success() {
+        return Ok(());
+    }
+    if tokio::fs::symlink_metadata(path).await.is_ok() {
+        let _ = tokio::fs::remove_dir_all(path).await;
+    }
+    let reason = said
+        .iter()
+        .filter(|line| !line.starts_with("Cloning into"))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if reason.is_empty() {
+        bail!("git clone failed with {status}");
+    }
+    bail!("{reason}");
+}
+
+/// Reads one of git's progress lines, like `Receiving objects:  42% (21/50)`, as what it's
+/// doing and how far along it is.
+fn clone_progress(line: &str) -> Option<(&str, u8)> {
+    let line = line.trim().trim_start_matches("remote:").trim_start();
+    let (phase, rest) = line.split_once(':')?;
+    let percent = rest.trim_start().split_once('%')?.0;
+    let percent: u8 = percent.trim().parse().ok()?;
+    Some((phase.trim(), percent.min(100)))
+}
+
 /// The branch checked out in `repo`, or `HEAD` when it's detached.
 pub async fn current_branch(repo: &Path) -> Result<String> {
     let branch = git(repo, &["branch".as_ref(), "--show-current".as_ref()]).await?;
@@ -287,6 +385,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(branch, "tectr/new");
+    }
+
+    #[test]
+    fn clone_progress_reads_what_git_is_doing() {
+        assert_eq!(
+            clone_progress("Receiving objects:  42% (21/50), 1.2 MiB | 3 MiB/s"),
+            Some(("Receiving objects", 42))
+        );
+        assert_eq!(
+            clone_progress("remote: Counting objects: 100% (7/7), done."),
+            Some(("Counting objects", 100))
+        );
+        assert_eq!(clone_progress("Cloning into '/tmp/x'..."), None);
+        assert_eq!(clone_progress("fatal: repository 'x' does not exist"), None);
+        assert_eq!(
+            clone_progress("remote: Enumerating objects: 7, done."),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn clone_copies_a_repo_and_cleans_up_after_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        create_repo(&source).await.unwrap();
+
+        let copy = dir.path().join("nested/copy");
+        clone(
+            &source.display().to_string(),
+            &copy,
+            CloneLogin::GitConfig,
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            head_commit(&copy).await.unwrap(),
+            head_commit(&source).await.unwrap()
+        );
+
+        let failed = dir.path().join("failed");
+        let error = clone(
+            &dir.path().join("missing").display().to_string(),
+            &failed,
+            CloneLogin::GitConfig,
+            |_, _| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("does not exist"), "{error:#}");
+        assert!(!failed.exists());
     }
 
     #[tokio::test]

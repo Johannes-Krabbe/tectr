@@ -1,7 +1,7 @@
 // How typing a path on another machine behaves: which folder to ask that machine about, what
 // to suggest from its answer, and what the keys do. The webview can't see that machine's disk.
 
-import type { Folder } from "./engine";
+import type { Folder, Repo } from "./engine";
 
 /** What the input opens with, so the home folder's contents are there to choose from. */
 export const STARTING_PATH = "~/";
@@ -11,8 +11,11 @@ export interface Suggestion {
   typed: string;
   /** Absolute, as the daemon reported it. */
   path: string;
-  /** Already a workspace, a closed workspace that adding opens again, or just a repo. */
-  tag: "added" | "closed" | "git" | null;
+  /** Already a workspace, a closed workspace that adding opens again, just a repo, a GitHub
+   * repository to clone there, or a new folder to make with `git init`. */
+  tag: "added" | "closed" | "git" | "clone" | "new" | null;
+  /** What a clone row clones. */
+  repo?: Repo;
 }
 
 const canList = (path: string) => path.startsWith("/") || path.startsWith("~/");
@@ -54,25 +57,54 @@ export function suggest(
     }));
 }
 
-/** Whether the path names a repository to add or a folder to make for a new one. */
-export type PathGoal = "open" | "create";
+/** How many repositories to offer at once, so they never bury the folders. Typing more narrows
+ * them down. */
+export const MOST_CLONES = 5;
 
-/** Typing part of a name offers the first match. A finished folder offers nothing, which is
- * what lets the next Enter add it. A new folder's name is usually the start of no folder, or
- * of one it mustn't be confused with, so typing it offers nothing either. */
-export const highlightWhileTyping = (
-  partial: string | undefined,
-  goal: PathGoal = "open",
-): number | null => (partial && goal === "open" ? 0 : null);
+/** The device's GitHub repositories whose name starts with what's typed, offered for cloning
+ * into the folder being typed in, under its folders. A repository that already has a folder of
+ * its name there is left out, since that folder is its row. Nothing typed offers none, or every
+ * folder would list the same repositories. */
+export function suggestClones(
+  parent: string,
+  partial: string,
+  repos: Repo[],
+  folders: Folder[],
+  most = MOST_CLONES,
+): Suggestion[] {
+  if (!partial) return [];
+  const start = partial.toLowerCase();
+  // Compared ignoring case, because the Mac's disk does.
+  const taken = new Set(folders.map((folder) => folder.name.toLowerCase()));
+  return repos
+    .filter((repo) => {
+      const name = repo.name.toLowerCase();
+      return name.startsWith(start) && !taken.has(name);
+    })
+    .slice(0, most)
+    .map((repo) => ({ typed: `${parent}${repo.name}`, path: `${parent}${repo.name}`, tag: "clone", repo }));
+}
+
+/** Offers to make the typed name a new folder with a fresh repository in it, under the folders
+ * and repositories, unless a folder of that name is there already. */
+export function suggestNew(parent: string, partial: string, folders: Folder[]): Suggestion[] {
+  const name = partial.trim();
+  if (!name || name === "." || name === "..") return [];
+  const taken = folders.some((folder) => folder.name.toLowerCase() === name.toLowerCase());
+  return taken ? [] : [{ typed: `${parent}${name}`, path: `${parent}${name}`, tag: "new" }];
+}
+
+/** Typing part of a name offers the first row: a folder starting with it, else a repository to
+ * clone, else a new folder. A finished folder offers nothing, which is what lets the next
+ * Enter add it. */
+export const highlightWhileTyping = (partial: string | undefined): number | null =>
+  partial ? 0 : null;
 
 /** Whether Enter goes into the highlighted folder rather than submitting. A folder that's
- * already a workspace, open or closed, has nothing further in to open, so Enter opens it.
- * Making a folder always goes in, since the new one goes inside whatever folder was picked. */
-export const completesOnEnter = (goal: PathGoal, chosen: Suggestion | undefined): boolean =>
-  chosen !== undefined && (goal === "create" || (chosen.tag !== "added" && chosen.tag !== "closed"));
-
-/** A new folder needs a name after the folder it goes in. */
-export const canCreate = (typed: string): boolean => Boolean(splitPath(typed)?.partial);
+ * already a workspace, open or closed, has nothing further in to open, so Enter opens it, and
+ * a clone's or a new folder's row isn't there yet, so Enter makes it. */
+export const completesOnEnter = (chosen: Suggestion | undefined): boolean =>
+  chosen !== undefined && (chosen.tag === null || chosen.tag === "git");
 
 /** Moves through the rows, with "nothing highlighted" as one more stop between the last and
  * the first, so what's typed can always be submitted as it is. */

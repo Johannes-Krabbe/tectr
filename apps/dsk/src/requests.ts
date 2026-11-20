@@ -2,8 +2,10 @@
 // same press of a key or a button, so it goes out once and every sender gets that one answer.
 // Otherwise a device that's slow to answer gets ten terminals for ten impatient presses.
 
-/** Asked for in passing while something else is shown, so nobody is waiting on them. */
-const IN_PASSING = new Set(["read_image", "list_folders"]);
+/** Asked for in passing while something else is shown, or slow on purpose with their progress
+ * shown elsewhere, like a clone in the sidebar, so a long wait for them isn't the device being
+ * slow. */
+const IN_PASSING = new Set(["read_image", "list_folders", "list_repos", "clone_workspace"]);
 
 interface Flying<O> {
   machineId: string;

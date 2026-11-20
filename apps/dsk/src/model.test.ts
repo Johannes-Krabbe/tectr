@@ -12,6 +12,7 @@ import type {
   Workspace,
 } from "./engine";
 import {
+  cloneProgress,
   awakeUntil,
   parseDuration,
   timeLeft,
@@ -317,4 +318,17 @@ test("what's left of keeping awake rounds up and drops empty units", () => {
   assert.equal(awakeUntil(state, 4_000), 5_000);
   assert.equal(awakeUntil(state, 5_000), null, "a time that has passed is over before the daemon says so");
   assert.equal(awakeUntil({ ...state, awake_until_ms: undefined }, 0), null);
+});
+
+test("a clone says what git is doing and how far along, or that it failed", () => {
+  const clone = { name: "tectr", path: "/home/me/tectr", url: "https://github.com/me/tectr.git" };
+  assert.deepEqual(cloneProgress(clone), { text: "Cloning", failed: false });
+  assert.deepEqual(cloneProgress({ ...clone, phase: "Receiving objects", percent: 42 }), {
+    text: "Receiving 42%",
+    failed: false,
+  });
+  assert.deepEqual(cloneProgress({ ...clone, phase: "Receiving objects", percent: 42, error: "no" }), {
+    text: "Failed",
+    failed: true,
+  });
 });

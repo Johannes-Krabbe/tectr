@@ -917,6 +917,7 @@ mod tests {
             mcp_servers: vec![],
             paired_clients: vec![],
             pairing_requests: vec![],
+            clones: vec![],
         };
         state.mcp_servers = vec![
             server(

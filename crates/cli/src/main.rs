@@ -52,6 +52,17 @@ enum Cmd {
         #[arg(long)]
         on: Option<String>,
     },
+    /// Clone a repository into a new folder and add it as a workspace.
+    CloneWorkspace {
+        /// The repository's address, as git clone takes it.
+        url: String,
+        /// Where it goes. Defaults to a folder named after the repository, here.
+        path: Option<String>,
+        /// The machine to clone it on, by name or ID prefix. Needed only with
+        /// more than one daemon.
+        #[arg(long)]
+        on: Option<String>,
+    },
     /// Choose a device's name. An empty name goes back to its hostname.
     RenameDevice {
         name: String,
@@ -271,6 +282,20 @@ async fn main() -> Result<()> {
                 Command::AddWorkspace { path }
             };
             let output = engine.request(&machine, command).await?;
+            if let CommandOutput::Workspace { workspace } = output {
+                println!("workspace {} {}", short(&workspace.id.0), workspace.path);
+            }
+        }
+        Cmd::CloneWorkspace { url, path, on } => {
+            let machine = choose_machine(&engine, on.as_deref())?;
+            let path = match path {
+                Some(path) => absolute(&path)?,
+                None => absolute(repo_name(&url).context("name the folder to clone into")?)?,
+            };
+            eprintln!("cloning {url} into {path}");
+            let output = engine
+                .request(&machine, Command::CloneWorkspace { url, path })
+                .await?;
             if let CommandOutput::Workspace { workspace } = output {
                 println!("workspace {} {}", short(&workspace.id.0), workspace.path);
             }
@@ -709,6 +734,13 @@ fn absolute(path: &str) -> Result<String> {
         .unwrap_or(full)
         .display()
         .to_string())
+}
+
+/// The folder name `git clone` would choose for `url`.
+fn repo_name(url: &str) -> Option<&str> {
+    let last = url.trim_end_matches('/').rsplit(['/', ':']).next()?;
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    (!name.is_empty()).then_some(name)
 }
 
 fn short(id: &str) -> &str {
@@ -1231,5 +1263,19 @@ async fn chat(engine: &Engine, session: &SessionRef) -> Result<()> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clone_is_named_like_git_names_it() {
+        assert_eq!(repo_name("https://github.com/me/tectr.git"), Some("tectr"));
+        assert_eq!(repo_name("git@github.com:me/tectr.git"), Some("tectr"));
+        assert_eq!(repo_name("https://github.com/me/tectr/"), Some("tectr"));
+        assert_eq!(repo_name("/srv/repos/tectr"), Some("tectr"));
+        assert_eq!(repo_name(".git"), None);
     }
 }

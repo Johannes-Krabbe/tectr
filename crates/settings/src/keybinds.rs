@@ -76,11 +76,6 @@ pub const GROUPS: &[Group] = &[
         about: "In the sheets for adding a workspace, renaming and deleting.",
     },
     Group {
-        id: "new_workspace",
-        title: "Choosing a new workspace's MCP servers",
-        about: "In the last step of adding a workspace, where typing filters the servers.",
-    },
-    Group {
         id: "picker",
         title: "Lists and menus",
         about: "While a dropdown, a menu or a list to choose from is open.",
@@ -385,22 +380,6 @@ pub const ACTIONS: &[Action] = &[
     follows("picker.confirm", "Choose", "nav.confirm"),
     follows("picker.cancel", "Close", "nav.back"),
     once("mcp_form.save", "Save, from any field", &["mod+enter"]),
-    once(
-        "new_workspace.check",
-        "Check or uncheck the server",
-        &["tab"],
-    ),
-    // Typing goes to the filter here, so the rest of the step needs keys with a modifier.
-    once(
-        "new_workspace.profile",
-        "Switch to the server's next profile",
-        &["mod+p"],
-    ),
-    once(
-        "new_workspace.copy_from",
-        "Check the servers of another workspace",
-        &["mod+shift+c"],
-    ),
     follows("sections.up", "Previous section", "nav.up"),
     follows("sections.down", "Next section", "nav.down"),
     follows("sections.first", "First section", "nav.first"),
@@ -497,7 +476,6 @@ const TEXT_GROUPS: &[&str] = &[
     "sheet",
     "picker",
     "mcp_form",
-    "new_workspace",
     "diff_search",
     "commit",
 ];

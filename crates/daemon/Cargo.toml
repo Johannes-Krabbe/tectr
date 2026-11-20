@@ -42,7 +42,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 toml_edit.workspace = true
-tokio = { workspace = true, features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite.workspace = true
 iroh.workspace = true
 # Parses the timestamps in Claude Code and Codex conversations.

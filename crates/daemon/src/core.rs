@@ -38,6 +38,7 @@ mod fork;
 
 use crate::git::actions::HunkAction;
 use diff::DiffAction;
+mod clones;
 mod import;
 mod mcp;
 mod remote;
@@ -166,6 +167,9 @@ pub struct Core {
     pairing: Mutex<remote::Pairings>,
     /// Wakes [`Core::expire_keep_awake`] when the keep-awake timer changes.
     awake_timer: tokio::sync::Notify,
+    repos: clones::ListedRepos,
+    /// `gh` last listed repos without failing.
+    gh_works: AtomicBool,
 }
 
 /// What `Core::open` needs besides the data directory.
@@ -255,6 +259,8 @@ impl Core {
             endpoint: tokio::sync::OnceCell::new(),
             pairing: Mutex::new(remote::Pairings::default()),
             awake_timer: tokio::sync::Notify::new(),
+            repos: tokio::sync::Mutex::new(None),
+            gh_works: AtomicBool::new(false),
         }))
     }
 
@@ -307,6 +313,9 @@ impl Core {
                 force,
             } => self.remove_workspace(&workspace_id, force).await,
             Command::ListFolders { path } => list_folders(&path).await,
+            Command::ListRepos => self.list_repos().await,
+            Command::CloneWorkspace { url, path } => self.clone_workspace(&url, &path).await,
+            Command::DismissClone { path } => self.dismiss_clone(&path),
             Command::CreateTopic {
                 workspace_id,
                 name,
@@ -2750,6 +2759,70 @@ mod tests {
             "{}",
             again.message
         );
+    }
+
+    #[tokio::test]
+    async fn a_clone_shows_while_it_goes_then_becomes_a_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        let core = Core::open(&data, options("host", None)).unwrap();
+        let source = dir.path().join("source");
+        git::create_repo(&source).await.unwrap();
+        let url = source.display().to_string();
+        let clone = |path: &str| Command::CloneWorkspace {
+            url: url.clone(),
+            path: dir.path().join(path).display().to_string(),
+        };
+
+        let (_, mut changes) = core.snapshot_and_subscribe();
+        let Ok(CommandOutput::Workspace { workspace }) = core.handle(clone("copy")).await else {
+            panic!("no workspace");
+        };
+        assert_eq!(workspace.name, "copy");
+        let mut shown = vec![];
+        while let Ok(Signal::State(change)) = changes.try_recv() {
+            if let StateChange::ClonesChanged { clones } = change.as_ref() {
+                shown.push(clones.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+            }
+        }
+        assert_eq!(shown.first(), Some(&vec!["copy".to_owned()]));
+        assert_eq!(shown.last(), Some(&vec![]));
+        let state = core.snapshot_and_subscribe().0;
+        assert!(state.clones.is_empty());
+        assert!(state.workspaces.iter().any(|w| w.id == workspace.id));
+
+        let taken = core.handle(clone("copy")).await.unwrap_err();
+        assert!(
+            taken.message.contains("already exists"),
+            "{}",
+            taken.message
+        );
+
+        let missing = Command::CloneWorkspace {
+            url: dir.path().join("missing").display().to_string(),
+            path: dir.path().join("failed").display().to_string(),
+        };
+        let failed = core.handle(missing.clone()).await.unwrap_err();
+        assert!(
+            failed.message.starts_with("Couldn't clone"),
+            "{}",
+            failed.message
+        );
+        assert!(!dir.path().join("failed").exists());
+        let clones = core.snapshot_and_subscribe().0.clones;
+        assert_eq!(clones.len(), 1);
+        assert_eq!(clones[0].error.as_ref(), Some(&failed.message));
+
+        // Trying again replaces it rather than counting as a clone already going.
+        core.handle(missing).await.unwrap_err();
+        assert_eq!(core.snapshot_and_subscribe().0.clones.len(), 1);
+        let path = clones[0].path.clone();
+        core.handle(Command::DismissClone { path: path.clone() })
+            .await
+            .unwrap();
+        assert!(core.snapshot_and_subscribe().0.clones.is_empty());
+        assert!(core.handle(Command::DismissClone { path }).await.is_err());
     }
 
     #[tokio::test]

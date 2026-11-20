@@ -13,6 +13,7 @@ import type {
   ProviderEffort,
   ProviderModel,
   PromptImage,
+  RepoClone,
   Session,
   SessionEvent,
   Terminal,
@@ -64,6 +65,15 @@ export function connectionProblem(device: Device): string | undefined {
 
 /** The home folder as `~`, which is how people read their own paths. */
 export const homeShort = (path: string) => path.replace(/^\/(Users|home)\/[^/]+(?=\/|$)/, "~");
+
+/** How a clone is going, in a few words: what git is doing and how far along, or that it
+ * failed. Git's phases start with what they do, like "Receiving objects", so the first word is
+ * enough. */
+export function cloneProgress(clone: RepoClone): { text: string; failed: boolean } {
+  if (clone.error) return { text: "Failed", failed: true };
+  if (clone.phase === undefined || clone.percent === undefined) return { text: "Cloning", failed: false };
+  return { text: `${clone.phase.split(" ")[0]} ${clone.percent}%`, failed: false };
+}
 
 /** What a device's row and page say beside its name, and whether it's something wrong. Nothing
  * while it's online with nothing to say. */

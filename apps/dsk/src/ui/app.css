@@ -204,6 +204,9 @@ button.row:hover { background: var(--color-surface-raised); }
 .row.workspace { padding-left: var(--space-lg); }
 /* A div, because its + is a button, but it opens its page like a topic row does. */
 .row.workspace:hover:not(.current) { background: var(--color-surface-raised); }
+/* Becomes a workspace once it's cloned. Until then it isn't one, so it reads quieter. */
+.row.clone { padding-left: var(--space-lg); color: var(--color-text-tertiary); }
+.row.clone:hover { background: var(--color-surface-raised); }
 .row.topic { padding-left: var(--space-xl); color: var(--color-text-primary); font: var(--text-body); }
 .row.topic.read .name,
 .row.topic.stale .name { color: var(--color-text-tertiary); }
@@ -2174,6 +2177,13 @@ textarea.sheet-name {
 
 .sheet-error { padding: var(--space-xs) var(--space-lg); }
 
+/* Why a list has nothing in it, when that isn't an error. */
+.sheet-note {
+  padding: var(--space-xs) var(--space-lg);
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
 .sheet-losses {
   margin: 0;
   padding: var(--space-xs) var(--space-lg) 0;
@@ -2485,6 +2495,29 @@ textarea.sheet-input {
 .device-row-menu:has([data-popup-open]) { opacity: 1; }
 
 .workspace-note { padding: var(--space-xs) var(--space-sm); }
+
+/* A workspace being cloned: git's progress through its current phase, or why it failed. */
+.clone-status {
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+}
+
+.clone-bar {
+  height: 4px;
+  overflow: hidden;
+  background: var(--color-surface-raised);
+  border-radius: var(--radius-xs);
+}
+
+.clone-bar-fill {
+  height: 100%;
+  background: var(--color-accent-solid);
+}
+
+.clone-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
 
 .workspace-error {
   padding: var(--space-xs) var(--space-sm);

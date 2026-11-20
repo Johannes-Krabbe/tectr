@@ -1,8 +1,17 @@
 import { useEffect, useState } from "react";
-import { type ClosedWorkspace, type CommandOutput, type Device, errorText, request, type Workspace } from "./engine";
+import {
+  type ClosedWorkspace,
+  type CommandOutput,
+  type Device,
+  errorText,
+  type RepoClone,
+  request,
+  type Workspace,
+} from "./engine";
 import { KeepAwakeFor } from "./KeepAwake";
 import {
   archiveLosses,
+  cloneProgress,
   connectionProblem,
   deviceName,
   deviceStatus,
@@ -47,6 +56,7 @@ export function DevicePage({
   const online = isOnline(device);
   const name = deviceName(device);
   const workspaces = state?.workspaces ?? [];
+  const clones = state?.clones ?? [];
   const now = useNow(state?.awake_until_ms !== undefined);
   const status = deviceStatus(device, now);
   const [error, setError] = useState<string | null>(null);
@@ -227,6 +237,46 @@ export function DevicePage({
     );
   };
 
+  // A clone that fails again says so in its own row, through the daemon, so there's nothing to
+  // catch here. Dismissing only fails when it's already gone.
+  const cloneAgain = (clone: RepoClone) => {
+    if (!machineId || !online) return;
+    request(machineId, { command: "clone_workspace", url: clone.url, path: clone.path }).catch(() => {});
+  };
+  const dismissClone = (clone: RepoClone) => {
+    if (!machineId || !online) return;
+    request(machineId, { command: "dismiss_clone", path: clone.path }).catch(() => {});
+  };
+
+  const cloneRows = () => (
+    <div className="settings-rows">
+      {clones.map((clone) => {
+        const progress = cloneProgress(clone);
+        return (
+          <SettingRow
+            key={clone.path}
+            label={clone.name}
+            detail={homeShort(clone.path)}
+            dim
+            meta={<span className={progress.failed ? "meta bad" : "meta"}>{progress.text}</span>}
+            error={clone.error}
+          >
+            {progress.failed && (
+              <>
+                <button className="button small" disabled={!online} onClick={() => dismissClone(clone)}>
+                  Dismiss
+                </button>
+                <button className="button small" disabled={!online} onClick={() => cloneAgain(clone)}>
+                  Try again
+                </button>
+              </>
+            )}
+          </SettingRow>
+        );
+      })}
+    </div>
+  );
+
   const workspaceMenuAt = (target: Element): MenuGroups => {
     const id = target.closest<HTMLElement>("[data-workspace]")?.dataset.workspace;
     return id && online ? workspaceMenu(id) : [];
@@ -290,6 +340,7 @@ export function DevicePage({
               </button>
             </div>
           )}
+          {clones.length > 0 && cloneRows()}
           <button
             className="workspace-disclosure"
             aria-expanded={closedOpen}

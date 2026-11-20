@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Folder } from "./engine";
+import type { Folder, Repo } from "./engine";
 import {
   afterPaste,
-  canCreate,
   completesOnEnter,
   highlightWhileTyping,
   isLoopback,
@@ -11,6 +10,8 @@ import {
   splitPath,
   STARTING_PATH,
   suggest,
+  suggestClones,
+  suggestNew,
 } from "./pathInput.ts";
 
 const folder = (name: string, is_repo = false): Folder => ({
@@ -84,27 +85,26 @@ test("typing part of a name highlights the first match, and a finished folder no
   assert.equal(highlightWhileTyping(undefined), null);
 });
 
-test("typing a new folder's name highlights nothing, so Enter makes it", () => {
-  assert.equal(highlightWhileTyping("D", "create"), null);
+test("Enter goes into a folder, and makes or opens anything else", () => {
+  type Tag = "added" | "closed" | "git" | "clone" | "new" | null;
+  const row = (tag: Tag) => ({ typed: "~/a/", path: "/home/me/a", tag });
+  assert.equal(completesOnEnter(row(null)), true);
+  assert.equal(completesOnEnter(row("git")), true);
+  assert.equal(completesOnEnter(row("added")), false);
+  assert.equal(completesOnEnter(row("closed")), false);
+  assert.equal(completesOnEnter(row("clone")), false);
+  assert.equal(completesOnEnter(row("new")), false);
+  assert.equal(completesOnEnter(undefined), false);
 });
 
-test("Enter goes into a folder, except one that's already a workspace when opening", () => {
-  const row = (tag: "added" | "closed" | "git" | null) => ({ typed: "~/a/", path: "/home/me/a", tag });
-  assert.equal(completesOnEnter("open", row(null)), true);
-  assert.equal(completesOnEnter("open", row("git")), true);
-  assert.equal(completesOnEnter("open", row("added")), false);
-  assert.equal(completesOnEnter("open", row("closed")), false);
-  assert.equal(completesOnEnter("create", row("added")), true);
-  assert.equal(completesOnEnter("open", undefined), false);
-  assert.equal(completesOnEnter("create", undefined), false);
-});
-
-test("a new folder needs a name after its parent", () => {
-  assert.equal(canCreate("~/Developer/new"), true);
-  assert.equal(canCreate("/srv/new "), true);
-  assert.equal(canCreate("~/Developer/"), false);
-  assert.equal(canCreate("~/"), false);
-  assert.equal(canCreate("new"), false);
+test("a name that's no folder there yet is offered as a new folder", () => {
+  const developer = [folder("tectr", true)];
+  assert.deepEqual(suggestNew("~/Developer/", "fresh", developer), [
+    { typed: "~/Developer/fresh", path: "~/Developer/fresh", tag: "new" },
+  ]);
+  assert.deepEqual(suggestNew("~/Developer/", "Tectr", developer), []);
+  assert.deepEqual(suggestNew("~/Developer/", "", developer), []);
+  assert.deepEqual(suggestNew("~/Developer/", "..", developer), []);
 });
 
 test("moving passes through having nothing highlighted", () => {
@@ -134,4 +134,38 @@ test("only an address on this machine counts as local", () => {
   assert.ok(!isLoopback("ws://macbook.tailnet.ts.net:7767"));
   assert.ok(!isLoopback("ws://127.0.0.1.example.com:7767"));
   assert.ok(!isLoopback("not a url"));
+});
+
+const repo = (full_name: string): Repo => {
+  const name = full_name.split("/")[1] ?? full_name;
+  return { full_name, name, url: `https://github.com/${full_name}.git` };
+};
+
+const REPOS = [
+  repo("neotaste/neotaste-backend"),
+  repo("neotaste/neotaste-monorepo"),
+  repo("me/tectr"),
+  repo("neotaste/neotaste-ios"),
+];
+
+test("repositories starting with what's typed are offered for cloning into the folder", () => {
+  const developer = [folder("neotaste-backend", true), folder("tectr", true)];
+  const rows = suggestClones("~/Developer/", "neo", REPOS, developer);
+  assert.deepEqual(
+    rows.map((row) => [row.typed, row.repo?.full_name]),
+    [
+      ["~/Developer/neotaste-monorepo", "neotaste/neotaste-monorepo"],
+      ["~/Developer/neotaste-ios", "neotaste/neotaste-ios"],
+    ],
+  );
+  assert.ok(rows.every((row) => row.tag === "clone"));
+});
+
+test("a repository whose folder is there already isn't offered, whatever its case", () => {
+  assert.deepEqual(suggestClones("~/", "Te", REPOS, [folder("Tectr")]), []);
+});
+
+test("nothing typed offers no repositories, and they never bury the folders", () => {
+  assert.deepEqual(suggestClones("~/", "", REPOS, []), []);
+  assert.equal(suggestClones("~/", "n", REPOS, [], 2).length, 2);
 });

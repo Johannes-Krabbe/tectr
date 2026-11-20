@@ -20,11 +20,9 @@ import {
   joinArgs,
   leftOut,
   libraryServers,
-  matchesServer,
   mcpSummary,
   nameProblem,
   newEntry,
-  nextProfile,
   parsePairs,
   profileLabel,
   profileNameProblem,
@@ -148,14 +146,6 @@ test("copying adds the other workspace's servers this one lacks, as they are the
   assert.deepEqual(copiedMcp(undefined, undefined, library), {});
 });
 
-test("switching profiles goes through each, then none, then around", () => {
-  assert.equal(nextProfile(notion, undefined), "personal");
-  assert.equal(nextProfile(notion, "personal"), "work");
-  assert.equal(nextProfile(notion, "work"), null);
-  assert.equal(nextProfile(notion, "deleted"), null);
-  assert.equal(nextProfile(server("a"), null), null);
-});
-
 test("a profile shows by name, and a missing one as none", () => {
   assert.equal(profileLabel(notion, "work"), "work");
   assert.equal(profileLabel(notion, undefined), "No profile");
@@ -188,13 +178,6 @@ test("a profile's name is needed, and only once per server", () => {
   assert.equal(profileNameProblem("client", notion), null);
   assert.equal(valuesLabel(notion), "Headers");
   assert.equal(valuesLabel(server("s")), "Environment");
-});
-
-test("searching matches every word against the name and what it runs", () => {
-  assert.ok(matchesServer(notion, "not"));
-  assert.ok(matchesServer(notion, "notion example"));
-  assert.ok(!matchesServer(notion, "notion github"));
-  assert.ok(matchesServer(server("files"), ""));
 });
 
 test("connectors are their agent's: no profiles, no editing, no removing", () => {

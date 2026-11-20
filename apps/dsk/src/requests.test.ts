@@ -81,6 +81,7 @@ test("what's asked in passing isn't waited on", () => {
   const { requests } = device();
   void requests.request("m1", { command: "read_image" });
   void requests.request("m1", { command: "list_folders" });
+  void requests.request("m1", { command: "clone_workspace" });
   assert.equal(requests.waitingSince("m1"), null);
 });
 

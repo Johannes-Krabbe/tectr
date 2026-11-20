@@ -6,7 +6,6 @@ import {
   closeNewTab,
   goTo,
   landingAfterArchiving,
-  landingIn,
   type Navigation,
   NEW_TAB,
   openNewTab,
@@ -36,21 +35,6 @@ test("something unreadable counts as a new client", () => {
   for (const stored of ["{not json", "null", "3", '"text"']) {
     assert.deepEqual(parseNavigation(stored), empty);
   }
-});
-
-test("going to a workspace lands on the topic last open in it", () => {
-  const workspace = { id: "w", topics: [{ id: "t" }, { id: "t2" }, { id: "t3" }] };
-  assert.deepEqual(landingIn(goTo(empty, topic, "w"), "m", workspace), topic);
-});
-
-test("a workspace not visited here lands on its newest topic", () => {
-  const workspace = { id: "w", topics: [{ id: "t0" }, { id: "t" }] };
-  assert.deepEqual(landingIn(empty, "m", workspace), topic);
-  assert.deepEqual(landingIn(goTo(empty, other, "w"), "m", workspace), topic);
-});
-
-test("a workspace with no topics lands on the new topic screen", () => {
-  assert.deepEqual(landingIn(empty, "m", { id: "w", topics: [] }), newTopic);
 });
 
 test("a remembered view missing newer fields gets their defaults", () => {

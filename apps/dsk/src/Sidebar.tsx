@@ -3,6 +3,7 @@ import type { Device, Workspace } from "./engine";
 import type { View } from "./navigation";
 import { act, titled } from "./keybinds";
 import {
+  cloneProgress,
   connectionProblem,
   deviceName,
   deviceStatus,
@@ -34,10 +35,11 @@ interface Props {
 
 /** The view a row shows as soon as the keyboard reaches it. */
 function viewOf(row: HTMLElement): View | null {
-  const { machine, topic, workspace } = row.dataset;
+  const { machine, topic, workspace, clone } = row.dataset;
   if (!machine) return null;
   if (topic) return { kind: "topic", machineId: machine, topicId: topic };
   if (workspace) return { kind: "workspace", machineId: machine, workspaceId: workspace };
+  if (clone) return { kind: "clone", machineId: machine, url: clone };
   return row.matches(".device") ? { kind: "device", machineId: machine } : null;
 }
 
@@ -61,7 +63,7 @@ function onSidebarKey(event: KeyboardEvent<HTMLElement>, onPreview: (view: View 
   const parent = () =>
     row.matches(".topic")
       ? row.parentElement?.querySelector<HTMLElement>(".row.workspace[data-nav]")
-      : row.matches(".workspace")
+      : row.matches(".workspace, .clone")
         ? row.closest("section")?.querySelector<HTMLElement>(".row.device[data-nav]")
         : null;
   // Half of however many rows fit, like Ctrl+D and Ctrl+U move half a screen in Vim.
@@ -247,6 +249,26 @@ export function Sidebar({
                     );
                   })}
                 </div>
+                );
+              })}
+              {device.state?.clones?.map((clone) => {
+                const progress = cloneProgress(clone);
+                const shown =
+                  view?.kind === "clone" && view.machineId === machineId && view.url === clone.url;
+                return (
+                  <div
+                    key={clone.path}
+                    className={`row clone ${shown ? "current" : ""}`}
+                    title={clone.error ?? clone.url}
+                    data-nav={online ? "" : undefined}
+                    data-machine={machineId}
+                    data-clone={clone.url}
+                    tabIndex={shown ? 0 : -1}
+                    onClick={() => machineId && onView({ kind: "clone", machineId, url: clone.url })}
+                  >
+                    <span className="name">{clone.name}</span>
+                    <span className={progress.failed ? "meta bad" : "meta"}>{progress.text}</span>
+                  </div>
                 );
               })}
             </section>

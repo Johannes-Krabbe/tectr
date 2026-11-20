@@ -376,6 +376,20 @@ pub enum Command {
     ListFolders {
         path: String,
     },
+    /// The GitHub repositories the device's `gh` is logged in to see, for cloning one as a
+    /// workspace. Answered with [`CommandOutput::Repos`], from a list kept for a few minutes.
+    ListRepos,
+    /// Clone a repository into a folder that doesn't exist yet, then add it. The path works as
+    /// in [`Command::AddWorkspace`]. It's answered once the clone is done, and
+    /// [`DaemonState::clones`] shows how it's going meanwhile, and why it failed if it did.
+    CloneWorkspace {
+        url: String,
+        path: String,
+    },
+    /// Forget a clone that failed, by its path.
+    DismissClone {
+        path: String,
+    },
     /// Create a topic on a fresh branch and worktree, or in the repo itself.
     CreateTopic {
         workspace_id: WorkspaceId,
@@ -740,6 +754,13 @@ pub enum CommandOutput {
     Folders {
         folders: Vec<Folder>,
     },
+    /// Most recently pushed first. `problem` says why there are none, like `gh` missing or
+    /// logged out.
+    Repos {
+        repos: Vec<Repo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<String>,
+    },
     /// Archiving would lose this, so it waits for `force`.
     ArchiveRisk {
         risk: ArchiveRisk,
@@ -867,6 +888,35 @@ pub struct ClosedWorkspace {
     pub topics: u32,
 }
 
+/// A GitHub repository the device's `gh` can see.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Repo {
+    /// Like `owner/name`.
+    pub full_name: String,
+    pub name: String,
+    /// The address to clone, over the protocol `gh` is set to use.
+    pub url: String,
+}
+
+/// A clone that's still going, before it becomes a workspace, or one that failed and waits
+/// for [`Command::DismissClone`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoClone {
+    /// What the workspace will be called: the folder's name.
+    pub name: String,
+    /// Absolute.
+    pub path: String,
+    pub url: String,
+    /// What git is doing, like "Receiving objects", once it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u8>,
+    /// Why it failed. The folder is gone again by then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// A folder on a daemon's machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Folder {
@@ -965,6 +1015,9 @@ pub struct DaemonState {
     /// Clients waiting for their digits to be typed, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pairing_requests: Vec<PairingRequest>,
+    /// Repositories being cloned into workspaces, and clones that failed, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clones: Vec<RepoClone>,
 }
 
 impl DaemonState {
@@ -1153,6 +1206,9 @@ impl DaemonState {
             }
             StateChange::PairingRequestsChanged { requests } => {
                 self.pairing_requests = requests.clone();
+            }
+            StateChange::ClonesChanged { clones } => {
+                self.clones = clones.clone();
             }
             StateChange::Unknown => {}
         }
@@ -1840,6 +1896,10 @@ pub enum StateChange {
     PairingRequestsChanged {
         requests: Vec<PairingRequest>,
     },
+    /// Replaces the clones that are going or failed.
+    ClonesChanged {
+        clones: Vec<RepoClone>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -2171,6 +2231,7 @@ mod tests {
             ],
             paired_clients: vec![],
             pairing_requests: vec![],
+            clones: vec![],
         };
         let got: Vec<(String, Option<String>)> = state
             .workspace_mcp_servers(&workspace)
@@ -2204,6 +2265,7 @@ mod tests {
             mcp_servers: vec![],
             paired_clients: vec![],
             pairing_requests: vec![],
+            clones: vec![],
         };
         let change = StateChange::WorkspaceAdded {
             workspace: Workspace {
@@ -2323,6 +2385,7 @@ mod tests {
             mcp_servers: vec![],
             paired_clients: vec![],
             pairing_requests: vec![],
+            clones: vec![],
         };
         let usage = vec![AgentCommand {
             name: "usage".into(),

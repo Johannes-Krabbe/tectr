@@ -275,6 +275,28 @@ export interface Folder {
   is_repo: boolean;
 }
 
+/** A GitHub repository the device's `gh` can see. */
+export interface Repo {
+  /** Like `owner/name`. */
+  full_name: string;
+  name: string;
+  /** What to clone, over the protocol `gh` uses. */
+  url: string;
+}
+
+/** A clone into a new workspace that's going, or that failed and waits to be dismissed. */
+export interface RepoClone {
+  name: string;
+  /** Absolute. */
+  path: string;
+  url: string;
+  /** What git is doing, like "Receiving objects", once it says. */
+  phase?: string;
+  percent?: number;
+  /** Why it failed. Its folder is gone again by then. */
+  error?: string;
+}
+
 /** An image in a prompt or a draft. Its bytes stay with the daemon: see `add_image` and
  * `read_image`. */
 export interface PromptImage {
@@ -309,6 +331,8 @@ export interface DaemonState {
   paired_clients?: PairedClient[];
   /** Clients waiting for the digits they show to be typed here, oldest first. */
   pairing_requests?: PairingRequest[];
+  /** Clones into new workspaces that are going or failed, oldest first. */
+  clones?: RepoClone[];
 }
 
 export interface PairingRequest {
@@ -419,6 +443,11 @@ export type Command =
   | { command: "list_closed_workspaces" }
   | { command: "remove_workspace"; workspace_id: string; force?: boolean }
   | { command: "list_folders"; path: string }
+  /** Answered with `repos`, from a list the daemon keeps for a few minutes. */
+  | { command: "list_repos" }
+  /** Answered with `workspace` once the clone is done, which can take minutes. */
+  | { command: "clone_workspace"; url: string; path: string }
+  | { command: "dismiss_clone"; path: string }
   | { command: "create_topic"; workspace_id: string; name: string | null; at_root: boolean }
   | { command: "rename_topic"; topic_id: string; name: string }
   | { command: "archive_topic"; topic_id: string; force?: boolean }
@@ -523,6 +552,8 @@ export type CommandOutput =
   | { output: "provider_candidates"; candidates: ProviderCandidate[] }
   | { output: "provider"; provider: Provider }
   | { output: "folders"; folders: Folder[] }
+  /** Most recently pushed first. `problem` says why there are none. */
+  | { output: "repos"; repos: Repo[]; problem?: string }
   | { output: "archive_risk"; risk: ArchiveRisk }
   | { output: "archived_topics"; topics: ArchivedTopic[] }
   | { output: "closed_workspaces"; workspaces: ClosedWorkspace[] }

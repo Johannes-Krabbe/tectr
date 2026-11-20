@@ -92,15 +92,6 @@ export function copiedMcp(
   return { ...(target ?? {}), ...Object.fromEntries(copied) };
 }
 
-/** The profile after this one, then none, then the first again. */
-export function nextProfile(server: McpServer, current: string | null | undefined): string | null {
-  const ids = (server.profiles ?? []).map((profile) => profile.id);
-  if (ids.length === 0) return null;
-  const index = current ? ids.indexOf(current) : -1;
-  if (index === -1) return current ? null : ids[0];
-  return ids[index + 1] ?? null;
-}
-
 export const NO_PROFILE = "No profile";
 
 export function profileLabel(server: McpServer, profileId: string | null | undefined): string {
@@ -150,15 +141,6 @@ export function profileNameProblem(name: string, server: McpServer, id?: string)
   if (trimmed === "") return "A profile needs a name";
   const taken = server.profiles?.some((p) => p.name === trimmed && p.id !== id);
   return taken ? `${server.name} already has a profile called ${trimmed}` : null;
-}
-
-/** Every word typed appears in the server's name or what it runs. */
-export function matchesServer(server: McpServer, query: string): boolean {
-  const text = `${server.name} ${mcpSummary(server.transport)}`.toLowerCase();
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .every((word) => text.includes(word));
 }
 
 /** Quotes an argument only when it has to be, so it reads back as the same one. */

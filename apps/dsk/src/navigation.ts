@@ -5,6 +5,8 @@ export type View =
   | { kind: "device"; machineId: string }
   /** A workspace's page: its topics and its MCP servers. */
   | { kind: "workspace"; machineId: string; workspaceId: string }
+  /** A workspace being cloned, by the address it's cloned from, until it's a workspace. */
+  | { kind: "clone"; machineId: string; url: string }
   | { kind: "new_topic"; machineId: string; workspaceId: string }
   | { kind: "device_settings"; machineId: string; section?: string }
   | { kind: "app_settings"; section: string };
@@ -87,20 +89,6 @@ export function goTo(navigation: Navigation, next: View | null, workspaceId?: st
         ? { ...navigation.lastTopics, [workspaceId]: next.topicId }
         : navigation.lastTopics,
   };
-}
-
-/** Where going to a workspace lands: the topic last open in it here, or else its newest. A
- * workspace with no topics has only one thing to do next. */
-export function landingIn(
-  navigation: Navigation,
-  machineId: string,
-  workspace: { id: string; topics: { id: string }[] },
-): View {
-  const { id: workspaceId, topics } = workspace;
-  const topic = topics.find((t) => t.id === navigation.lastTopics[workspaceId]) ?? topics.at(-1);
-  return topic
-    ? { kind: "topic", machineId, topicId: topic.id }
-    : { kind: "new_topic", machineId, workspaceId };
 }
 
 /** Where archiving the shown topic lands: the topic after it, or else the one before. `workspace`

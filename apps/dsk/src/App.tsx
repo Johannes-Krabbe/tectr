@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AgentPane } from "./AgentPane";
 import { AppSettings } from "./AppSettings";
+import { ClonePage } from "./ClonePage";
 import { DevicePage } from "./DevicePage";
 import { DeviceSettings } from "./DeviceSettings";
 import {
@@ -58,7 +59,6 @@ import {
   closeNewTab,
   goTo,
   landingAfterArchiving,
-  landingIn,
   loadNavigation,
   type Navigation,
   NEW_TAB,
@@ -167,6 +167,11 @@ export function App() {
   const onSidebar = useSyncExternalStore(subscribeFocus, inSidebar);
 
   const { view } = navigation;
+  // What's shown right now, for a clone that finishes long after the click that started it.
+  const viewNow = useRef(view);
+  viewNow.current = view;
+  const devicesNow = useRef(devices);
+  devicesNow.current = devices;
 
   const topics = allTopics(devices);
   const settingsDevice =
@@ -178,7 +183,7 @@ export function App() {
       ? topics.find((t) => t.machineId === view.machineId && t.topic.id === view.topicId)
       : undefined;
   const pageDevice =
-    view?.kind === "workspace" || view?.kind === "device"
+    view?.kind === "workspace" || view?.kind === "device" || view?.kind === "clone"
       ? devices.find((d) => d.state?.machine.id === view.machineId)
       : undefined;
   const pageWorkspace =
@@ -958,6 +963,20 @@ export function App() {
                 onNewTopic={() => createTopicIn(pageDevice, pageWorkspace)}
               />
             </>
+          ) : view?.kind === "clone" && pageDevice ? (
+            <>
+              <DeviceNoticeLine device={pageDevice} onReconnect={reconnectNow} />
+              {error && <p className="error main-error">{error}</p>}
+              <ClonePage
+                key={`${view.machineId}/${view.url}`}
+                device={pageDevice}
+                url={view.url}
+                onCloned={(workspaceId) =>
+                  open({ kind: "workspace", machineId: view.machineId, workspaceId })
+                }
+                onGone={() => open({ kind: "device", machineId: view.machineId })}
+              />
+            </>
           ) : view?.kind === "device" && pageDevice ? (
             <>
               <DeviceNoticeLine device={pageDevice} onReconnect={reconnectNow} />
@@ -1107,11 +1126,6 @@ export function App() {
               ? devices.find((d) => d.state?.machine.id === sheet.machineId)?.state?.workspaces
               : undefined) ?? []
           }
-          mcpServers={
-            ("machineId" in sheet
-              ? devices.find((d) => d.state?.machine.id === sheet.machineId)?.state?.mcp_servers
-              : undefined) ?? []
-          }
           pairingRequests={
             ("machineId" in sheet
               ? devices.find((d) => d.state?.machine.id === sheet.machineId)?.state
@@ -1119,15 +1133,29 @@ export function App() {
               : undefined) ?? []
           }
           onClose={() => setSheet(null)}
+          // The clone's page shows it going, and once it's a workspace, the workspace's page takes
+          // its place, unless someone has gone elsewhere meanwhile. The clone's page also does this
+          // by itself, for a client that wasn't the one to start it.
+          onCloning={(machineId, url) => open({ kind: "clone", machineId, url })}
+          onCloned={(machineId, workspace) => {
+            const now = viewNow.current;
+            if (now?.kind === "clone" && now.machineId === machineId) {
+              open({ kind: "workspace", machineId, workspaceId: workspace.id });
+            }
+          }}
+          // A clone refused before it started never shows in the device's state, so its page would
+          // wait for nothing.
+          onCloneFailed={(machineId, url, message) => {
+            const now = viewNow.current;
+            const kept = devicesNow.current
+              .find((d) => d.state?.machine.id === machineId)
+              ?.state?.clones?.some((c) => c.url === url);
+            if (now?.kind === "clone" && now.url === url && !kept) setError(message);
+          }}
           onDone={(output) => {
+            // Its page is where its MCP servers are chosen, and what it already has shows.
             if (output.output === "workspace" && sheet.kind === "workspace") {
-              const { workspace } = output;
-              // One with topics was here before, closed or open, so its page shows what's in it.
-              open(
-                workspace.topics.length > 0
-                  ? { kind: "workspace", machineId: sheet.machineId, workspaceId: workspace.id }
-                  : landingIn(navigation, sheet.machineId, workspace),
-              );
+              open({ kind: "workspace", machineId: sheet.machineId, workspaceId: output.workspace.id });
             }
             if (sheet.kind === "confirm") sheet.then?.(output);
             // The tab can already be gone by now, so this can't wait for the change.

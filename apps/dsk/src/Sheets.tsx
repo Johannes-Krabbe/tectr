@@ -18,45 +18,31 @@ import {
   errorText,
   finishPairing,
   type Folder,
-  type McpServer,
   pairDevice,
   type PairingRequest,
+  type Repo,
   request,
   type Session,
   stopPairing,
   type Topic,
   type Workspace,
-  type WorkspaceMcp,
 } from "./engine";
 import { act, type ActionId, keysLabel, remapNative, titled } from "./keybinds";
-import {
-  canHaveProfiles,
-  connectorAgent,
-  copiedMcp,
-  isConnector,
-  matchesServer,
-  mcpSummary,
-  newEntry,
-  NO_PROFILE,
-  nextProfile,
-  withServer,
-} from "./mcp";
-import { archiveLosses, archiveSummary, folderName, type MoveChoice, sessionLabel } from "./model";
+import { archiveLosses, archiveSummary, type MoveChoice, sessionLabel } from "./model";
 import {
   afterPaste,
-  canCreate,
   completesOnEnter,
   highlightWhileTyping,
   moveHighlight,
-  type PathGoal,
   splitPath,
   STARTING_PATH,
   suggest,
+  suggestClones,
+  suggestNew,
   type Suggestion,
 } from "./pathInput";
 import { countdown, spacedDigits } from "./pairing";
 import { Icon } from "./ui/Icon";
-import { Choice, Picker } from "./ui/Picker";
 import { QrCode } from "./ui/QrCode";
 import { showToast } from "./toast";
 
@@ -252,39 +238,80 @@ function useListing(
   return parent === undefined ? undefined : listings[parent];
 }
 
-const GOALS: { goal: PathGoal; label: string; meta: string }[] = [
-  { goal: "open", label: "Open folder", meta: "Existing git repository" },
-  { goal: "create", label: "New folder", meta: "Runs git init" },
-];
+type RepoListing = { repos: Repo[]; problem?: string };
+
+/** The device's GitHub repositories, asked for as the sheet opens, so they're usually there by
+ * the time a name is typed. The daemon keeps them for a few minutes, so opening it again is
+ * quick. */
+function useRepos(machineId: string): RepoListing | undefined {
+  const [listing, setListing] = useState<RepoListing>();
+  useEffect(() => {
+    let shown = true;
+    request(machineId, { command: "list_repos" })
+      .then((output) => {
+        if (shown && output.output === "repos") {
+          setListing({ repos: output.repos, problem: output.problem });
+        }
+      })
+      .catch((reason) => {
+        if (shown) setListing({ repos: [], problem: errorText(reason) });
+      });
+    return () => {
+      shown = false;
+    };
+  }, [machineId]);
+  return listing;
+}
+
+/** Clones without holding the sheet open, since a big repository takes minutes. The device's
+ * page shows it going, and the daemon keeps a failure there until it's dismissed, so only what
+ * went well is a toast. */
+function startClone(
+  machineId: string,
+  url: string,
+  path: string,
+  onCloned: (workspace: Workspace) => void,
+  onFailed: (message: string) => void,
+) {
+  request(machineId, { command: "clone_workspace", url, path }).then(
+    (output) => {
+      if (output.output !== "workspace") return;
+      showToast(`${output.workspace.name} is cloned`);
+      onCloned(output.workspace);
+    },
+    (reason) => onFailed(errorText(reason)),
+  );
+}
 
 const remoteDelay = () => {
   const delay = shownValue("general.remote_path_delay");
   return typeof delay === "number" ? delay : 150;
 };
 
-/** Asks first whether the workspace is a repository that's already there or a new folder, then
- * takes a path for either. One sheet throughout, so the step change doesn't reopen it. */
+/** Takes a path straight away. Under the folders it lists come the device's GitHub repositories
+ * to clone there, then the typed name as a new folder, so opening, cloning and creating are one
+ * box. MCP servers are chosen on the workspace's page, where adding one lands. */
 function WorkspaceSheet({
   sheet,
   workspaces,
-  library,
   onClose,
   onDone,
+  onCloning,
+  onCloned,
+  onCloneFailed,
 }: {
   sheet: Extract<SheetRequest, { kind: "workspace" }>;
   workspaces: Workspace[];
-  library: McpServer[];
   onClose: () => void;
   onDone: (output: CommandOutput) => void;
+  onCloning: (url: string) => void;
+  onCloned: (workspace: Workspace) => void;
+  onCloneFailed: (url: string, message: string) => void;
 }) {
-  const [goal, setGoal] = useState<PathGoal | null>(null);
   // The device's closed workspaces, which adding one's folder opens again.
   const [closed, setClosed] = useState<ClosedWorkspace[]>([]);
-  // The folder chosen, once the sheet has gone on to choosing its MCP servers.
-  const [target, setTarget] = useState<{ creating: boolean; path: string } | null>(null);
   const [path, setPath] = useState(STARTING_PATH);
   const [highlight, setHighlight] = useState<number | null>(null);
-  const [goalHighlight, setGoalHighlight] = useState(0);
   const caretPlaced = useRef(false);
   const list = useRef<HTMLDivElement>(null);
   const listId = useId();
@@ -302,22 +329,30 @@ function WorkspaceSheet({
     };
   }, [sheet.machineId]);
 
+  const repos = useRepos(sheet.machineId);
   const split = splitPath(path);
   const listing = useListing(
     sheet.machineId,
-    goal === null ? undefined : split?.parent,
+    split?.parent,
     sheet.local ? 0 : remoteDelay(),
   );
-  const rows =
-    split && listing && "folders" in listing
+  const folders = split && listing && "folders" in listing ? listing.folders : undefined;
+  const folderRows =
+    split && folders
       ? suggest(
           split.parent,
           split.partial,
-          listing.folders,
+          folders,
           workspaces.map((workspace) => workspace.path),
           closed.map((workspace) => workspace.path),
         )
       : [];
+  const cloneRows =
+    split && folders && repos ? suggestClones(split.parent, split.partial, repos.repos, folders) : [];
+  const newRows = split && folders ? suggestNew(split.parent, split.partial, folders) : [];
+  const rows = [...folderRows, ...cloneRows, ...newRows];
+  // Says why no repositories are offered, once a name is started and they would be.
+  const noRepos = split?.partial ? repos?.problem : undefined;
   const chosen = highlight === null ? undefined : rows[highlight];
   const closedAt = (folder: string) =>
     closed.find((workspace) => workspace.path === folder.replace(/(.)\/+$/, "$1"));
@@ -326,108 +361,48 @@ function WorkspaceSheet({
     if (highlight !== null) list.current?.children[highlight]?.scrollIntoView({ block: "nearest" });
   }, [highlight]);
 
-  if (target) {
-    return (
-      <WorkspaceServersStep
-        sheet={sheet}
-        target={target}
-        workspaces={workspaces}
-        library={library}
-        onClose={onClose}
-        onDone={onDone}
-      />
-    );
-  }
-
-  if (goal === null) {
-    const picked = GOALS[goalHighlight] ?? GOALS[0];
-    return (
-      <Sheet
-        where={`New workspace on ${sheet.deviceName}`}
-        action={picked.label}
-        canSubmit
-        run={async () => {
-          setGoal(picked.goal);
-          return null;
-        }}
-        onClose={onClose}
-        onDone={onDone}
-        onKeyDown={(event) => {
-          const move = (step: 1 | -1) =>
-            setGoalHighlight((current) => (current + step + GOALS.length) % GOALS.length);
-          if (act(event, "sheet.up", () => move(-1))) return;
-          act(event, "sheet.down", () => move(1));
-        }}
-        list={
-          // Focusable itself, so the sheet's keys reach the form with nothing to type in.
-          <div
-            className="list-choices"
-            role="listbox"
-            tabIndex={0}
-            aria-label="Workspace from"
-            aria-activedescendant={`${listId}-goal-${goalHighlight}`}
-          >
-            {GOALS.map((row, index) => (
-              <div
-                key={row.goal}
-                id={`${listId}-goal-${index}`}
-                className="list-choice"
-                role="option"
-                aria-selected={index === goalHighlight}
-                data-highlighted={index === goalHighlight ? "" : undefined}
-                onMouseMove={() => setGoalHighlight(index)}
-                onClick={() => setGoal(row.goal)}
-              >
-                <span className="name">{row.label}</span>
-                <span className="meta">{row.meta}</span>
-              </div>
-            ))}
-          </div>
-        }
-      />
-    );
-  }
-
-  const creating = goal === "create";
-
   const edit = (next: string) => {
     setPath(next);
-    setHighlight(highlightWhileTyping(splitPath(next)?.partial, goal));
+    setHighlight(highlightWhileTyping(splitPath(next)?.partial));
   };
 
   const complete = (row: Suggestion | undefined) => {
     if (row) edit(row.typed);
   };
 
-  const entersFolder = completesOnEnter(goal, chosen);
+  const entersFolder = completesOnEnter(chosen);
+  const cloning = chosen?.tag === "clone" ? chosen.repo : undefined;
+  const creating = chosen?.tag === "new";
   // A closed workspace comes back as it was, servers and all.
-  const reopening = creating ? undefined : closedAt(chosen ? chosen.path : path.trim());
-  // With servers in the library, choosing which ones the workspace gets comes next.
-  const asksForServers = library.length > 0 && !reopening;
+  const reopening =
+    creating || cloning ? undefined : closedAt(chosen ? chosen.path : path.trim());
 
   return (
     <Sheet
-      where={`${creating ? "New folder" : "Open folder"} on ${sheet.deviceName}`}
+      where={`New workspace on ${sheet.deviceName}`}
       action={
         entersFolder
           ? "Complete"
           : reopening
             ? "Open again"
-            : asksForServers
-            ? "Next"
-            : creating
-              ? "Create workspace"
-              : chosen
-                ? "Open workspace"
-                : "Add workspace"
+            : cloning
+              ? "Clone"
+              : creating
+                ? "Create workspace"
+                : chosen
+                  ? "Open workspace"
+                  : "Add workspace"
       }
       hint={reopening && closedHint(reopening)}
-      canSubmit={creating ? canCreate(path) || entersFolder : path.trim() !== ""}
+      canSubmit={path.trim() !== ""}
       run={async () => {
-        const chosenPath = creating ? path.trim() : chosen ? chosen.path : path.trim();
-        if (asksForServers) {
-          setTarget({ creating, path: chosenPath });
-          return null;
+        const chosenPath = chosen ? chosen.path : path.trim();
+        if (cloning) {
+          startClone(sheet.machineId, cloning.url, chosenPath, onCloned, (message) =>
+            onCloneFailed(cloning.url, message),
+          );
+          onCloning(cloning.url);
+          return { output: "done" };
         }
         return request(sheet.machineId, {
           command: creating ? "create_workspace" : "add_workspace",
@@ -440,37 +415,46 @@ function WorkspaceSheet({
       list={
         listing && "error" in listing ? (
           <p className="error sheet-error">{listing.error}</p>
-        ) : rows.length > 0 ? (
-          <div ref={list} id={listId} className="list-choices" role="listbox">
-            {rows.map((row, index) => (
-              <div
-                key={row.path}
-                id={`${listId}-${index}`}
-                className="list-choice"
-                role="option"
-                aria-selected={index === highlight}
-                data-highlighted={index === highlight ? "" : undefined}
-                onMouseDown={(event) => {
-                  // The input keeps the keyboard, so you can keep typing after pointing at one.
-                  event.preventDefault();
-                  // A row can move under a still pointer, and a click means the row it lands on.
-                  setHighlight(index);
-                }}
-                onMouseMove={() => setHighlight(index)}
-                onClick={(event) => {
-                  if (completesOnEnter(goal, row)) complete(row);
-                  else event.currentTarget.closest("form")?.requestSubmit();
-                }}
-              >
-                <span className="name code">{row.typed}</span>
-                {row.tag && (
-                  <span className="meta">
-                    {row.tag === "closed" ? closedTag(closedAt(row.path)) : row.tag}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
+        ) : rows.length > 0 || noRepos ? (
+          <>
+            <div ref={list} id={listId} className="list-choices" role="listbox">
+              {rows.map((row, index) => (
+                <div
+                  key={row.repo?.url ?? row.path}
+                  id={`${listId}-${index}`}
+                  className="list-choice"
+                  role="option"
+                  aria-selected={index === highlight}
+                  data-highlighted={index === highlight ? "" : undefined}
+                  onMouseDown={(event) => {
+                    // The input keeps the keyboard, so you can keep typing after pointing at one.
+                    event.preventDefault();
+                    // A row can move under a still pointer, and a click means the row it lands on.
+                    setHighlight(index);
+                  }}
+                  onMouseMove={() => setHighlight(index)}
+                  onClick={(event) => {
+                    if (completesOnEnter(row)) complete(row);
+                    else event.currentTarget.closest("form")?.requestSubmit();
+                  }}
+                >
+                  <span className="name code">{row.typed}</span>
+                  {row.tag && (
+                    <span className="meta">
+                      {row.tag === "closed"
+                        ? closedTag(closedAt(row.path))
+                        : row.tag === "clone"
+                          ? `clone ${row.repo?.full_name ?? ""}`
+                          : row.tag === "new"
+                            ? "new folder, git init"
+                            : row.tag}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            {noRepos && <p className="sheet-note">No GitHub repositories to clone: {noRepos}</p>}
+          </>
         ) : null
       }
     >
@@ -478,8 +462,8 @@ function WorkspaceSheet({
         className="sheet-name code"
         autoFocus
         value={path}
-        placeholder={creating ? "/path/to/new-folder" : "/path/to/repo"}
-        aria-label={creating ? "New folder path" : "Repository path"}
+        placeholder="/path/to/folder"
+        aria-label="Folder path"
         role="combobox"
         aria-autocomplete="list"
         aria-expanded={rows.length > 0}
@@ -528,203 +512,6 @@ const closedHint = (workspace: ClosedWorkspace) => {
 
 const closedTag = (workspace: ClosedWorkspace | undefined) =>
   workspace ? `closed, ${workspace.topics === 1 ? "1 topic" : `${workspace.topics} topics`}` : "closed";
-
-const NO_PROFILE_VALUE = "none";
-
-/** Says how to check a server, since checking is the filter's Tab and nothing on screen shows it. */
-const noneChecked = (key: string | undefined) =>
-  key ? `None checked: ${key} checks one, or add them on its page later` : "None checked: add them on its page later";
-
-/** The last step of adding a workspace: which of the library's servers its agents get, and
- * with which profile. Typing filters them, and another workspace's can be copied. Nothing
- * checked is fine too: the workspace's page can add them later. */
-function WorkspaceServersStep({
-  sheet,
-  target,
-  workspaces,
-  library,
-  onClose,
-  onDone,
-}: {
-  sheet: Extract<SheetRequest, { kind: "workspace" }>;
-  target: { creating: boolean; path: string };
-  workspaces: Workspace[];
-  library: McpServer[];
-  onClose: () => void;
-  onDone: (output: CommandOutput) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [selection, setSelection] = useState<Record<string, WorkspaceMcp>>({});
-  const [highlight, setHighlight] = useState(0);
-  const [copyOpen, setCopyOpen] = useState(false);
-  const [profileFor, setProfileFor] = useState<string | null>(null);
-  const input = useRef<HTMLInputElement>(null);
-  const list = useRef<HTMLDivElement>(null);
-
-  // The same order as the library's page: servers, then connectors.
-  const ordered = [...library.filter((s) => !isConnector(s)), ...library.filter(isConnector)];
-  const shown = ordered.filter((server) => matchesServer(server, query));
-  const current = Math.max(Math.min(highlight, shown.length - 1), 0);
-  const sources = workspaces.filter((w) => Object.keys(w.mcp ?? {}).length > 0);
-  const checked = Object.keys(selection).length;
-
-  useEffect(() => {
-    list.current?.children[current]?.scrollIntoView({ block: "nearest" });
-  }, [current]);
-
-  const toggle = (server: McpServer) =>
-    setSelection((now) => withServer(now, server.id, now[server.id] ? null : newEntry(server)));
-
-  const setProfile = (server: McpServer, profileId: string | null) =>
-    setSelection((now) => {
-      const entry = now[server.id] ?? newEntry(server);
-      return withServer(now, server.id, { ...entry, profile_id: profileId ?? undefined });
-    });
-
-  const cycleProfile = (server: McpServer) =>
-    setProfile(server, nextProfile(server, selection[server.id]?.profile_id));
-
-  const copyFrom = (workspaceId: string) => {
-    const source = workspaces.find((w) => w.id === workspaceId);
-    if (source) setSelection((now) => copiedMcp(now, source.mcp, library));
-  };
-
-  const run = async (): Promise<CommandOutput> => {
-    const output = await request(sheet.machineId, {
-      command: target.creating ? "create_workspace" : "add_workspace",
-      path: target.path,
-    });
-    if (output.output === "workspace" && checked > 0) {
-      try {
-        await request(sheet.machineId, {
-          command: "set_workspace_mcp",
-          workspace_id: output.workspace.id,
-          servers: selection,
-        });
-      } catch (reason) {
-        // The workspace is there either way, so this sheet's job is done. Its page can try again.
-        showToast(`${output.workspace.name} is added, but not its MCP servers: ${errorText(reason)}`);
-      }
-    }
-    return output;
-  };
-
-  return (
-    <Sheet
-      where={`MCP servers for ${folderName(target.path)}`}
-      action={target.creating ? "Create workspace" : "Add workspace"}
-      hint={checked > 0 ? `${checked} checked` : noneChecked(keysLabel("new_workspace.check"))}
-      canSubmit
-      run={run}
-      onClose={onClose}
-      onDone={onDone}
-      input={query}
-    >
-      <input
-        ref={input}
-        className="sheet-name"
-        autoFocus
-        value={query}
-        placeholder="Filter the library's servers"
-        aria-label="Filter MCP servers"
-        spellCheck={false}
-        autoCorrect="off"
-        autoCapitalize="off"
-        onChange={(event) => {
-          setQuery(event.target.value);
-          setHighlight(0);
-        }}
-        onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing) return;
-          const server = shown[current];
-          const move = (step: 1 | -1) =>
-            setHighlight(shown.length === 0 ? 0 : (current + step + shown.length) % shown.length);
-          if (act(event, "sheet.up", () => move(-1))) return;
-          if (act(event, "sheet.down", () => move(1))) return;
-          if (act(event, "new_workspace.copy_from", () => sources.length > 0 && setCopyOpen(true))) {
-            return;
-          }
-          if (!server) return;
-          if (act(event, "new_workspace.check", () => toggle(server))) return;
-          act(event, "new_workspace.profile", () => cycleProfile(server));
-        }}
-      />
-      {sources.length > 0 && (
-        <div className="sheet-fields">
-          <div className="sheet-field">
-            <span className="sheet-label">Copy</span>
-            <Picker
-              label="Copy another workspace's servers"
-              title={titled("Copy another workspace's servers", "new_workspace.copy_from")}
-              className="picker"
-              value={null}
-              open={copyOpen}
-              onOpenChange={setCopyOpen}
-              onChange={copyFrom}
-              finalFocus={input}
-              trigger="Copy from workspace..."
-            >
-              {sources.map((w) => (
-                <Choice
-                  key={w.id}
-                  value={w.id}
-                  label={w.name}
-                  meta={`${Object.keys(w.mcp ?? {}).length} servers`}
-                />
-              ))}
-            </Picker>
-          </div>
-        </div>
-      )}
-      <div ref={list} className="list-choices" role="listbox" aria-multiselectable aria-label="MCP servers">
-        {shown.length === 0 && <p className="sheet-group-empty">No server matches</p>}
-        {shown.map((server, index) => {
-          const entry = selection[server.id];
-          const profiles = server.profiles ?? [];
-          return (
-            <div
-              key={server.id}
-              className="list-choice"
-              role="option"
-              aria-selected={entry !== undefined}
-              data-highlighted={index === current ? "" : undefined}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseMove={() => setHighlight(index)}
-              onClick={() => toggle(server)}
-            >
-              <span className={`check ${entry ? "on" : ""}`}>{entry && <Icon name="check" />}</span>
-              <span className="server-name code">{server.name}</span>
-              <span className="server-summary">
-                {connectorAgent(server) ? `${connectorAgent(server)} connector` : mcpSummary(server.transport)}
-              </span>
-              {entry && canHaveProfiles(server) && profiles.length > 0 && (
-                // Its own clicks are the profile's, not the row's.
-                <span onClick={(event) => event.stopPropagation()}>
-                  <Picker
-                    label={`Profile for ${server.name}`}
-                    title={titled("Profile", "new_workspace.profile")}
-                    className="picker"
-                    value={entry.profile_id ?? NO_PROFILE_VALUE}
-                    open={profileFor === server.id}
-                    onOpenChange={(open) => setProfileFor(open ? server.id : null)}
-                    onChange={(value) => setProfile(server, value === NO_PROFILE_VALUE ? null : value)}
-                    finalFocus={input}
-                    trigger={profiles.find((p) => p.id === entry.profile_id)?.name ?? NO_PROFILE}
-                  >
-                    {profiles.map((p) => (
-                      <Choice key={p.id} value={p.id} label={p.name} />
-                    ))}
-                    <Choice value={NO_PROFILE_VALUE} label={NO_PROFILE} />
-                  </Picker>
-                </span>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </Sheet>
-  );
-}
 
 /** The second confirmation for closing a tab whose agent is still running. */
 function CloseSheet({
@@ -1108,20 +895,27 @@ function AddDeviceSheet({
 export function Sheets({
   sheet,
   workspaces,
-  mcpServers,
   pairingRequests,
   onClose,
   onDone,
+  onCloning,
+  onCloned,
+  onCloneFailed,
 }: {
   sheet: SheetRequest;
   /** What the sheet's device already has. */
   workspaces: Workspace[];
-  /** The sheet's device's library of MCP servers. */
-  mcpServers: McpServer[];
   /** The machines waiting on the sheet's device to type their digits. */
   pairingRequests: PairingRequest[];
   onClose: () => void;
   onDone: (output: CommandOutput) => void;
+  /** A clone started from the workspace sheet, which closes straight away. */
+  onCloning: (machineId: string, url: string) => void;
+  /** That clone is a workspace now, minutes later perhaps. */
+  onCloned: (machineId: string, workspace: Workspace) => void;
+  /** That clone failed. Most failures also stay in the device's state, but not one refused
+   * before it started, like a folder that's there already. */
+  onCloneFailed: (machineId: string, url: string, message: string) => void;
 }) {
   switch (sheet.kind) {
     case "workspace":
@@ -1129,9 +923,11 @@ export function Sheets({
         <WorkspaceSheet
           sheet={sheet}
           workspaces={workspaces}
-          library={mcpServers}
           onClose={onClose}
           onDone={onDone}
+          onCloning={(url) => onCloning(sheet.machineId, url)}
+          onCloned={(workspace) => onCloned(sheet.machineId, workspace)}
+          onCloneFailed={(url, message) => onCloneFailed(sheet.machineId, url, message)}
         />
       );
     case "close":

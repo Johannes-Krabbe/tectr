@@ -332,6 +332,7 @@ impl Store {
             )?,
             // Only a running daemon has clients waiting.
             pairing_requests: Vec::new(),
+            clones: Vec::new(),
         })
     }
 
