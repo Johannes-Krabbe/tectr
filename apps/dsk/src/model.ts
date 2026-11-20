@@ -62,6 +62,29 @@ export function connectionProblem(device: Device): string | undefined {
   return undefined;
 }
 
+/** The home folder as `~`, which is how people read their own paths. */
+export const homeShort = (path: string) => path.replace(/^\/(Users|home)\/[^/]+(?=\/|$)/, "~");
+
+/** What a device's row and page say beside its name, and whether it's something wrong. Nothing
+ * while it's online with nothing to say. */
+export function deviceStatus(device: Device, now: number): { text: string; alert?: boolean } | null {
+  switch (device.connection.state) {
+    case "online": {
+      if (device.connection.stalled) return { text: "Not responding", alert: true };
+      const until = awakeUntil(device.state, now);
+      return until === null ? null : { text: `Awake, ${timeLeft(until - now)}` };
+    }
+    case "connecting":
+      return { text: "Connecting" };
+    case "incompatible":
+      return { text: "Needs an update" };
+    case "offline":
+      return { text: device.last_seen_ms ? `Offline, ${ago(device.last_seen_ms)}` : "Offline" };
+    case "asleep":
+      return { text: device.last_seen_ms ? `Asleep, ${ago(device.last_seen_ms)}` : "Asleep" };
+  }
+}
+
 /** What a pane says about its device while something sent there might not be answered. */
 export interface DeviceNotice {
   text: string;
@@ -198,6 +221,24 @@ export function topicState(topic: Topic, online: boolean): StatusState {
   if (!online) return "stale";
   const states = topic.sessions.map((session) => sessionState(session, online));
   return URGENCY.find((state) => states.includes(state)) ?? "idle";
+}
+
+/** The most urgent state any of a workspace's topics is in, and how many are in it. */
+export function workspaceState(
+  workspace: Workspace,
+  online: boolean,
+): { state: StatusState; count: number } {
+  const states = workspace.topics.map((topic) => topicState(topic, online));
+  const state = URGENCY.find((s) => states.includes(s)) ?? "idle";
+  return { state, count: states.filter((s) => s === state).length };
+}
+
+/** The agents closing a workspace would stop: starting, working or waiting. */
+export function runningIn(workspace: Workspace): number {
+  return workspace.topics
+    .flatMap((topic) => topic.sessions)
+    .filter((s) => s.status === "starting" || s.status === "working" || s.status === "waiting_for_you")
+    .length;
 }
 
 /** What marking a topic read or unread changes: its unread sessions become read, or if it

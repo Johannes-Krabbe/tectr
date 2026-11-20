@@ -63,6 +63,10 @@ test("a repo is tagged, and one that's already a workspace says so instead", () 
   assert.deepEqual(tags([]), ["git"]);
   assert.deepEqual(tags(["/home/me/Developer"]), ["added"]);
   assert.deepEqual(
+    suggest("~/", "Dev", HOME, [], ["/home/me/Developer"]).map((suggestion) => suggestion.tag),
+    ["closed"],
+  );
+  assert.deepEqual(
     suggest("~/", "Doc", HOME, []).map((suggestion) => suggestion.tag),
     [null],
   );
@@ -85,10 +89,11 @@ test("typing a new folder's name highlights nothing, so Enter makes it", () => {
 });
 
 test("Enter goes into a folder, except one that's already a workspace when opening", () => {
-  const row = (tag: "added" | "git" | null) => ({ typed: "~/a/", path: "/home/me/a", tag });
+  const row = (tag: "added" | "closed" | "git" | null) => ({ typed: "~/a/", path: "/home/me/a", tag });
   assert.equal(completesOnEnter("open", row(null)), true);
   assert.equal(completesOnEnter("open", row("git")), true);
   assert.equal(completesOnEnter("open", row("added")), false);
+  assert.equal(completesOnEnter("open", row("closed")), false);
   assert.equal(completesOnEnter("create", row("added")), true);
   assert.equal(completesOnEnter("open", undefined), false);
   assert.equal(completesOnEnter("create", undefined), false);

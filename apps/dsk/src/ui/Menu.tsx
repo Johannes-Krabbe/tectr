@@ -85,6 +85,7 @@ export function MenuButton({
   groups,
   disabled,
   title = label,
+  tabIndex,
   children,
 }: {
   label: string;
@@ -92,6 +93,8 @@ export function MenuButton({
   groups: MenuGroups;
   disabled?: boolean;
   title?: string;
+  /** For a menu on each row of a list, where only the row in use's is a Tab stop. */
+  tabIndex?: number;
   children: ReactNode;
 }) {
   const ran = useRef(false);
@@ -105,6 +108,7 @@ export function MenuButton({
         className={className}
         aria-label={label}
         title={title}
+        tabIndex={tabIndex}
         disabled={disabled || groups.length === 0}
       >
         {children}

@@ -67,6 +67,10 @@ tectr move-topic <topic> new|root|<worktree> [--force]  # move its tabs to anoth
 tectr archive-topic <topic> [--force]  # stop its agents, remove its worktrees, keep its tabs
 tectr archived                         # list archived topics
 tectr restore-topic <topic>            # bring one back with its folder
+tectr close-workspace <workspace> [--force]  # stop its agents and hide it, keeping everything
+tectr closed                           # list closed workspaces
+tectr open-workspace <workspace>       # bring one back with its topics and tabs
+tectr remove-workspace <workspace> [--force]  # forget a closed one and remove its worktrees
 tectr rename-device "..." [--on <device>]  # name a device, "" goes back to its hostname
 tectr mcp ls                           # the MCP library, profiles, and what each workspace uses
 tectr mcp add github --env 'TOKEN=${TOKEN}' -- npx -y some-server  # a stdio server

@@ -114,3 +114,49 @@ private struct TopicActionsModifier: ViewModifier {
         Binding { action.map(matches) ?? false } set: { if !$0 { action = nil } }
     }
 }
+
+extension View {
+    /// Closes the workspace `closing` names, asking first when that would stop its agents.
+    func closesWorkspace(_ closing: Binding<Workspace.ID?>) -> some View {
+        modifier(CloseWorkspaceModifier(closing: closing))
+    }
+}
+
+private struct CloseWorkspaceModifier: ViewModifier {
+    @Environment(Store.self) private var store
+    @Environment(Toasts.self) private var toasts
+    @Binding var closing: Workspace.ID?
+    /// The workspace whose running agents closing would stop, until that's confirmed.
+    @State private var confirming: Workspace?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                "Close \(confirming?.name ?? "workspace")?",
+                isPresented: Binding { confirming != nil } set: { if !$0 { confirming = nil } },
+                titleVisibility: .visible,
+                presenting: confirming
+            ) { workspace in
+                Button("Close anyway", role: .destructive) { close(workspace, force: true) }
+            } message: { workspace in
+                let running = workspace.runningAgents
+                Text("\(running == 1 ? "1 agent is" : "\(running) agents are") working in \(workspace.name). Closing stops them.")
+            }
+            .onChange(of: closing) { _, id in
+                guard let id else { return }
+                closing = nil
+                guard let workspace = store.workspace(id) else { return }
+                if workspace.runningAgents > 0 {
+                    confirming = workspace
+                } else {
+                    close(workspace, force: false)
+                }
+            }
+    }
+
+    private func close(_ workspace: Workspace, force: Bool) {
+        Task {
+            if await store.close(workspace: workspace.id, force: force) { toasts.show("Closed \(workspace.name)") }
+        }
+    }
+}

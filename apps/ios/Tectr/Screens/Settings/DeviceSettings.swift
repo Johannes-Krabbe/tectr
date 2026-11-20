@@ -5,11 +5,17 @@ import TectrDesign
 /// A device's own settings, kept by its daemon, so they're the same on every client.
 struct DeviceView: View {
     @Environment(Store.self) private var store
+    @Environment(Toasts.self) private var toasts
     @Environment(\.dismiss) private var dismiss
     let deviceID: Device.ID
     /// The name being typed, until it's sent.
     @State private var name: String?
     @State private var forgetting = false
+    @State private var closing: Workspace.ID?
+    /// The closed workspace whose removal is being confirmed.
+    @State private var removing: ClosedWorkspace?
+    /// What removing would lose in git, which the device sends back instead of removing.
+    @State private var risky: (workspace: ClosedWorkspace, risk: ArchiveRisk)?
     /// The wheel for how long to keep it awake is out.
     @State private var timing = false
     @State private var duration: TimeInterval = 60 * 60
@@ -17,6 +23,10 @@ struct DeviceView: View {
     var body: some View {
         if let device = store.device(deviceID) {
             Form {
+                workspaces(device)
+                    .disabled(!device.online)
+                closedWorkspaces
+                    .disabled(!device.online)
                 Section {
                     LabeledContent("Name") {
                         TextField("hostname", text: Binding { name ?? device.name } set: { name = $0 })
@@ -64,6 +74,104 @@ struct DeviceView: View {
             } message: {
                 Text("This phone stops reaching it, and comes off its paired list. Pairing again needs a new code from it")
             }
+            .confirmationDialog(
+                "Remove \(removing?.name ?? "workspace")?",
+                isPresented: Binding { removing != nil } set: { if !$0 { removing = nil } },
+                titleVisibility: .visible,
+                presenting: removing
+            ) { workspace in
+                Button("Remove", role: .destructive) { remove(workspace, force: false) }
+            } message: { workspace in
+                let topics = workspace.topics == 0 ? "its topics" : workspace.topics == 1 ? "its topic" : "its \(workspace.topics) topics"
+                Text("Deletes \(topics) and their transcripts, and the worktrees tectr made for it. The folder itself stays.")
+            }
+            .confirmationDialog(
+                "Remove \(risky?.workspace.name ?? "workspace")?",
+                isPresented: Binding { risky != nil } set: { if !$0 { risky = nil } },
+                titleVisibility: .visible,
+                presenting: risky
+            ) { risky in
+                Button("Remove anyway", role: .destructive) { remove(risky.workspace, force: true) }
+            } message: { risky in
+                Text((["Its worktrees have work that would be lost."] + risky.risk.losses).joined(separator: "\n"))
+            }
+            .closesWorkspace($closing)
+            .task(id: device.online) {
+                if device.online { await store.loadClosed(on: deviceID) }
+            }
+        }
+    }
+
+    private func workspaces(_ device: Device) -> some View {
+        Section("Workspaces") {
+            ForEach(store.workspaces(on: device)) { workspace in
+                VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+                    Text(workspace.name)
+                    Text(workspace.path)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .swipeActions {
+                    Button("Close", systemImage: "xmark.circle") { closing = workspace.id }
+                        .tint(ThemeColor.statusFailed)
+                }
+                .contextMenu {
+                    Button("Close workspace", systemImage: "xmark.circle") { closing = workspace.id }
+                }
+            }
+            if store.workspaces(on: device).isEmpty {
+                Text("No workspaces yet").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var closedWorkspaces: some View {
+        if let closed = store.closed[deviceID], !closed.isEmpty {
+            Section("Closed workspaces") {
+                ForEach(closed) { workspace in
+                    HStack {
+                        VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+                            Text(workspace.name)
+                            Group {
+                                Text(workspace.path)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text("Closed \(workspace.closed)")
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Open") { open(workspace) }
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.capsule)
+                    }
+                    .swipeActions {
+                        Button("Remove", systemImage: "trash") { removing = workspace }
+                            .tint(ThemeColor.statusFailed)
+                        Button("Open", systemImage: "arrow.uturn.backward") { open(workspace) }
+                            .tint(ThemeColor.accentSolid)
+                    }
+                    .contextMenu {
+                        Button("Open", systemImage: "arrow.uturn.backward") { open(workspace) }
+                        Button("Remove", systemImage: "trash", role: .destructive) { removing = workspace }
+                    }
+                }
+            }
+        }
+    }
+
+    private func open(_ workspace: ClosedWorkspace) {
+        Task {
+            if await store.open(workspace) { toasts.show("Opened \(workspace.name)") }
+        }
+    }
+
+    private func remove(_ workspace: ClosedWorkspace, force: Bool) {
+        Task {
+            if let risk = await store.remove(workspace, force: force) { risky = (workspace, risk) }
         }
     }
 

@@ -57,3 +57,8 @@
 {"type":"request","id":1,"command":{"command":"import_conversation","topic_id":"t1","agent":"claude","id":"10c95b72-5e91-4c10-b6ab-32d05e963631"}}
 {"type":"request","id":1,"command":{"command":"fork_session","session_id":"s1","after_seq":42}}
 {"type":"request","id":1,"command":{"command":"fork_session","session_id":"s1"}}
+{"type":"request","id":1,"command":{"command":"close_workspace","workspace_id":"w1"}}
+{"type":"request","id":1,"command":{"command":"close_workspace","workspace_id":"w1","force":true}}
+{"type":"request","id":1,"command":{"command":"open_workspace","workspace_id":"w1"}}
+{"type":"request","id":1,"command":{"command":"list_closed_workspaces"}}
+{"type":"request","id":1,"command":{"command":"remove_workspace","workspace_id":"w1","force":true}}

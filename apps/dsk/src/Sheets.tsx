@@ -12,6 +12,7 @@ import { shownValue } from "./appearance";
 import { invoke } from "@tauri-apps/api/core";
 import {
   type ArchiveRisk,
+  type ClosedWorkspace,
   type Command,
   type CommandOutput,
   errorText,
@@ -76,7 +77,17 @@ export type SheetRequest =
   | { kind: "pairing"; machineId: string; deviceName: string; code: string; expiresAtMs: number }
   | { kind: "add_device" }
   /** Something that can't be undone, which runs once confirmed. */
-  | { kind: "confirm"; machineId: string; where: string; action: string; command: Command };
+  | {
+      kind: "confirm";
+      machineId: string;
+      where: string;
+      /** What it does, when the action's name doesn't say enough. */
+      hint?: string;
+      action: string;
+      command: Command;
+      /** What happens once it's done, with the daemon's answer. */
+      then?: (output: CommandOutput) => void;
+    };
 
 const CANCEL_KEY: [ActionId, string][] = [["sheet.cancel", "Escape"]];
 
@@ -267,6 +278,8 @@ function WorkspaceSheet({
   onDone: (output: CommandOutput) => void;
 }) {
   const [goal, setGoal] = useState<PathGoal | null>(null);
+  // The device's closed workspaces, which adding one's folder opens again.
+  const [closed, setClosed] = useState<ClosedWorkspace[]>([]);
   // The folder chosen, once the sheet has gone on to choosing its MCP servers.
   const [target, setTarget] = useState<{ creating: boolean; path: string } | null>(null);
   const [path, setPath] = useState(STARTING_PATH);
@@ -275,6 +288,19 @@ function WorkspaceSheet({
   const caretPlaced = useRef(false);
   const list = useRef<HTMLDivElement>(null);
   const listId = useId();
+
+  useEffect(() => {
+    let shown = true;
+    request(sheet.machineId, { command: "list_closed_workspaces" })
+      .then((output) => {
+        if (shown && output.output === "closed_workspaces") setClosed(output.workspaces);
+      })
+      // Without them it adds as it always does, and the daemon still opens a closed one.
+      .catch(() => {});
+    return () => {
+      shown = false;
+    };
+  }, [sheet.machineId]);
 
   const split = splitPath(path);
   const listing = useListing(
@@ -289,9 +315,12 @@ function WorkspaceSheet({
           split.partial,
           listing.folders,
           workspaces.map((workspace) => workspace.path),
+          closed.map((workspace) => workspace.path),
         )
       : [];
   const chosen = highlight === null ? undefined : rows[highlight];
+  const closedAt = (folder: string) =>
+    closed.find((workspace) => workspace.path === folder.replace(/(.)\/+$/, "$1"));
 
   useEffect(() => {
     if (highlight !== null) list.current?.children[highlight]?.scrollIntoView({ block: "nearest" });
@@ -371,8 +400,10 @@ function WorkspaceSheet({
   };
 
   const entersFolder = completesOnEnter(goal, chosen);
+  // A closed workspace comes back as it was, servers and all.
+  const reopening = creating ? undefined : closedAt(chosen ? chosen.path : path.trim());
   // With servers in the library, choosing which ones the workspace gets comes next.
-  const asksForServers = library.length > 0;
+  const asksForServers = library.length > 0 && !reopening;
 
   return (
     <Sheet
@@ -380,7 +411,9 @@ function WorkspaceSheet({
       action={
         entersFolder
           ? "Complete"
-          : asksForServers
+          : reopening
+            ? "Open again"
+            : asksForServers
             ? "Next"
             : creating
               ? "Create workspace"
@@ -388,6 +421,7 @@ function WorkspaceSheet({
                 ? "Open workspace"
                 : "Add workspace"
       }
+      hint={reopening && closedHint(reopening)}
       canSubmit={creating ? canCreate(path) || entersFolder : path.trim() !== ""}
       run={async () => {
         const chosenPath = creating ? path.trim() : chosen ? chosen.path : path.trim();
@@ -429,7 +463,11 @@ function WorkspaceSheet({
                 }}
               >
                 <span className="name code">{row.typed}</span>
-                {row.tag && <span className="meta">{row.tag}</span>}
+                {row.tag && (
+                  <span className="meta">
+                    {row.tag === "closed" ? closedTag(closedAt(row.path)) : row.tag}
+                  </span>
+                )}
               </div>
             ))}
           </div>
@@ -478,6 +516,18 @@ function WorkspaceSheet({
     </Sheet>
   );
 }
+
+const closedOn = (ms: number) =>
+  new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+/** Says what adding a closed workspace's folder brings back. */
+const closedHint = (workspace: ClosedWorkspace) => {
+  const topics = workspace.topics === 1 ? "1 topic" : `${workspace.topics} topics`;
+  return `Closed ${closedOn(workspace.closed_at_ms)}, comes back with ${topics}`;
+};
+
+const closedTag = (workspace: ClosedWorkspace | undefined) =>
+  workspace ? `closed, ${workspace.topics === 1 ? "1 topic" : `${workspace.topics} topics`}` : "closed";
 
 const NO_PROFILE_VALUE = "none";
 
@@ -724,6 +774,7 @@ function ConfirmSheet({
     <Sheet
       where={sheet.where}
       action={sheet.action}
+      hint={sheet.hint}
       canSubmit
       dangerous
       returnsFocus

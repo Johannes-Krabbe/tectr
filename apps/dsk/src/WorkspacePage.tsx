@@ -35,7 +35,7 @@ import {
   type RowAction,
   useMcpRequests,
 } from "./McpServers";
-import { isOnline, STATE_LABEL, tabsOf, topicState } from "./model";
+import { homeShort, isOnline, STATE_LABEL, tabsOf, topicState } from "./model";
 import { Icon } from "./ui/Icon";
 import { MenuButton, type MenuGroups, RightClickMenu } from "./ui/Menu";
 import { Choice, Picker } from "./ui/Picker";
@@ -73,9 +73,6 @@ const serverDetail = (server: McpServer) => {
     .join(", ");
 };
 
-/** The home folder as `~`, which is how people read their own paths. */
-const homeShort = (path: string) => path.replace(/^\/(Users|home)\/[^/]+(?=\/|$)/, "~");
-
 /** A workspace's own page: its topics, and the MCP servers its agents get. The topics are one
  * Tab stop with the arrows moving through them. Every server's switch, profile and menu is a
  * control used where it sits, in the Tab order. What's archived and what the library has to add
@@ -83,11 +80,14 @@ const homeShort = (path: string) => path.replace(/^\/(Users|home)\/[^/]+(?=\/|$)
 export function WorkspacePage({
   device,
   workspace,
+  menuEnd,
   onOpenTopic,
   onNewTopic,
 }: {
   device: Device;
   workspace: Workspace;
+  /** What goes last in the page's menu, on its own: closing the workspace. */
+  menuEnd: MenuGroups;
   onOpenTopic: (topicId: string) => void;
   onNewTopic: () => void;
 }) {
@@ -538,6 +538,7 @@ export function WorkspacePage({
               ]
             : []),
         ],
+        ...menuEnd,
       ]
     : [];
 

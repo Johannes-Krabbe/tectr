@@ -14,6 +14,8 @@ final class Store {
     private(set) var workspaces: [Workspace] = []
     private(set) var requests: [Request] = []
     private(set) var archived: [ArchivedTopic] = []
+    /// Each device's closed workspaces, once asked, newest first.
+    private(set) var closed: [Device.ID: [ClosedWorkspace]] = [:]
     private(set) var conversations: [Conversation] = []
     /// What each device offers to add, once asked. By device.
     private(set) var candidates: [Device.ID: [ProviderCandidate]] = [:]
@@ -57,6 +59,7 @@ final class Store {
         workspaces: [Workspace],
         requests: [Request],
         archived: [ArchivedTopic],
+        closed: [Device.ID: [ClosedWorkspace]] = [:],
         conversations: [Conversation],
         candidates: [Device.ID: [ProviderCandidate]],
         folders: [String: [Folder]],
@@ -68,6 +71,7 @@ final class Store {
         self.workspaces = workspaces
         self.requests = requests
         self.archived = archived
+        self.closed = closed
         self.conversations = conversations
         self.candidates = candidates
         self.folders = folders
@@ -570,6 +574,44 @@ final class Store {
 
     func addWorkspace(on deviceID: Device.ID, path: String) async -> Bool {
         await send(device(deviceID)?.machineID, .addWorkspace(path: path)) != nil
+    }
+
+    /// Closes a workspace, stopping its agents and ending its shells. Unforced, its device
+    /// refuses while an agent in it runs, so callers confirm first when `runningAgents` isn't 0.
+    func close(workspace workspaceID: Workspace.ID, force: Bool) async -> Bool {
+        guard let deviceID = workspace(workspaceID)?.deviceID else { return false }
+        guard await send(device(deviceID)?.machineID, .closeWorkspace(workspaceID, force: force)) != nil else { return false }
+        await loadClosed(on: deviceID)
+        return true
+    }
+
+    func loadClosed(on deviceID: Device.ID) async {
+        guard case .closedWorkspaces(let found) = await send(device(deviceID)?.machineID, .listClosedWorkspaces) else { return }
+        closed[deviceID] = found.map {
+            ClosedWorkspace(
+                id: $0.id, deviceID: deviceID, name: $0.name, path: $0.path, closed: ago($0.closedAtMs), topics: Int($0.topics)
+            )
+        }
+    }
+
+    func open(_ workspace: ClosedWorkspace) async -> Bool {
+        guard await send(device(workspace.deviceID)?.machineID, .openWorkspace(workspace.id)) != nil else { return false }
+        closed[workspace.deviceID]?.removeAll { $0.id == workspace.id }
+        return true
+    }
+
+    /// Forgets a closed workspace and removes the worktrees tectr made for it. When that would
+    /// lose work in git and isn't forced, nothing happens and what it would lose comes back instead.
+    func remove(_ workspace: ClosedWorkspace, force: Bool) async -> ArchiveRisk? {
+        switch await send(device(workspace.deviceID)?.machineID, .removeWorkspace(workspace.id, force: force)) {
+        case .archiveRisk(let risk):
+            return ArchiveRisk(risk)
+        case nil:
+            return nil
+        case .some:
+            closed[workspace.deviceID]?.removeAll { $0.id == workspace.id }
+            return nil
+        }
     }
 
     func loadFolders(at path: String, on deviceID: Device.ID?) async {

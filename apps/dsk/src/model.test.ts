@@ -24,10 +24,12 @@ import {
   keepsAwake,
   moveChoices,
   sessionState,
+  runningIn,
   topicState,
   topicWorktree,
   unreadToggle,
   withKeepAwakeToggled,
+  workspaceState,
   tabsOf,
   tabLabel,
 } from "./model.ts";
@@ -143,6 +145,26 @@ test("something to read outranks an agent still working, but not one asking", ()
   assert.equal(topicState(topicWith(working, unread), true), "done");
   assert.equal(topicState(topicWith(working, tab("b", "done")), true), "working");
   assert.equal(topicState(topicWith(unread, tab("c", "waiting_for_you")), true), "waiting");
+});
+
+test("a workspace says its most urgent topic state and how many topics share it", () => {
+  const workspace = (...topics: Topic[]): Workspace => ({ id: "w", name: "w", path: "/w", topics });
+  const waiting = topicWith(tab("a", "waiting_for_you"));
+  const working = topicWith(tab("b", "working"));
+  assert.deepEqual(workspaceState(workspace(working, waiting, waiting), true), {
+    state: "waiting",
+    count: 2,
+  });
+  assert.deepEqual(workspaceState(workspace(), true), { state: "idle", count: 0 });
+  assert.equal(workspaceState(workspace(working), false).state, "stale");
+});
+
+test("closing a workspace stops what's starting, working or waiting", () => {
+  const topics = [
+    topicWith(tab("a", "starting"), tab("b", "working"), tab("c", "done", true)),
+    topicWith(tab("d", "waiting_for_you"), tab("e", "stopped")),
+  ];
+  assert.equal(runningIn({ id: "w", name: "w", path: "/w", topics }), 3);
 });
 
 test("toggling reads every unread tab, or else marks the finished ones unread", () => {

@@ -259,7 +259,7 @@ pub const ACTIONS: &[Action] = &[
     ),
     once(
         "sidebar.archive",
-        "Archive the pointed or focused topic",
+        "Archive the pointed or focused topic, or close the workspace",
         &["d d"],
     ),
     once(

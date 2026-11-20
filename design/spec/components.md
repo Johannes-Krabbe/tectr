@@ -40,14 +40,23 @@ The fixed section header that groups workspaces. It never collapses and isn't in
 
 - **Parts:** online dot, name, last seen when offline.
 - **States:** online (`status.online` dot), not responding (the same dot, "Not responding" in `status.waiting`), offline (hollow dot, name in `text.tertiary`).
+- **Desktop:** behaves like a WorkspaceRow: reaching it with the keyboard shows the device's page, offline or not, and Enter or a click goes into it. Its gear opens its settings and its + adds a workspace, neither opening the page.
 - **iOS:** a `List` section header, with the device's settings and add buttons at its end.
 
 ## WorkspaceRow
 
 - **Parts:** name, count of waiting sessions when folded.
 - **States:** open, folded, hover (desktop), selected.
-- **Desktop:** behaves like a TopicRow: reaching it with the keyboard shows the workspace's page, and Enter or a click goes into it. Its + adds a topic without opening the page.
+- **Desktop:** behaves like a TopicRow: reaching it with the keyboard shows the workspace's page, and Enter or a click goes into it. Its + adds a topic without opening the page. Right click opens its menu: a new topic, and closing it, which is also `d d`.
 - **iOS:** a row in the tree, with its topics indented below and a button for a new topic.
+
+## DevicePage
+
+A device's own page in the main pane, built like a WorkspacePage: its workspaces, and the closed ones.
+
+- **Parts:** header (name in `text.title`, then how it is in `text.tertiary`, or `status.waiting` when it's not responding, then "Keep awake" with its dropdown, and a menu button that adds a workspace and opens its settings), then a Workspaces section, and "Closed workspaces" as a disclosure under it.
+- **Workspace rows:** one Tab stop. StatusIcon, name, the path with `~` in `text.code-small` and `text.tertiary`, the most urgent state of its topics in words when it's waiting, failed or working, with how many topics share it, and the number of topics. A menu button at the end shows on the row in use and is a Tab after it. Right click opens the same menu, and `d d` closes the workspace while its row has the keyboard.
+- **Closed rows:** form rows with the name in `text.tertiary`, the path, how many topics and when it closed, Open as the row's button, and a menu with Remove that shows on the row in use.
 
 ## WorkspacePage
 

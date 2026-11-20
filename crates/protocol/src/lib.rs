@@ -346,6 +346,30 @@ pub enum Command {
     CreateWorkspace {
         path: String,
     },
+    /// Take a workspace out of the app without forgetting anything: its agents stop and its
+    /// shells end, and its topics, tabs, worktrees and settings wait for
+    /// [`Command::OpenWorkspace`]. Fails with [`ErrorCode::Busy`] while an agent in it is
+    /// starting, working or waiting, unless `force` says the person has confirmed.
+    CloseWorkspace {
+        workspace_id: WorkspaceId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
+    },
+    /// Bring a closed workspace back where it was, with its topics and tabs. Adding its path
+    /// again does the same.
+    OpenWorkspace {
+        workspace_id: WorkspaceId,
+    },
+    ListClosedWorkspaces,
+    /// Forget a closed workspace: its topics, tabs and transcripts, and the worktrees and
+    /// branches tectr made for it. The repo's own folder is never touched. Without `force`,
+    /// nothing happens if that would lose work in git, and the answer is an
+    /// [`CommandOutput::ArchiveRisk`] saying what.
+    RemoveWorkspace {
+        workspace_id: WorkspaceId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
+    },
     /// List the folders directly inside a folder on the daemon's machine, for completing
     /// a path as it's typed. The path works as in [`Command::AddWorkspace`]. A folder that
     /// doesn't exist has no folders in it, because that's normal halfway through typing.
@@ -724,6 +748,10 @@ pub enum CommandOutput {
     ArchivedTopics {
         topics: Vec<ArchivedTopic>,
     },
+    /// Newest first.
+    ClosedWorkspaces {
+        workspaces: Vec<ClosedWorkspace>,
+    },
     McpServer {
         server: McpServer,
     },
@@ -827,6 +855,16 @@ pub struct ArchivedTopic {
     pub workspace_id: WorkspaceId,
     pub name: String,
     pub archived_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClosedWorkspace {
+    pub id: WorkspaceId,
+    pub name: String,
+    pub path: String,
+    pub closed_at_ms: i64,
+    /// The topics that come back with it, archived ones aside.
+    pub topics: u32,
 }
 
 /// A folder on a daemon's machine.
@@ -937,8 +975,28 @@ impl DaemonState {
             StateChange::MachineRenamed { name } => {
                 self.machine.name = name.clone();
             }
-            StateChange::WorkspaceAdded { workspace } => {
-                upsert(&mut self.workspaces, workspace.clone(), |w| &w.id);
+            StateChange::WorkspaceAdded { workspace, at } => {
+                match (self.workspace(&workspace.id).is_some(), at) {
+                    (false, Some(at)) => {
+                        let at = (*at as usize).min(self.workspaces.len());
+                        self.workspaces.insert(at, workspace.clone());
+                    }
+                    _ => upsert(&mut self.workspaces, workspace.clone(), |w| &w.id),
+                }
+            }
+            StateChange::WorkspaceRemoved { workspace_id } => {
+                if let Some(workspace) = self.workspace(workspace_id) {
+                    let gone: Vec<SessionId> = workspace
+                        .topics
+                        .iter()
+                        .flat_map(|t| &t.sessions)
+                        .map(|s| s.id.clone())
+                        .collect();
+                    for session_id in gone {
+                        self.commands.remove(&session_id);
+                    }
+                }
+                self.workspaces.retain(|w| &w.id != workspace_id);
             }
             StateChange::TopicAdded {
                 workspace_id,
@@ -1668,6 +1726,13 @@ pub enum StateChange {
     },
     WorkspaceAdded {
         workspace: Workspace,
+        /// Where it goes among the workspaces, for one opened again. Without it, it goes last.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<u32>,
+    },
+    /// It was closed, after its agents were stopped. Opening it adds it again.
+    WorkspaceRemoved {
+        workspace_id: WorkspaceId,
     },
     TopicAdded {
         workspace_id: WorkspaceId,
@@ -2148,9 +2213,33 @@ mod tests {
                 topics: vec![],
                 mcp: BTreeMap::new(),
             },
+            at: None,
         };
         state.apply(&change);
         state.apply(&change);
+        assert_eq!(state.workspaces.len(), 1);
+
+        // One opened again goes back where it was, and only once.
+        let reopened = StateChange::WorkspaceAdded {
+            workspace: Workspace {
+                id: "v".into(),
+                name: "v".into(),
+                path: "/v".into(),
+                topics: vec![],
+                mcp: BTreeMap::new(),
+            },
+            at: Some(0),
+        };
+        state.apply(&reopened);
+        state.apply(&reopened);
+        let ids: Vec<&str> = state.workspaces.iter().map(|w| w.id.0.as_str()).collect();
+        assert_eq!(ids, ["v", "w"]);
+
+        let closed = StateChange::WorkspaceRemoved {
+            workspace_id: "v".into(),
+        };
+        state.apply(&closed);
+        state.apply(&closed);
         assert_eq!(state.workspaces.len(), 1);
     }
 

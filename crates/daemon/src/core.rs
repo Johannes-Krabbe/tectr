@@ -41,6 +41,7 @@ use diff::DiffAction;
 mod import;
 mod mcp;
 mod remote;
+mod workspaces;
 
 pub(crate) use remote::PAIRING_WAIT;
 
@@ -295,6 +296,16 @@ impl Core {
         match command {
             Command::AddWorkspace { path } => self.add_workspace(&path).await,
             Command::CreateWorkspace { path } => self.create_workspace(&path).await,
+            Command::CloseWorkspace {
+                workspace_id,
+                force,
+            } => self.close_workspace(&workspace_id, force),
+            Command::OpenWorkspace { workspace_id } => self.open_workspace(&workspace_id),
+            Command::ListClosedWorkspaces => self.closed_workspaces(),
+            Command::RemoveWorkspace {
+                workspace_id,
+                force,
+            } => self.remove_workspace(&workspace_id, force).await,
             Command::ListFolders { path } => list_folders(&path).await,
             Command::CreateTopic {
                 workspace_id,
@@ -504,6 +515,15 @@ impl Core {
                 workspace: existing.clone(),
             });
         }
+        // Adding a repo the app has seen brings back everything it had.
+        if let Some(closed) = inner
+            .store
+            .closed_workspace_at(&root_text)
+            .map_err(internal)?
+        {
+            drop(inner);
+            return self.open_workspace(&closed);
+        }
         let workspace = Workspace {
             id: WorkspaceId(crate::new_id()),
             name: root.file_name().map_or_else(
@@ -517,6 +537,7 @@ impl Core {
         inner.store.insert_workspace(&workspace).map_err(internal)?;
         inner.emit(StateChange::WorkspaceAdded {
             workspace: workspace.clone(),
+            at: None,
         });
         Ok(CommandOutput::Workspace { workspace })
     }
@@ -771,6 +792,19 @@ impl Core {
     /// matches it when they resume.
     async fn restore_topic(&self, topic_id: &TopicId) -> Result<CommandOutput, CommandError> {
         let _changing = self.worktree_changes.lock().await;
+        // A topic only shows in an open workspace, so restoring one opens its workspace too.
+        let closed = {
+            let inner = self.lock();
+            inner
+                .store
+                .archived_topic(topic_id)
+                .map_err(internal)?
+                .map(|(workspace_id, _)| workspace_id)
+                .filter(|workspace_id| inner.state.workspace(workspace_id).is_none())
+        };
+        if let Some(workspace_id) = closed {
+            self.open_workspace(&workspace_id)?;
+        }
         let (workspace_id, mut topic, repo) = {
             let inner = self.lock();
             let (workspace_id, topic) = inner

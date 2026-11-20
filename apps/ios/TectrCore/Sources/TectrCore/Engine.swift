@@ -57,6 +57,17 @@ private struct MoveTargetValue: Encodable, Sendable {
 
 public extension Command {
     static func addWorkspace(path: String) -> Command { Command("add_workspace", ["path": path]) }
+
+    static func closeWorkspace(_ workspaceId: String, force: Bool) -> Command {
+        Command("close_workspace", ["workspace_id": workspaceId, "force": force])
+    }
+
+    static func openWorkspace(_ workspaceId: String) -> Command { Command("open_workspace", ["workspace_id": workspaceId]) }
+    static let listClosedWorkspaces = Command("list_closed_workspaces")
+
+    static func removeWorkspace(_ workspaceId: String, force: Bool) -> Command {
+        Command("remove_workspace", ["workspace_id": workspaceId, "force": force])
+    }
     static func listFolders(path: String) -> Command { Command("list_folders", ["path": path]) }
 
     static func createTopic(workspaceId: String, name: String?, atRoot: Bool) -> Command {

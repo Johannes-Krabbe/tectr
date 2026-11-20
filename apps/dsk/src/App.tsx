@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AgentPane } from "./AgentPane";
 import { AppSettings } from "./AppSettings";
+import { DevicePage } from "./DevicePage";
 import { DeviceSettings } from "./DeviceSettings";
 import {
   type Approval,
@@ -41,6 +42,7 @@ import {
   connectionProblem,
   deviceNotice,
   isOnline,
+  runningIn,
   type MoveChoice,
   moveChoices,
   sessionState,
@@ -66,7 +68,7 @@ import {
   topicTabs,
   type View,
 } from "./navigation";
-import { appItems, type Runnable, topicItems, withRuns } from "./menus";
+import { appItems, type Runnable, topicItems, withRuns, workspaceItems } from "./menus";
 import { DiffPane, forgetDiffView } from "./DiffPane";
 import { NEW_TAB_STATE, NewTab, type NewTabState } from "./NewTab";
 import { NewTopic, type NewTopicForm } from "./NewTopic";
@@ -176,7 +178,7 @@ export function App() {
       ? topics.find((t) => t.machineId === view.machineId && t.topic.id === view.topicId)
       : undefined;
   const pageDevice =
-    view?.kind === "workspace"
+    view?.kind === "workspace" || view?.kind === "device"
       ? devices.find((d) => d.state?.machine.id === view.machineId)
       : undefined;
   const pageWorkspace =
@@ -633,6 +635,62 @@ export function App() {
     focusWhenShown.current = next.kind === "new_topic" ? focusPane : stayOnSide;
   };
 
+  /** Whether what's shown is in the workspace: its page, a topic in it, or a new topic there. */
+  const showsWorkspace = (machineId: string, workspace: Workspace) =>
+    view !== null &&
+    "machineId" in view &&
+    view.machineId === machineId &&
+    ((view.kind === "workspace" && view.workspaceId === workspace.id) ||
+      (view.kind === "new_topic" && view.workspaceId === workspace.id) ||
+      (view.kind === "topic" && workspace.topics.some((t) => t.id === view.topicId)));
+
+  /** Closes straight away when no agent would stop, and asks first when one would. The shown
+   * workspace gives way to its device's page, where it's now among the closed ones. */
+  const closeWorkspace = (machineId: string, workspace: Workspace) => {
+    const device = devices.find((d) => d.state?.machine.id === machineId);
+    if (!device || !isOnline(device)) return;
+    const fromSidebar = inSidebar();
+    const leaving = showsWorkspace(machineId, workspace);
+    const afterClosing = () => {
+      const stayOnSide = fromSidebar ? () => requestAnimationFrame(focusSidebar) : focusPane;
+      if (!leaving) {
+        stayOnSide();
+        return;
+      }
+      preview({ kind: "device", machineId });
+      focusWhenShown.current = stayOnSide;
+    };
+    const running = runningIn(workspace);
+    if (running > 0) {
+      const agents = running === 1 ? "An agent is" : `${running} agents are`;
+      setSheet({
+        kind: "confirm",
+        machineId,
+        where: `Close ${workspace.name}`,
+        hint: `${agents} working in it. Closing stops ${running === 1 ? "it" : "them"}.`,
+        action: "Stop and close",
+        command: { command: "close_workspace", workspace_id: workspace.id, force: true },
+        then: afterClosing,
+      });
+      return;
+    }
+    setError(null);
+    request(machineId, { command: "close_workspace", workspace_id: workspace.id })
+      .then(afterClosing)
+      .catch(reportFailure);
+  };
+
+  /** What a workspace offers, with what runs it. Nothing while its device can't be reached. */
+  const workspaceActions = (machineId: string, workspaceId: string): Runnable[][] => {
+    const device = devices.find((d) => d.state?.machine.id === machineId);
+    const workspace = device?.state?.workspaces.find((w) => w.id === workspaceId);
+    if (!device || !workspace || !isOnline(device)) return [];
+    return withRuns(workspaceItems(), {
+      "new-topic": () => createTopicIn(device, workspace),
+      "close-workspace": () => closeWorkspace(machineId, workspace),
+    });
+  };
+
   const moveToFolder = (target: TopicEntry, choice: MoveChoice) => {
     if (!isOnline(target.device)) return;
     if (target.topic.sessions.some(isActive)) {
@@ -714,6 +772,10 @@ export function App() {
     return target ? asMenu(topicActions(target)) : [];
   };
 
+  /** A workspace's menu, for its sidebar row, its row on the device's page and a right click. */
+  const workspaceMenu = (machineId: string, workspaceId: string): MenuGroups =>
+    asMenu(workspaceActions(machineId, workspaceId));
+
   // A device that drops off while its settings are open stays in the list until they close.
   const settingsNav: SettingsNav = {
     groups: settingsGroups(
@@ -770,6 +832,25 @@ export function App() {
         topics.find((t) => t.machineId === row.dataset.machine && t.topic.id === row.dataset.topic);
       if (rowTopic && act(event, "sidebar.rename", () => renameTopic(rowTopic))) return;
       if (rowTopic && act(event, "sidebar.archive", () => archiveTopic(rowTopic))) return;
+      // A workspace's sidebar row, or else its row on the device's page that has the keyboard.
+      const workspaceRow = row
+        ? row.dataset.topic
+          ? null
+          : row
+        : active instanceof HTMLElement
+          ? active.closest<HTMLElement>(".device-workspace")
+          : null;
+      const machine = workspaceRow?.dataset.machine;
+      const rowWorkspace = devices
+        .find((d) => machine !== undefined && d.state?.machine.id === machine)
+        ?.state?.workspaces.find((w) => w.id === workspaceRow?.dataset.workspace);
+      if (
+        machine &&
+        rowWorkspace &&
+        act(event, "sidebar.archive", () => closeWorkspace(machine, rowWorkspace))
+      ) {
+        return;
+      }
       if (rowTopic && act(event, "sidebar.toggle_unread", () => toggleUnread(rowTopic))) return;
       if (inPane(event)) {
         // Settings decides for itself, because going back there depends on where you are in it.
@@ -793,6 +874,7 @@ export function App() {
           onPreview={preview}
           appMenu={asMenu(appActions())}
           topicMenu={topicMenu}
+          workspaceMenu={workspaceMenu}
           onSettings={openSettings}
           onAppSettings={() => openAppSettings()}
           onAddWorkspace={addWorkspaceOn}
@@ -836,7 +918,9 @@ export function App() {
               onCancel={() => {
                 const back = navigation.beforeNewTopic;
                 const gone =
-                  back?.kind === "workspace"
+                  back?.kind === "device"
+                    ? !devices.some((d) => d.state?.machine.id === back.machineId)
+                    : back?.kind === "workspace"
                     ? !devices.some(
                         (d) =>
                           d.state?.machine.id === back.machineId &&
@@ -865,8 +949,29 @@ export function App() {
                 key={`${view.machineId}/${view.workspaceId}`}
                 device={pageDevice}
                 workspace={pageWorkspace}
+                menuEnd={asMenu(
+                  workspaceActions(view.machineId, view.workspaceId).map((group) =>
+                    group.filter((item) => item.id === "close-workspace"),
+                  ),
+                ).filter((group) => group.length > 0)}
                 onOpenTopic={(topicId) => open({ kind: "topic", machineId: view.machineId, topicId })}
                 onNewTopic={() => createTopicIn(pageDevice, pageWorkspace)}
+              />
+            </>
+          ) : view?.kind === "device" && pageDevice ? (
+            <>
+              <DeviceNoticeLine device={pageDevice} onReconnect={reconnectNow} />
+              {error && <p className="error main-error">{error}</p>}
+              <DevicePage
+                key={view.machineId}
+                device={pageDevice}
+                workspaceMenu={(workspaceId) => workspaceMenu(view.machineId, workspaceId)}
+                onOpenWorkspace={(workspaceId) =>
+                  open({ kind: "workspace", machineId: view.machineId, workspaceId })
+                }
+                onAddWorkspace={() => addWorkspaceOn(pageDevice)}
+                onSettings={() => openSettings(view.machineId)}
+                onConfirm={setSheet}
               />
             </>
           ) : entry ? (
@@ -1016,8 +1121,15 @@ export function App() {
           onClose={() => setSheet(null)}
           onDone={(output) => {
             if (output.output === "workspace" && sheet.kind === "workspace") {
-              open(landingIn(navigation, sheet.machineId, output.workspace));
+              const { workspace } = output;
+              // One with topics was here before, closed or open, so its page shows what's in it.
+              open(
+                workspace.topics.length > 0
+                  ? { kind: "workspace", machineId: sheet.machineId, workspaceId: workspace.id }
+                  : landingIn(navigation, sheet.machineId, workspace),
+              );
             }
+            if (sheet.kind === "confirm") sheet.then?.(output);
             // The tab can already be gone by now, so this can't wait for the change.
             if (sheet.kind === "close") focusPane();
             if (sheet.kind === "archive") afterArchiving(sheet);

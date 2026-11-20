@@ -11,8 +11,8 @@ use daemon::{AgentLauncher, Config, Daemon, Shell};
 use engine::{Connection, Engine, EngineError, Liveness, Remote};
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use protocol::{
-    AgentCommand, Approval, ArchiveRisk, ClientMessage, Command, CommandOutput, DaemonState,
-    ErrorCode, MachineId, MoveTarget, PermissionMode, PermissionOutcome, PromptImage,
+    AgentCommand, Approval, ArchiveRisk, ClientMessage, ClosedWorkspace, Command, CommandOutput,
+    DaemonState, ErrorCode, MachineId, MoveTarget, PermissionMode, PermissionOutcome, PromptImage,
     ServerMessage, Session, SessionEventKind, SessionRef, SessionStatus, StopReason, Topic,
     TopicId, Workspace, WorktreeRisk,
 };
@@ -3851,5 +3851,230 @@ async fn only_an_answer_of_an_agent_that_can_copy_sessions_can_be_branched() {
         fork(&engine, &source, Some(1)).await,
         "isn't the end of an answer",
     );
+    daemon.shutdown().await;
+}
+
+fn new_repo(root: &Path, name: &str) -> PathBuf {
+    let repo = root.join(name);
+    std::fs::create_dir(&repo).unwrap();
+    run_git(&repo, &["init", "-q"]);
+    commit(&repo, "init");
+    repo
+}
+
+fn close_workspace(workspace: &Workspace, force: bool) -> Command {
+    Command::CloseWorkspace {
+        workspace_id: workspace.id.clone(),
+        force,
+    }
+}
+
+fn workspace_of(engine: &Engine, topic: &Topic) -> Workspace {
+    state_of(engine)
+        .workspaces
+        .into_iter()
+        .find(|w| w.topics.iter().any(|t| t.id == topic.id))
+        .unwrap()
+}
+
+async fn closed(engine: &Engine, machine: &MachineId) -> Vec<ClosedWorkspace> {
+    match engine
+        .request(machine, Command::ListClosedWorkspaces)
+        .await
+        .unwrap()
+    {
+        CommandOutput::ClosedWorkspaces { workspaces } => workspaces,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_workspace_stops_its_agents_and_opening_brings_it_all_back() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    let other = add_workspace(&engine, &machine, &new_repo(&fixture.root, "other")).await;
+    let workspace = workspace_of(&engine, &topic);
+    let opened = engine
+        .request(
+            &machine,
+            Command::OpenTerminal {
+                topic_id: topic.id.clone(),
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .await
+        .unwrap();
+    let CommandOutput::Terminal { terminal, .. } = opened else {
+        panic!("unexpected output {opened:?}");
+    };
+    let pid = agent_pid(&engine, &session).await;
+    prompt(&engine, &session, "hang").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Working).await;
+
+    let error = engine
+        .request(&machine, close_workspace(&workspace, false))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::Busy));
+    assert!(state_of(&engine).workspace(&workspace.id).is_some());
+    assert!(
+        is_process_alive(&pid),
+        "refusing must leave the agent running"
+    );
+
+    engine
+        .request(&machine, close_workspace(&workspace, true))
+        .await
+        .unwrap();
+    assert!(state_of(&engine).workspace(&workspace.id).is_none());
+    assert!(state_of(&engine).session(&session.session_id).is_none());
+    wait_for("the agent's process to die", || {
+        (!is_process_alive(&pid)).then_some(())
+    })
+    .await;
+    let worktree = PathBuf::from(&topic.worktrees[0].path);
+    assert!(worktree.exists(), "closing leaves the disk alone");
+    let listed = closed(&engine, &machine).await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!((&listed[0].id, listed[0].topics), (&workspace.id, 1));
+    let error = prompt(&engine, &session, "whoami").await.unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::NotFound));
+
+    // It comes back where it was, with its tabs, and its agent picks up where it stopped.
+    let output = engine
+        .request(
+            &machine,
+            Command::OpenWorkspace {
+                workspace_id: workspace.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(output, CommandOutput::Workspace { .. }));
+    let order: Vec<_> = state_of(&engine)
+        .workspaces
+        .into_iter()
+        .map(|w| w.id)
+        .collect();
+    assert_eq!(order, [workspace.id.clone(), other.id.clone()]);
+    let back = state_of(&engine).topic(&topic.id).cloned().unwrap();
+    assert_eq!(back.sessions.len(), 1);
+    assert_eq!(back.sessions[0].status, SessionStatus::Stopped);
+    assert_eq!(back.terminals.len(), 1);
+    assert_eq!(back.terminals[0].id, terminal.id);
+    assert!(closed(&engine, &machine).await.is_empty());
+    prompt(&engine, &session, "whoami").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let report = agent_text(&engine, &session).concat();
+    assert!(report.contains("resumed=true"), "{report}");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn adding_a_closed_workspaces_repo_again_opens_it() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let workspace = workspace_of(&engine, &topic);
+    let output = engine
+        .request(&machine, close_workspace(&workspace, false))
+        .await
+        .unwrap();
+    assert_eq!(output, CommandOutput::Done);
+
+    let again = add_workspace(&engine, &machine, &fixture.repo).await;
+    assert_eq!(again.id, workspace.id);
+    assert_eq!(again.topics.len(), 1);
+    assert!(state_of(&engine).topic(&topic.id).is_some());
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restoring_a_topic_opens_its_closed_workspace() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let workspace = workspace_of(&engine, &topic);
+    engine
+        .request(&machine, archive_topic(&topic, false))
+        .await
+        .unwrap();
+    engine
+        .request(&machine, close_workspace(&workspace, false))
+        .await
+        .unwrap();
+
+    engine
+        .request(&machine, restore_topic(&topic))
+        .await
+        .unwrap();
+    assert!(state_of(&engine).workspace(&workspace.id).is_some());
+    assert!(state_of(&engine).topic(&topic.id).is_some());
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_workspace_says_what_it_would_lose_and_forgets_it_when_forced() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let machine = daemon.machine_id().clone();
+    let engine = connect(&daemon).await;
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    prompt(&engine, &session, "whoami").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let workspace = workspace_of(&engine, &topic);
+    let worktree = PathBuf::from(&topic.worktrees[0].path);
+    let branch = topic.worktrees[0].branch.clone();
+    commit(&worktree, "work");
+    let remove = |force| Command::RemoveWorkspace {
+        workspace_id: workspace.id.clone(),
+        force,
+    };
+
+    let error = engine.request(&machine, remove(true)).await.unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::InvalidInput));
+    engine
+        .request(&machine, close_workspace(&workspace, false))
+        .await
+        .unwrap();
+
+    let output = engine.request(&machine, remove(false)).await.unwrap();
+    let expected = ArchiveRisk {
+        running: 0,
+        worktrees: vec![WorktreeRisk {
+            path: worktree.display().to_string(),
+            branch: branch.clone(),
+            uncommitted: 0,
+            unpushed: 1,
+        }],
+    };
+    assert_eq!(output, CommandOutput::ArchiveRisk { risk: expected });
+    assert_eq!(closed(&engine, &machine).await.len(), 1);
+    assert!(worktree.exists());
+
+    let output = engine.request(&machine, remove(true)).await.unwrap();
+    assert_eq!(output, CommandOutput::Done);
+    assert!(closed(&engine, &machine).await.is_empty());
+    wait_for("the worktree to go", || (!worktree.exists()).then_some(())).await;
+    wait_for("the branch to go", || {
+        (!branches(&fixture.repo).contains(&branch)).then_some(())
+    })
+    .await;
+    assert!(fixture.repo.exists(), "the repo itself stays");
+
+    // Adding it again starts over.
+    let again = add_workspace(&engine, &machine, &fixture.repo).await;
+    assert_ne!(again.id, workspace.id);
+    assert!(again.topics.is_empty());
     daemon.shutdown().await;
 }

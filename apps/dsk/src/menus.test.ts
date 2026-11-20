@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { appItems, topicItems, withRuns } from "./menus.ts";
+import { appItems, topicItems, withRuns, workspaceItems } from "./menus.ts";
 
 const topic = { toggle: { unread: true, count: 1 } };
 const ids = (groups: { id: string }[][]) => groups.map((group) => group.map((item) => item.id));
@@ -32,6 +32,13 @@ test("what's done rarely has no key, only its place in the menu", () => {
   assert.equal(open.label, "Open its workspace");
   assert.equal(open.key, undefined);
   assert.equal(importing.key, undefined);
+});
+
+test("a workspace's menu keeps closing apart, on the key that archives a topic", () => {
+  const groups = workspaceItems();
+  assert.deepEqual(ids(groups), [["new-topic"], ["close-workspace"]]);
+  assert.equal(groups[1][0].label, "Close workspace");
+  assert.equal(groups[1][0].key, "sidebar.archive");
 });
 
 test("the app's menu only offers what would do something", () => {

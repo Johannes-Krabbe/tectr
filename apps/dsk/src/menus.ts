@@ -1,4 +1,4 @@
-// What can be done to a topic, in the app as a whole and in a diff, described once. The menus
+// What can be done to a topic or a workspace, in the app as a whole and in a diff, described once. The menus
 // and a right click both read this, so neither can offer something the other doesn't.
 
 import type { ActionId } from "./keybinds";
@@ -47,11 +47,22 @@ export function topicItems(topic: {
   ];
 }
 
+export type WorkspaceItemId = "new-topic" | "close-workspace";
+
+/** What a workspace on a reachable device offers, wherever it's shown: its sidebar row, its
+ * page and its row on the device's page. Closing comes last and on its own, like archiving. */
+export function workspaceItems(): ActionItem<WorkspaceItemId>[][] {
+  return [
+    [{ id: "new-topic", label: "New topic", key: "sidebar.add" }],
+    [{ id: "close-workspace", label: "Close workspace", key: "sidebar.archive" }],
+  ];
+}
+
 export type AppItemId = "next" | "mark-all-read";
 
 /** What's about every topic at once. Only what would do something right now is there, so with
- * nothing waiting or unread there's nothing, and the menu isn't shown. Devices and pairing are
- * in Settings, and archived topics on their workspace's page. */
+ * nothing waiting or unread there's nothing, and the menu isn't shown. Pairing is in Settings,
+ * closed workspaces on their device's page, and archived topics on their workspace's page. */
 export function appItems(now: {
   /** Requests waiting on reachable devices. */
   requests: number;

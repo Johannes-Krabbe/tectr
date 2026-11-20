@@ -58,3 +58,6 @@
 {"type":"response","id":1,"result":{"Ok":{"output":"conversations","conversations":[{"agent":"codex","id":"01a18876-b39d-75f2-906c-f7a10fd228b2","title":"Check the diff","cwd":"/Users/me/repo","updated_at_ms":1700000000000}]}}}
 {"type":"session_event","event":{"session":{"machine_id":"m1","session_id":"s1"},"seq":12,"at_ms":1000,"kind":{"event":"turn_ended","stop_reason":"end_turn","last_message":"msg_01"}}}
 {"type":"state_changed","change":{"change":"provider_changed","provider":{"agent":"claude","name":"Claude Code","version":"0.100.0","modes":["auto"],"models":[],"default_model":null,"can_fork":true}}}
+{"type":"response","id":42,"result":{"Ok":{"output":"closed_workspaces","workspaces":[{"id":"w1","name":"repo","path":"/repo","closed_at_ms":1700000000000,"topics":3}]}}}
+{"type":"state_changed","change":{"change":"workspace_removed","workspace_id":"w1"}}
+{"type":"state_changed","change":{"change":"workspace_added","workspace":{"id":"w1","name":"repo","path":"/repo","topics":[]},"at":2}}

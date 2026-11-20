@@ -33,6 +33,10 @@ private extension View {
     NavigationStack { NewTopicView(workspaceID: "tectr-laptop") { _ in } }.previewed()
 }
 
+#Preview("Device") {
+    NavigationStack { DeviceView(deviceID: "laptop") }.previewed()
+}
+
 #Preview("Settings") {
     SettingsSheet().previewed()
 }

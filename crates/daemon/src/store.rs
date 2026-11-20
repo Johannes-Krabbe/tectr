@@ -6,11 +6,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use protocol::{
-    AgentCommand, Approval, ApprovalId, ArchivedTopic, DaemonState, DeviceSettings, Diff, DiffId,
-    DiffScope, ImageId, Machine, MachineId, McpProfileId, McpServer, McpServerId, PairedClient,
-    PermissionMode, PromptImage, Provider, Session, SessionEvent, SessionEventKind, SessionId,
-    SessionRef, SessionStatus, Terminal, TerminalId, TerminalStatus, Topic, TopicId, Workspace,
-    WorkspaceId, WorkspaceMcp, Worktree, WorktreeId,
+    AgentCommand, Approval, ApprovalId, ArchivedTopic, ClosedWorkspace, DaemonState,
+    DeviceSettings, Diff, DiffId, DiffScope, ImageId, Machine, MachineId, McpProfileId, McpServer,
+    McpServerId, PairedClient, PermissionMode, PromptImage, Provider, Session, SessionEvent,
+    SessionEventKind, SessionId, SessionRef, SessionStatus, Terminal, TerminalId, TerminalStatus,
+    Topic, TopicId, Workspace, WorkspaceId, WorkspaceMcp, Worktree, WorktreeId,
 };
 
 use crate::acp::ForkPoint;
@@ -163,6 +163,9 @@ const MIGRATIONS: &[&str] = &[
     UPDATE topics SET mcp = NULL;
     ALTER TABLE workspaces ADD COLUMN mcp TEXT;
 ",
+    "
+    ALTER TABLE workspaces ADD COLUMN closed_at_ms INTEGER;
+",
 ];
 
 pub struct Store {
@@ -277,32 +280,12 @@ impl Store {
 
     pub fn load_state(&self, machine: Machine) -> Result<DaemonState> {
         let mut workspaces = self.collect(
-            "SELECT id, name, path, mcp FROM workspaces ORDER BY rowid",
+            "SELECT id, name, path, mcp FROM workspaces WHERE closed_at_ms IS NULL ORDER BY rowid",
             [],
-            |row| {
-                let mcp: Option<String> = row.get(3)?;
-                Ok(Workspace {
-                    id: WorkspaceId(row.get(0)?),
-                    name: row.get(1)?,
-                    path: row.get(2)?,
-                    topics: vec![],
-                    // Like drafts, a value a newer version wrote that doesn't parse is lost.
-                    mcp: mcp
-                        .and_then(|text| serde_json::from_str(&text).ok())
-                        .unwrap_or_default(),
-                })
-            },
+            workspace_row,
         )?;
         for workspace in &mut workspaces {
-            workspace.topics = self.collect(
-                "SELECT id, name, worktree_id FROM topics
-                 WHERE workspace_id = ?1 AND archived_at_ms IS NULL ORDER BY rowid",
-                [&workspace.id.0],
-                topic_row,
-            )?;
-            for topic in &mut workspace.topics {
-                self.fill_topic(topic)?;
-            }
+            self.fill_workspace(workspace)?;
         }
         let providers: Vec<String> =
             self.collect("SELECT provider FROM providers ORDER BY rowid", [], |row| {
@@ -325,8 +308,9 @@ impl Store {
             commands: self.commands(
                 "SELECT sessions.id, sessions.commands FROM sessions
                  JOIN topics ON topics.id = sessions.topic_id
+                 JOIN workspaces ON workspaces.id = topics.workspace_id
                  WHERE sessions.closed_at_ms IS NULL AND topics.archived_at_ms IS NULL
-                     AND sessions.commands IS NOT NULL",
+                     AND workspaces.closed_at_ms IS NULL AND sessions.commands IS NOT NULL",
                 [],
             )?,
             settings: self.device_settings()?,
@@ -385,6 +369,20 @@ impl Store {
                 .conn
                 .execute("DELETE FROM meta WHERE key = 'awake_until_ms'", [])?,
         };
+        Ok(())
+    }
+
+    /// Its topics with their tabs, archived ones aside.
+    fn fill_workspace(&self, workspace: &mut Workspace) -> Result<()> {
+        workspace.topics = self.collect(
+            "SELECT id, name, worktree_id FROM topics
+             WHERE workspace_id = ?1 AND archived_at_ms IS NULL ORDER BY rowid",
+            [&workspace.id.0],
+            topic_row,
+        )?;
+        for topic in &mut workspace.topics {
+            self.fill_topic(topic)?;
+        }
         Ok(())
     }
 
@@ -486,6 +484,80 @@ impl Store {
                 })
             },
         )
+    }
+
+    /// A closed workspace with its topics and their tabs, as opening it brings them back.
+    pub fn closed_workspace(&self, id: &WorkspaceId) -> Result<Option<Workspace>> {
+        let found = self
+            .conn
+            .query_row(
+                "SELECT id, name, path, mcp FROM workspaces
+                 WHERE id = ?1 AND closed_at_ms IS NOT NULL",
+                [&id.0],
+                workspace_row,
+            )
+            .optional()?;
+        let Some(mut workspace) = found else {
+            return Ok(None);
+        };
+        self.fill_workspace(&mut workspace)?;
+        Ok(Some(workspace))
+    }
+
+    /// The closed workspace at a repo's path, which adding that path again opens.
+    pub fn closed_workspace_at(&self, path: &str) -> Result<Option<WorkspaceId>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM workspaces WHERE path = ?1 AND closed_at_ms IS NOT NULL",
+                [path],
+                |row| Ok(WorkspaceId(row.get(0)?)),
+            )
+            .optional()?)
+    }
+
+    /// Newest first.
+    pub fn closed_workspaces(&self) -> Result<Vec<ClosedWorkspace>> {
+        self.collect(
+            "SELECT id, name, path, closed_at_ms,
+                 (SELECT COUNT(*) FROM topics
+                  WHERE workspace_id = workspaces.id AND archived_at_ms IS NULL)
+             FROM workspaces WHERE closed_at_ms IS NOT NULL
+             ORDER BY closed_at_ms DESC, rowid DESC",
+            [],
+            |row| {
+                Ok(ClosedWorkspace {
+                    id: WorkspaceId(row.get(0)?),
+                    name: row.get(1)?,
+                    path: row.get(2)?,
+                    closed_at_ms: row.get(3)?,
+                    topics: row.get(4)?,
+                })
+            },
+        )
+    }
+
+    /// How many open workspaces come before this one, which is where opening it puts it.
+    pub fn workspace_position(&self, id: &WorkspaceId) -> Result<u32> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM workspaces WHERE closed_at_ms IS NULL
+             AND rowid < (SELECT rowid FROM workspaces WHERE id = ?1)",
+            [&id.0],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Every topic a workspace has, archived ones too, with their tabs.
+    pub fn every_topic(&self, workspace_id: &WorkspaceId) -> Result<Vec<Topic>> {
+        let mut topics = self.collect(
+            "SELECT id, name, worktree_id FROM topics WHERE workspace_id = ?1 ORDER BY rowid",
+            [&workspace_id.0],
+            topic_row,
+        )?;
+        for topic in &mut topics {
+            self.fill_topic(topic)?;
+        }
+        Ok(topics)
     }
 
     /// The branch each of a topic's worktrees was made with, which is the one tectr owns.
@@ -770,6 +842,52 @@ impl Store {
              AND id IS NOT (SELECT worktree_id FROM topics WHERE id = ?1)",
             [&id.0],
         )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn close_workspace(&self, id: &WorkspaceId, at_ms: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workspaces SET closed_at_ms = ?2 WHERE id = ?1",
+            params![id.0, at_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn open_workspace(&self, id: &WorkspaceId) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workspaces SET closed_at_ms = NULL WHERE id = ?1",
+            [&id.0],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets a workspace and everything in it, transcripts included.
+    pub fn remove_workspace(&self, id: &WorkspaceId) -> Result<()> {
+        const TOPICS: &str = "SELECT id FROM topics WHERE workspace_id = ?1";
+        let tx = self.conn.unchecked_transaction()?;
+        let sessions = format!("SELECT id FROM sessions WHERE topic_id IN ({TOPICS})");
+        tx.execute(
+            &format!("DELETE FROM events WHERE session_id IN ({sessions})"),
+            [&id.0],
+        )?;
+        for table in ["sessions", "terminals", "diffs"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE topic_id IN ({TOPICS})"),
+                [&id.0],
+            )?;
+        }
+        // A topic points at one of its worktrees, so that goes first.
+        tx.execute(
+            "UPDATE topics SET worktree_id = NULL WHERE workspace_id = ?1",
+            [&id.0],
+        )?;
+        tx.execute(
+            &format!("DELETE FROM worktrees WHERE topic_id IN ({TOPICS})"),
+            [&id.0],
+        )?;
+        tx.execute("DELETE FROM topics WHERE workspace_id = ?1", [&id.0])?;
+        tx.execute("DELETE FROM workspaces WHERE id = ?1", [&id.0])?;
         tx.commit()?;
         Ok(())
     }
@@ -1154,6 +1272,20 @@ impl Store {
             .map(|row| Ok(serde_json::from_str(row)?))
             .collect()
     }
+}
+
+fn workspace_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
+    let mcp: Option<String> = row.get(3)?;
+    Ok(Workspace {
+        id: WorkspaceId(row.get(0)?),
+        name: row.get(1)?,
+        path: row.get(2)?,
+        topics: vec![],
+        // Like drafts, a value a newer version wrote that doesn't parse is lost.
+        mcp: mcp
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default(),
+    })
 }
 
 fn topic_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Topic> {

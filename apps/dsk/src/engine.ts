@@ -178,6 +178,16 @@ export interface ArchivedTopic {
   archived_at_ms: number;
 }
 
+/** A workspace out of the app, with everything it had kept for when it's opened again. */
+export interface ClosedWorkspace {
+  id: string;
+  name: string;
+  path: string;
+  closed_at_ms: number;
+  /** How many topics come back with it, archived ones aside. */
+  topics: number;
+}
+
 /** A conversation Claude Code or Codex keeps itself, which can be imported into a topic. */
 export interface Conversation {
   /** The agent that carries it on. */
@@ -404,6 +414,10 @@ export type SessionEvent = { seq: number; at_ms: number; kind: SessionEventKind 
 export type Command =
   | { command: "add_workspace"; path: string }
   | { command: "create_workspace"; path: string }
+  | { command: "close_workspace"; workspace_id: string; force?: boolean }
+  | { command: "open_workspace"; workspace_id: string }
+  | { command: "list_closed_workspaces" }
+  | { command: "remove_workspace"; workspace_id: string; force?: boolean }
   | { command: "list_folders"; path: string }
   | { command: "create_topic"; workspace_id: string; name: string | null; at_root: boolean }
   | { command: "rename_topic"; topic_id: string; name: string }
@@ -511,6 +525,7 @@ export type CommandOutput =
   | { output: "folders"; folders: Folder[] }
   | { output: "archive_risk"; risk: ArchiveRisk }
   | { output: "archived_topics"; topics: ArchivedTopic[] }
+  | { output: "closed_workspaces"; workspaces: ClosedWorkspace[] }
   | { output: "mcp_server"; server: McpServer }
   | { output: "mcp_profile"; profile: McpProfile }
   /** Where the browser has to go to log in. */

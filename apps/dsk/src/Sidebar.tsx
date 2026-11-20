@@ -3,13 +3,11 @@ import type { Device, Workspace } from "./engine";
 import type { View } from "./navigation";
 import { act, titled } from "./keybinds";
 import {
-  ago,
-  awakeUntil,
   connectionProblem,
   deviceName,
+  deviceStatus,
   isOnline,
   STATE_LABEL,
-  timeLeft,
   topicState,
 } from "./model";
 import { Icon } from "./ui/Icon";
@@ -26,36 +24,21 @@ interface Props {
   appMenu: MenuGroups;
   /** What a right click on a topic offers. */
   topicMenu: (machineId: string, topicId: string) => MenuGroups;
+  /** What a right click on a workspace offers. */
+  workspaceMenu: (machineId: string, workspaceId: string) => MenuGroups;
   onSettings: (machineId: string) => void;
   onAppSettings: () => void;
   onAddWorkspace: (device: Device) => void;
   onNewTopic: (device: Device, workspace: Workspace) => void;
 }
 
-/** What a device row says beside the name, and whether it's something wrong. */
-function deviceMeta(device: Device, now: number): { text: string; alert?: boolean } | null {
-  switch (device.connection.state) {
-    case "online": {
-      if (device.connection.stalled) return { text: "Not responding", alert: true };
-      const until = awakeUntil(device.state, now);
-      return until === null ? null : { text: `Awake, ${timeLeft(until - now)}` };
-    }
-    case "connecting":
-      return { text: "Connecting" };
-    case "incompatible":
-      return { text: "Needs an update" };
-    case "offline":
-      return { text: device.last_seen_ms ? `Offline, ${ago(device.last_seen_ms)}` : "Offline" };
-    case "asleep":
-      return { text: device.last_seen_ms ? `Asleep, ${ago(device.last_seen_ms)}` : "Asleep" };
-  }
-}
-
 /** The view a row shows as soon as the keyboard reaches it. */
 function viewOf(row: HTMLElement): View | null {
   const { machine, topic, workspace } = row.dataset;
-  if (machine && topic) return { kind: "topic", machineId: machine, topicId: topic };
-  return machine && workspace ? { kind: "workspace", machineId: machine, workspaceId: workspace } : null;
+  if (!machine) return null;
+  if (topic) return { kind: "topic", machineId: machine, topicId: topic };
+  if (workspace) return { kind: "workspace", machineId: machine, workspaceId: workspace };
+  return row.matches(".device") ? { kind: "device", machineId: machine } : null;
 }
 
 /** Walks every row marked `data-nav`, opening what it lands on while the sidebar keeps the
@@ -113,6 +96,7 @@ export function Sidebar({
   onPreview,
   appMenu,
   topicMenu,
+  workspaceMenu,
   onSettings,
   onAppSettings,
   onAddWorkspace,
@@ -121,7 +105,9 @@ export function Sidebar({
   const now = useNow(devices.some((device) => device.state?.awake_until_ms !== undefined));
   const menuAt = (target: Element): MenuGroups => {
     const { machine, topic } = target.closest<HTMLElement>(".row.topic")?.dataset ?? {};
-    return machine && topic ? topicMenu(machine, topic) : [];
+    if (machine && topic) return topicMenu(machine, topic);
+    const row = target.closest<HTMLElement>(".row.workspace")?.dataset ?? {};
+    return row.machine && row.workspace ? workspaceMenu(row.machine, row.workspace) : [];
   };
   return (
     <aside className="side" onKeyDown={(event) => onSidebarKey(event, onPreview)}>
@@ -131,14 +117,18 @@ export function Sidebar({
           const machineId = device.state?.machine.id;
           const name = deviceName(device);
           const refusal = `${name} is offline, so nothing can be created there`;
-          const meta = deviceMeta(device, now);
+          const meta = deviceStatus(device, now);
+          const pageShown = view?.kind === "device" && view.machineId === machineId;
           return (
             <section key={device.url}>
+              {/* Its page says why it's away, so an offline device can be landed on too. */}
               <div
-                className={`row device ${online ? "" : "off"}`}
+                className={`row device ${online ? "" : "off"} ${pageShown ? "current" : ""}`}
                 title={connectionProblem(device)}
-                data-nav={online ? "" : undefined}
-                tabIndex={-1}
+                data-nav={machineId ? "" : undefined}
+                data-machine={machineId}
+                tabIndex={pageShown ? 0 : -1}
+                onClick={() => machineId && onView({ kind: "device", machineId })}
               >
                 <span className={`dot ${online ? "" : "off"}`} />
                 <span className="name">{name}</span>
@@ -149,7 +139,11 @@ export function Sidebar({
                   tabIndex={-1}
                   title={online ? "Device settings" : `${name} is offline`}
                   aria-label={`Settings for ${name}`}
-                  onClick={() => machineId && onSettings(machineId)}
+                  onClick={(event) => {
+                    // The row behind it opens the device's page.
+                    event.stopPropagation();
+                    if (machineId) onSettings(machineId);
+                  }}
                 >
                   <Icon name="settings" />
                 </button>
@@ -159,7 +153,10 @@ export function Sidebar({
                   tabIndex={-1}
                   title={online ? titled("Add a workspace", "sidebar.add") : refusal}
                   aria-label={`Add a workspace on ${name}`}
-                  onClick={() => onAddWorkspace(device)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onAddWorkspace(device);
+                  }}
                 >
                   <Icon name="add" />
                 </button>

@@ -11,7 +11,8 @@ export interface Suggestion {
   typed: string;
   /** Absolute, as the daemon reported it. */
   path: string;
-  tag: "added" | "git" | null;
+  /** Already a workspace, a closed workspace that adding opens again, or just a repo. */
+  tag: "added" | "closed" | "git" | null;
 }
 
 const canList = (path: string) => path.startsWith("/") || path.startsWith("~/");
@@ -32,6 +33,7 @@ export function suggest(
   partial: string,
   folders: Folder[],
   workspacePaths: string[],
+  closedPaths: string[] = [],
 ): Suggestion[] {
   const start = partial.toLowerCase();
   return folders
@@ -42,7 +44,13 @@ export function suggest(
     .map(({ name, path, is_repo }) => ({
       typed: `${parent}${name}/`,
       path,
-      tag: workspacePaths.includes(path) ? "added" : is_repo ? "git" : null,
+      tag: workspacePaths.includes(path)
+        ? "added"
+        : closedPaths.includes(path)
+          ? "closed"
+          : is_repo
+            ? "git"
+            : null,
     }));
 }
 
@@ -58,10 +66,10 @@ export const highlightWhileTyping = (
 ): number | null => (partial && goal === "open" ? 0 : null);
 
 /** Whether Enter goes into the highlighted folder rather than submitting. A folder that's
- * already a workspace has nothing further in to open, so Enter opens it. Making a folder
- * always goes in, since the new one goes inside whatever folder was picked. */
+ * already a workspace, open or closed, has nothing further in to open, so Enter opens it.
+ * Making a folder always goes in, since the new one goes inside whatever folder was picked. */
 export const completesOnEnter = (goal: PathGoal, chosen: Suggestion | undefined): boolean =>
-  chosen !== undefined && (goal === "create" || chosen.tag !== "added");
+  chosen !== undefined && (goal === "create" || (chosen.tag !== "added" && chosen.tag !== "closed"));
 
 /** A new folder needs a name after the folder it goes in. */
 export const canCreate = (typed: string): boolean => Boolean(splitPath(typed)?.partial);

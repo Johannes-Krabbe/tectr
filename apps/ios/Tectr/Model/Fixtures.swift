@@ -35,6 +35,16 @@ extension Store {
                 ArchivedTopic(id: "a1", workspaceID: "tectr-laptop", name: "Pairing codes", archived: "3d"),
                 ArchivedTopic(id: "a2", workspaceID: "tectr-desktop", name: "Token build script", archived: "1w"),
             ],
+            closed: [
+                "laptop": [
+                    ClosedWorkspace(
+                        id: "twig", deviceID: "laptop", name: "twig", path: "~/Developer/twig", closed: "2d ago", topics: 4
+                    ),
+                    ClosedWorkspace(
+                        id: "website", deviceID: "laptop", name: "website", path: "~/Developer/website", closed: "3w ago", topics: 1
+                    ),
+                ],
+            ],
             conversations: [
                 Conversation(id: "c1", agent: "claude", title: "Fix flaky iroh relay test", cwd: "~/Developer/tectr", updated: "2h"),
                 Conversation(id: "c2", agent: "codex", title: "Explain the event resume path", cwd: "~/Developer/tectr", updated: "1d"),

@@ -35,6 +35,9 @@ struct Workspace: Identifiable, Hashable {
     var topics: [Topic]
     /// The library's MCP servers its agents get.
     var mcp: [McpServer.ID: WorkspaceMcp] = [:]
+
+    /// Its agents that are starting, working or waiting, which closing it stops.
+    var runningAgents: Int { topics.flatMap(\.sessions).filter(\.isRunning).count }
 }
 
 typealias WorkspaceMcp = Wire.WorkspaceMcp
@@ -300,6 +303,16 @@ struct ArchivedTopic: Identifiable, Hashable {
     let workspaceID: Workspace.ID
     var name: String
     var archived: String
+}
+
+/// A workspace put away on its device, with its topics, tabs and worktrees kept for opening again.
+struct ClosedWorkspace: Identifiable, Hashable {
+    let id: String
+    let deviceID: Device.ID
+    var name: String
+    var path: String
+    var closed: String
+    var topics: Int
 }
 
 struct Folder: Identifiable, Hashable {

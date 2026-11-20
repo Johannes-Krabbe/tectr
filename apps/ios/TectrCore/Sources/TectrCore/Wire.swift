@@ -693,6 +693,20 @@ public enum Wire {
         }
     }
 
+    public struct ClosedWorkspace: Decodable, Sendable {
+        public let id: String
+        public let name: String
+        public let path: String
+        public let closedAtMs: Int64
+        /// How many topics it has.
+        public let topics: UInt32
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, path, topics
+            case closedAtMs = "closed_at_ms"
+        }
+    }
+
     public struct Conversation: Decodable, Sendable {
         public let agent: String
         public let id: String
@@ -715,6 +729,7 @@ public enum Wire {
         case folders([Folder])
         case archiveRisk(ArchiveRisk)
         case archivedTopics([ArchivedTopic])
+        case closedWorkspaces([ClosedWorkspace])
         case mcpProfile(McpProfile)
         case mcpLogin(url: String)
         case mcpImport(added: [String], skipped: [String])
@@ -727,7 +742,7 @@ public enum Wire {
 
         enum CodingKeys: String, CodingKey {
             case output, topic, session, terminal, candidates, folders, risk, topics, url, added, skipped, removed
-            case problems, conversations, id, data, mime, profile
+            case problems, conversations, id, data, mime, profile, workspaces
             case workspaceId = "workspace_id"
             case topicId = "topic_id"
         }
@@ -758,6 +773,7 @@ public enum Wire {
             case "folders": self = .folders(try c.decode([Folder].self, forKey: .folders))
             case "archive_risk": self = .archiveRisk(try c.decode(ArchiveRisk.self, forKey: .risk))
             case "archived_topics": self = .archivedTopics(try c.decode([ArchivedTopic].self, forKey: .topics))
+            case "closed_workspaces": self = .closedWorkspaces(try c.decode([ClosedWorkspace].self, forKey: .workspaces))
             case "mcp_profile": self = .mcpProfile(try c.decode(McpProfile.self, forKey: .profile))
             case "mcp_login": self = .mcpLogin(url: try c.decode(String.self, forKey: .url))
             case "mcp_import":

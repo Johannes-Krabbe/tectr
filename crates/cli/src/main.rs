@@ -12,9 +12,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::{ClientStore, Connection, Device, Engine, Remote};
 use protocol::{
-    Approval, ArchivedTopic, Command, CommandOutput, Conversation, MachineId, MoveTarget,
-    PermissionMode, SessionEvent, SessionEventKind, SessionRef, SessionStatus, ToolCallPatch,
-    TopicId,
+    Approval, ArchiveRisk, ArchivedTopic, ClosedWorkspace, Command, CommandOutput, Conversation,
+    MachineId, MoveTarget, PermissionMode, SessionEvent, SessionEventKind, SessionRef,
+    SessionStatus, ToolCallPatch, TopicId, WorkspaceId,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast::error::RecvError;
@@ -69,6 +69,33 @@ enum Cmd {
         /// daemon.
         #[arg(long)]
         on: Option<String>,
+    },
+    /// Stop a workspace's agents and take it out of the app, keeping its topics, tabs and
+    /// worktrees for when it's opened again. Without --force, nothing happens while an agent
+    /// in it is running.
+    CloseWorkspace {
+        /// The workspace, by name or ID prefix.
+        workspace: String,
+        /// Close it even if that stops an agent.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List closed workspaces, newest first.
+    Closed,
+    /// Bring a closed workspace back with its topics and tabs.
+    OpenWorkspace {
+        /// The closed workspace, by name or ID prefix.
+        workspace: String,
+    },
+    /// Forget a closed workspace: its topics, tabs and transcripts, and the worktrees and
+    /// branches made for it. The repo itself stays. Without --force, nothing happens if that
+    /// would lose uncommitted work or unpushed commits, and what it would is printed instead.
+    RemoveWorkspace {
+        /// The closed workspace, by name or ID prefix.
+        workspace: String,
+        /// Remove it whatever that loses.
+        #[arg(long)]
+        force: bool,
     },
     /// Create a topic with a fresh branch and worktree.
     NewTopic { workspace: String, name: String },
@@ -267,6 +294,55 @@ async fn main() -> Result<()> {
                 .request(&machine, Command::SetDeviceSettings { settings })
                 .await?;
         }
+        Cmd::CloseWorkspace { workspace, force } => {
+            let (machine, workspace_id) = resolve_workspace(&engine, &workspace)?;
+            engine
+                .request(
+                    &machine,
+                    Command::CloseWorkspace {
+                        workspace_id,
+                        force,
+                    },
+                )
+                .await?;
+        }
+        Cmd::Closed => {
+            for (_, machine, workspace) in closed_workspaces(&engine).await? {
+                println!(
+                    "{machine} workspace {} {} {}",
+                    short(&workspace.id.0),
+                    workspace.name,
+                    workspace.path
+                );
+            }
+        }
+        Cmd::OpenWorkspace { workspace } => {
+            let (machine, closed) = resolve_closed(&engine, &workspace).await?;
+            engine
+                .request(
+                    &machine,
+                    Command::OpenWorkspace {
+                        workspace_id: closed.id,
+                    },
+                )
+                .await?;
+        }
+        Cmd::RemoveWorkspace { workspace, force } => {
+            let (machine, closed) = resolve_closed(&engine, &workspace).await?;
+            let output = engine
+                .request(
+                    &machine,
+                    Command::RemoveWorkspace {
+                        workspace_id: closed.id,
+                        force,
+                    },
+                )
+                .await?;
+            if let CommandOutput::ArchiveRisk { risk } = output {
+                print_risk(&risk);
+                bail!("removing would lose this. Pass --force to remove anyway");
+            }
+        }
         Cmd::NewTopic { workspace, name } => {
             let (machine, workspace_id) = resolve(
                 &engine,
@@ -303,15 +379,7 @@ async fn main() -> Result<()> {
                 .request(&machine, Command::ArchiveTopic { topic_id, force })
                 .await?;
             if let CommandOutput::ArchiveRisk { risk } = output {
-                if risk.running > 0 {
-                    println!("{} agent(s) still running", risk.running);
-                }
-                for worktree in &risk.worktrees {
-                    println!(
-                        "{}: {} uncommitted file(s), {} unpushed commit(s) on {}",
-                        worktree.path, worktree.uncommitted, worktree.unpushed, worktree.branch
-                    );
-                }
+                print_risk(&risk);
                 bail!("archiving would lose this. Pass --force to archive anyway");
             }
         }
@@ -704,6 +772,87 @@ async fn archived_topics(engine: &Engine) -> Result<Vec<(MachineId, String, Arch
         }
     }
     Ok(all)
+}
+
+fn print_risk(risk: &ArchiveRisk) {
+    if risk.running > 0 {
+        println!("{} agent(s) still running", risk.running);
+    }
+    for worktree in &risk.worktrees {
+        println!(
+            "{}: {} uncommitted file(s), {} unpushed commit(s) on {}",
+            worktree.path, worktree.uncommitted, worktree.unpushed, worktree.branch
+        );
+    }
+}
+
+/// Every online machine's closed workspaces, with the machine and its name.
+async fn closed_workspaces(engine: &Engine) -> Result<Vec<(MachineId, String, ClosedWorkspace)>> {
+    let mut all = vec![];
+    for device in online_devices(engine) {
+        let Some(state) = device.state else { continue };
+        let output = engine
+            .request(&state.machine.id, Command::ListClosedWorkspaces)
+            .await?;
+        if let CommandOutput::ClosedWorkspaces { workspaces } = output {
+            let machine = &state.machine;
+            all.extend(
+                workspaces
+                    .into_iter()
+                    .map(|w| (machine.id.clone(), machine.name.clone(), w)),
+            );
+        }
+    }
+    Ok(all)
+}
+
+/// A closed workspace by its exact name or an ID prefix, a name winning.
+async fn resolve_closed(engine: &Engine, wanted: &str) -> Result<(MachineId, ClosedWorkspace)> {
+    let all = closed_workspaces(engine).await?;
+    let named: Vec<_> = all.iter().filter(|(_, _, w)| w.name == wanted).collect();
+    let mut matches = if named.is_empty() {
+        all.iter()
+            .filter(|(_, _, w)| w.id.0.starts_with(wanted))
+            .collect()
+    } else {
+        named
+    };
+    match matches.len() {
+        1 => {
+            let (machine, _, workspace) = matches.remove(0);
+            Ok((machine.clone(), workspace.clone()))
+        }
+        0 => bail!("no closed workspace matches {wanted}"),
+        count => bail!("{wanted} is ambiguous: {count} matches. Use an ID prefix"),
+    }
+}
+
+/// Accepts an open workspace's exact name or an ID prefix, a name winning.
+fn resolve_workspace(engine: &Engine, wanted: &str) -> Result<(MachineId, WorkspaceId)> {
+    let mut named: Vec<_> = engine
+        .devices()
+        .into_iter()
+        .filter_map(|device| device.state)
+        .flat_map(|state| {
+            state
+                .workspaces
+                .iter()
+                .filter(|workspace| workspace.name == wanted)
+                .map(|workspace| (state.machine.id.clone(), workspace.id.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    match named.len() {
+        0 => {}
+        1 => return Ok(named.remove(0)),
+        count => bail!("{count} workspaces are named {wanted}. Use an ID prefix"),
+    }
+    resolve(
+        engine,
+        wanted,
+        |state| state.workspaces.iter().map(|w| w.id.clone()).collect(),
+        |w| &w.0,
+    )
 }
 
 async fn conversations(engine: &Engine, machine: &MachineId) -> Result<Vec<Conversation>> {

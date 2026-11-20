@@ -82,6 +82,7 @@ struct HomeView: View {
     @Binding var sheet: AppSheet?
     @State private var query = ""
     @State private var action: TopicAction?
+    @State private var closing: Workspace.ID?
 
     var body: some View {
         List(selection: $detail) {
@@ -127,6 +128,7 @@ struct HomeView: View {
             DefaultToolbarItem(kind: .search, placement: .bottomBar)
         }
         .topicActions($action)
+        .closesWorkspace($closing)
     }
 
     private var foundTopics: [Topic] {
@@ -183,6 +185,9 @@ struct HomeView: View {
             if device.online {
                 Button("Create a topic", systemImage: "plus") { detail = .newTopic(workspace.id) }
                 Button("MCP servers", systemImage: "puzzlepiece.extension") { sheet = .workspaceMcp(workspace.id) }
+                Section {
+                    Button("Close workspace", systemImage: "xmark.circle") { closing = workspace.id }
+                }
             }
         }
     }

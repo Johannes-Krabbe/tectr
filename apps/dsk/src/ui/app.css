@@ -2432,6 +2432,58 @@ textarea.sheet-input {
 
 .workspace-library { margin-top: 0; }
 
+/* A device's page: keeping it awake sits by its name, and each workspace's menu at the end of
+   its row, showing only on the row in use like a settings row's. */
+.device-awake {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.device-awake .picker svg {
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+  color: var(--color-text-tertiary);
+}
+
+.device-workspace {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+
+.device-workspace:hover,
+.device-workspace:focus-within { background: var(--color-surface-raised); }
+
+.device-workspace > button.setting-line { flex: 1; min-width: 0; }
+.device-workspace > button.setting-line:hover:not(:disabled) { background: none; }
+
+.device-workspace button.setting-line .name { flex: 0 1 auto; }
+
+.device-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font: var(--text-code-small);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.device-row-menu {
+  display: inline-flex;
+  flex: none;
+  padding-right: var(--space-2xs);
+  opacity: 0;
+}
+
+.device-workspace:hover .device-row-menu,
+.device-workspace:focus-within .device-row-menu,
+.device-row-menu:has([data-popup-open]) { opacity: 1; }
+
 .workspace-note { padding: var(--space-xs) var(--space-sm); }
 
 .workspace-error {

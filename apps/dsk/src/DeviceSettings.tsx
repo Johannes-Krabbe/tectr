@@ -11,16 +11,13 @@ import {
   request,
 } from "./engine";
 import { act } from "./keybinds";
+import { KeepAwakeFor } from "./KeepAwake";
 import { McpSettings } from "./McpServers";
 import {
-  awakeUntil,
   defaultEffort,
   isOnline,
-  KEEP_AWAKE_SUGGESTIONS,
   keepsAwake,
   modelLabel,
-  parseDuration,
-  timeLeft,
   withKeepAwakeToggled,
 } from "./model";
 import { isLoopback } from "./pathInput";
@@ -36,7 +33,6 @@ import {
   SettingsPage,
   Switch,
 } from "./ui/SettingsPage";
-import { useNow } from "./ui/useNow";
 
 /** A candidate, or a provider this daemon no longer knows how to run. */
 function rowsOf(candidates: ProviderCandidate[], providers: Provider[]): ProviderCandidate[] {
@@ -88,9 +84,6 @@ export function DeviceSettings({
   );
 }
 
-const CUSTOM = "custom";
-const STOP = "stop";
-
 /** The device's own name and power settings, each changed right in its row. */
 function General({ device }: { device: Device }) {
   const state = device.state;
@@ -98,11 +91,6 @@ function General({ device }: { device: Device }) {
   const [error, setError] = useState<string | null>(null);
   // What's typed in the name's box, once something is. Until then it shows the name.
   const [name, setName] = useState<string | null>(null);
-  // Typing a time of one's own, rather than choosing one of the suggestions.
-  const [customTime, setCustomTime] = useState<string | null>(null);
-  const [picking, setPicking] = useState(false);
-  const now = useNow(state?.awake_until_ms !== undefined);
-  const awakeTill = awakeUntil(state, now);
 
   if (!state) {
     return <SettingsPage>{!online && <p className="settings-note">This device is offline</p>}</SettingsPage>;
@@ -127,31 +115,6 @@ function General({ device }: { device: Device }) {
       command: "set_device_settings",
       settings: withKeepAwakeToggled(state),
     }).catch((reason) => setError(errorText(reason)));
-  };
-
-  const keepAwakeFor = (seconds: number | null) => {
-    if (!online) return;
-    setError(null);
-    request(deviceId, { command: "keep_awake_for", seconds }).catch((reason) =>
-      setError(errorText(reason)),
-    );
-  };
-
-  const keepAwakeForTyped = (typed: string) => {
-    const seconds = parseDuration(typed);
-    if (seconds === null) {
-      setError("Type a time such as 2h, 90m or 1h30m, up to 7 days");
-      return;
-    }
-    setCustomTime(null);
-    keepAwakeFor(seconds);
-  };
-
-  const chooseTime = (value: string) => {
-    setPicking(false);
-    if (value === CUSTOM) setCustomTime("");
-    else if (value === STOP) keepAwakeFor(null);
-    else keepAwakeForTyped(value);
   };
 
   return (
@@ -202,50 +165,7 @@ function General({ device }: { device: Device }) {
           />
         </SettingRow>
         <SettingRow label="Keep awake for a while">
-          {customTime !== null ? (
-            <input
-              className="settings-input short"
-              autoFocus
-              value={customTime}
-              aria-label="How long to keep it awake"
-              placeholder="2h, 90m, 1d"
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="off"
-              onChange={(event) => setCustomTime(event.target.value)}
-              // A time only counts once it's confirmed, so wandering off doesn't keep a laptop
-              // awake.
-              onBlur={() => {
-                if (document.hasFocus()) setCustomTime(null);
-              }}
-              onKeyDown={(event) => {
-                if (act(event, "sheet.submit", () => keepAwakeForTyped(customTime))) return;
-                act(event, "sheet.cancel", () => setCustomTime(null));
-              }}
-            />
-          ) : (
-            <Picker
-              label="Keep awake for a while"
-              className="picker"
-              value={null}
-              disabled={!online}
-              open={picking}
-              onOpenChange={setPicking}
-              onChange={chooseTime}
-              trigger={
-                <>
-                  {awakeTill === null ? "Off" : `${timeLeft(awakeTill - now)} left`}
-                  <Icon name="fold" />
-                </>
-              }
-            >
-              {KEEP_AWAKE_SUGGESTIONS.map((suggestion) => (
-                <Choice key={suggestion} value={suggestion} label={`For ${suggestion}`} />
-              ))}
-              <Choice value={CUSTOM} label="For a custom time..." />
-              {awakeTill !== null && <Choice value={STOP} label="Stop" />}
-            </Picker>
-          )}
+          <KeepAwakeFor device={device} onError={setError} />
         </SettingRow>
       </SettingsGroupBox>
     </SettingsPage>
