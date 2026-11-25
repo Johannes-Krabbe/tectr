@@ -2,6 +2,7 @@
 //! logic of its own beyond parsing arguments and printing.
 
 mod mcp;
+mod restart;
 mod terminal;
 
 use std::collections::HashMap;
@@ -213,6 +214,9 @@ enum Cmd {
         /// The device's name, machine ID prefix or URL.
         device: String,
     },
+    /// Restart this machine's daemon, which stops its agents until their next prompt. It
+    /// picks up a new binary and changes to the login shell's environment.
+    Restart,
     /// Take a machine off this device's allowed list, disconnecting it.
     Unpair {
         /// The client's name or key prefix, as `tectr status` lists it.
@@ -249,6 +253,9 @@ impl From<ModeArg> for PermissionMode {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Cmd::Restart = cli.command {
+        return restart::run().await;
+    }
     let store = ClientStore::default_dir().map(ClientStore::new);
     let engine = match &store {
         Some(store) => Engine::with_remote(
@@ -669,6 +676,7 @@ async fn main() -> Result<()> {
                 .request(&machine, Command::RemovePairedClient { key })
                 .await?;
         }
+        Cmd::Restart => unreachable!("handled before connecting"),
     }
     Ok(())
 }

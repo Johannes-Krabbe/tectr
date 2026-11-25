@@ -72,6 +72,7 @@ tectr closed                           # list closed workspaces
 tectr open-workspace <workspace>       # bring one back with its topics and tabs
 tectr remove-workspace <workspace> [--force]  # forget a closed one and remove its worktrees
 tectr rename-device "..." [--on <device>]  # name a device, "" goes back to its hostname
+tectr restart                          # restart this machine's installed daemon, stopping its agents
 tectr mcp ls                           # the MCP library, profiles, and what each workspace uses
 tectr mcp add github --env 'TOKEN=${TOKEN}' -- npx -y some-server  # a stdio server
 tectr mcp add notion --url https://mcp.notion.com/mcp  # an HTTP server
