@@ -1606,6 +1606,55 @@ async fn an_agent_that_doesnt_take_images_fails_the_turn_instead() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_fails_to_start_refuses_messages_instead_of_failing_again() {
+    let fixture = Fixture::new();
+    let mut config = fixture.config("d", 0);
+    config.agents.insert(
+        "missing".to_owned(),
+        AgentLauncher::Command {
+            program: fixture.root.join("no agent here"),
+            args: vec![],
+        },
+    );
+    let daemon = Daemon::start(config).await.unwrap();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let topic = add_topic(&engine, &machine, &fixture.repo).await;
+    let session = start_agent(
+        &engine,
+        &machine,
+        &topic.id,
+        "missing",
+        PermissionMode::Auto,
+        None,
+    )
+    .await
+    .unwrap();
+    let session = SessionRef {
+        machine_id: machine.clone(),
+        session_id: session.id,
+    };
+    engine.open_session(&session);
+    wait_for_status(&engine, &session, SessionStatus::Failed).await;
+
+    let error = prompt(&engine, &session, "hello").await.unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::InvalidInput));
+    let events = engine.events_after(&session, 0);
+    let errors = events
+        .iter()
+        .filter(|event| matches!(event.kind, SessionEventKind::Error { .. }))
+        .count();
+    assert_eq!(errors, 1);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.kind, SessionEventKind::UserPrompt { .. }))
+    );
+    assert_eq!(status(&engine, &session), Some(SessionStatus::Failed));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn sending_a_prompt_clears_its_draft() {
     let fixture = Fixture::new();
     let daemon = fixture.daemon("d").await;
@@ -3790,6 +3839,13 @@ async fn a_failed_branch_copies_again_rather_than_starting_empty() {
     };
     engine.open_session(&branch);
     wait_for_status(&engine, &branch, SessionStatus::Failed).await;
+    // It failed to start, so it doesn't try again until the daemon restarts.
+    prompt(&engine, &branch, "whoami").await.unwrap_err();
+
+    daemon.shutdown().await;
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    engine.open_session(&branch);
     prompt(&engine, &branch, "whoami").await.unwrap();
     wait_for_status(&engine, &branch, SessionStatus::Failed).await;
     let errors: Vec<String> = engine

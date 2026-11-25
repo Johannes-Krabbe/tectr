@@ -138,6 +138,8 @@ struct LiveSession {
     compacting: bool,
     /// Claude Code last said it's running, whether or not in a turn of tectr's.
     agent_running: bool,
+    /// The agent finished starting, which tells a crash apart from failing to start.
+    ready: bool,
     /// Background tasks whose tabs were closed, which later reports about them don't open
     /// again, such as the one saying the task was stopped.
     closed_tasks: HashSet<String>,
@@ -174,6 +176,10 @@ struct Inner {
     last_seq: HashMap<SessionId, u64>,
     /// What `!` commands printed since the last prompt, which goes to the agent with the next.
     shell_context: HashMap<SessionId, Vec<String>>,
+    /// Sessions whose agent failed to start. Trying again on every message would only repeat
+    /// the error, while whatever broke it, like a missing Node, usually takes a restart of
+    /// this daemon to fix, which forgets these.
+    unstartable: HashSet<SessionId>,
     signals: broadcast::Sender<Signal>,
     awake: KeepAwake,
     diffs: diff::DiffWatch,
@@ -275,6 +281,7 @@ impl Core {
             closing: Vec::new(),
             last_seq,
             shell_context: HashMap::new(),
+            unstartable: HashSet::new(),
             signals: signals.clone(),
             awake: KeepAwake::new(keep_awake),
             diffs: diff::DiffWatch::new(),
@@ -1388,6 +1395,7 @@ impl Core {
                 compacting: false,
                 closed_tasks: HashSet::new(),
                 agent_running: false,
+                ready: false,
                 task: Some(task),
                 proxy_secret,
                 mcp: mcp_ids,
@@ -1427,6 +1435,12 @@ impl Core {
             .session(session_id)
             .ok_or_else(|| not_found("session", session_id))?
             .clone();
+
+        if !inner.live.contains_key(session_id) && inner.unstartable.contains(session_id) {
+            return Err(invalid(
+                "this agent couldn't start, so it can't take messages. Fix what stopped it, then restart the daemon or open a new tab",
+            ));
+        }
 
         // `None` waits until the agent can take it.
         let steer = match inner.live.get_mut(session_id) {
@@ -1714,6 +1728,7 @@ impl Core {
         if let Some(task) = inner.stop_agent(session_id) {
             inner.keep_closing(task);
         }
+        inner.unstartable.remove(session_id);
 
         inner.emit(StateChange::SessionRemoved {
             session_id: session_id.clone(),
@@ -2034,6 +2049,7 @@ impl Core {
         let mut inner = self.lock();
         if let Some(live) = inner.live.get_mut(id) {
             live.steering = steering;
+            live.ready = true;
         }
         inner.append(id, ready);
         let turn_active = inner.live.get(id).is_some_and(|live| live.turn_active);
@@ -2236,6 +2252,9 @@ impl Core {
         };
         match failure {
             Some(message) if !self.shutting_down.load(Ordering::SeqCst) => {
+                if !live.ready {
+                    inner.unstartable.insert(id.clone());
+                }
                 inner.append(id, SessionEventKind::Error { message });
                 inner.set_status(id, SessionStatus::Failed);
             }
