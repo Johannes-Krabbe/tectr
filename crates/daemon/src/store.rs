@@ -8,9 +8,10 @@ use anyhow::{Context, Result};
 use protocol::{
     AgentCommand, Approval, ApprovalId, ArchivedTopic, ClosedWorkspace, DaemonState,
     DeviceSettings, Diff, DiffId, DiffScope, ImageId, Machine, MachineId, McpProfileId, McpServer,
-    McpServerId, PairedClient, PermissionMode, PromptImage, Provider, Session, SessionEvent,
-    SessionEventKind, SessionId, SessionRef, SessionStatus, Terminal, TerminalId, TerminalStatus,
-    Topic, TopicId, Workspace, WorkspaceId, WorkspaceMcp, Worktree, WorktreeId,
+    McpServerId, PairedClient, PermissionMode, PromptImage, Provider, Question, QuestionId,
+    Session, SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, Terminal,
+    TerminalId, TerminalStatus, Topic, TopicId, Workspace, WorkspaceId, WorkspaceMcp, Worktree,
+    WorktreeId,
 };
 
 use crate::acp::ForkPoint;
@@ -166,6 +167,17 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE workspaces ADD COLUMN closed_at_ms INTEGER;
 ",
+    // Subagents' events go in their session's history, marked with whose they are. A session
+    // keeps the person's choices for its agent's own options, and questions wait like
+    // approvals.
+    "
+    ALTER TABLE events ADD COLUMN subagent TEXT;
+    ALTER TABLE sessions ADD COLUMN options TEXT;
+    CREATE TABLE pending_questions (
+        id TEXT PRIMARY KEY,
+        question TEXT NOT NULL
+    );
+",
 ];
 
 pub struct Store {
@@ -299,6 +311,9 @@ impl Store {
             machine,
             workspaces,
             approvals: vec![],
+            questions: vec![],
+            session_options: BTreeMap::new(),
+            session_tasks: BTreeMap::new(),
             providers: providers
                 .iter()
                 .map(|provider| serde_json::from_str(provider))
@@ -1111,13 +1126,15 @@ impl Store {
     pub fn insert_event(&self, event: &SessionEvent) -> Result<()> {
         self.conn
             .prepare_cached(
-                "INSERT INTO events (session_id, seq, at_ms, kind) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO events (session_id, seq, at_ms, kind, subagent)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
             )?
             .execute(params![
                 event.session.session_id.0,
                 event.seq,
                 event.at_ms,
                 serde_json::to_string(&event.kind)?,
+                event.subagent,
             ])?;
         Ok(())
     }
@@ -1221,14 +1238,14 @@ impl Store {
         after_seq: u64,
         limit: usize,
     ) -> Result<Vec<SessionEvent>> {
-        let rows: Vec<(u64, i64, String)> = self.collect(
-            "SELECT seq, at_ms, kind FROM events
+        let rows: Vec<(u64, i64, String, Option<String>)> = self.collect(
+            "SELECT seq, at_ms, kind, subagent FROM events
              WHERE session_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
             params![session_id.0, after_seq, limit],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
         rows.into_iter()
-            .map(|(seq, at_ms, kind)| {
+            .map(|(seq, at_ms, kind, subagent)| {
                 Ok(SessionEvent {
                     session: SessionRef {
                         machine_id: machine_id.clone(),
@@ -1237,6 +1254,7 @@ impl Store {
                     seq,
                     at_ms,
                     kind: serde_json::from_str::<SessionEventKind>(&kind)?,
+                    subagent,
                 })
             })
             .collect()
@@ -1272,6 +1290,62 @@ impl Store {
         rows.iter()
             .map(|row| Ok(serde_json::from_str(row)?))
             .collect()
+    }
+
+    pub fn insert_pending_question(&self, question: &Question) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO pending_questions (id, question) VALUES (?1, ?2)",
+            params![question.id.0, serde_json::to_string(question)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_pending_question(&self, id: &QuestionId) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM pending_questions WHERE id = ?1", [&id.0])?;
+        Ok(())
+    }
+
+    pub fn pending_questions(&self) -> Result<Vec<Question>> {
+        let rows: Vec<String> =
+            self.collect("SELECT question FROM pending_questions", [], |row| {
+                row.get(0)
+            })?;
+        rows.iter()
+            .map(|row| Ok(serde_json::from_str(row)?))
+            .collect()
+    }
+
+    /// The person's choices for a session's agent options, by option ID.
+    pub fn session_options(&self, id: &SessionId) -> Result<BTreeMap<String, String>> {
+        let text: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT options FROM sessions WHERE id = ?1",
+                [&id.0],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        // A choice a newer version wrote that doesn't parse is lost, like a draft.
+        Ok(text
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default())
+    }
+
+    pub fn set_session_options(
+        &self,
+        id: &SessionId,
+        options: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        let text = (!options.is_empty())
+            .then(|| serde_json::to_string(options))
+            .transpose()?;
+        self.conn.execute(
+            "UPDATE sessions SET options = ?2 WHERE id = ?1",
+            params![id.0, text],
+        )?;
+        Ok(())
     }
 }
 
@@ -1793,6 +1867,7 @@ mod tests {
                     kind: SessionEventKind::AgentMessage {
                         text: seq.to_string(),
                     },
+                    subagent: None,
                 })
                 .unwrap();
         }
@@ -1833,6 +1908,7 @@ mod tests {
                     seq,
                     at_ms: 0,
                     kind,
+                    subagent: None,
                 })
                 .unwrap();
         }

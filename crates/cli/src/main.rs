@@ -1160,6 +1160,56 @@ impl Printer {
                 println!("[turn ended] {stop_reason:?}");
             }
             SessionEventKind::Error { message } => println!("[error] {message}"),
+            SessionEventKind::QuestionAsked { question } => {
+                println!("[question] {}", question.message);
+                for field in &question.fields {
+                    println!(
+                        "  {}: {:?}",
+                        field.title.as_deref().unwrap_or(&field.key),
+                        field.kind
+                    );
+                }
+            }
+            SessionEventKind::QuestionAnswered { answer, .. } => println!("[answer] {answer:?}"),
+            SessionEventKind::Plan { entries } => {
+                println!("[plan]");
+                for entry in entries {
+                    println!("  {:?} {}", entry.status, entry.content);
+                }
+            }
+            SessionEventKind::PlanDocument { text, .. } => println!("[plan]\n{text}"),
+            SessionEventKind::Usage { used, size, .. } => println!("[context] {used} of {size}"),
+            SessionEventKind::Notice {
+                title, description, ..
+            } => println!(
+                "[notice] {title}{}",
+                description
+                    .as_deref()
+                    .map(|d| format!(": {d}"))
+                    .unwrap_or_default()
+            ),
+            SessionEventKind::Compaction { status, .. } => println!("[compaction] {status:?}"),
+            SessionEventKind::Suggestion { text } => {
+                if let Some(text) = text {
+                    println!("[suggestion] {text}");
+                }
+            }
+            SessionEventKind::Subagent {
+                id, title, status, ..
+            } => println!(
+                "[subagent] {} {}",
+                title.as_deref().unwrap_or(id),
+                status.map(|s| format!("{s:?}")).unwrap_or_default()
+            ),
+            SessionEventKind::SessionMessage { text, .. } => println!("[message] {text}"),
+            SessionEventKind::Task { task } => {
+                println!("[task] {} {:?}", task.description, task.status);
+            }
+            SessionEventKind::Shell {
+                command,
+                output,
+                exit_code,
+            } => println!("$ {command}\n{output}[exit {exit_code:?}]"),
             SessionEventKind::Unknown => {}
         }
     }
@@ -1252,10 +1302,16 @@ async fn chat(engine: &Engine, session: &SessionRef) -> Result<()> {
                             continue;
                         }
                     },
-                    None => Command::SendPrompt {
-                        session_id: session.session_id.clone(),
-                        text: line.to_owned(),
-                        images: vec![],
+                    None => match line.strip_prefix('!') {
+                        Some(command) => Command::RunShell {
+                            session_id: session.session_id.clone(),
+                            line: command.to_owned(),
+                        },
+                        None => Command::SendPrompt {
+                            session_id: session.session_id.clone(),
+                            text: line.to_owned(),
+                            images: vec![],
+                        },
                     },
                 };
                 if let Err(error) = engine.request(&session.machine_id, command).await {

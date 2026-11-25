@@ -5,10 +5,12 @@ import { ClonePage } from "./ClonePage";
 import { DevicePage } from "./DevicePage";
 import { DeviceSettings } from "./DeviceSettings";
 import {
+  type AgentOption,
   type Approval,
   type Device,
   errorText,
   type PromptImage,
+  type Question,
   forgetDevice,
   reconnect,
   request,
@@ -46,7 +48,9 @@ import {
   runningIn,
   type MoveChoice,
   moveChoices,
+  sessionLabel,
   sessionState,
+  taskState,
   tabLabel,
   tabsOf,
   type TopicEntry,
@@ -70,6 +74,7 @@ import {
 } from "./navigation";
 import { appItems, type Runnable, topicItems, withRuns, workspaceItems } from "./menus";
 import { DiffPane, forgetDiffView } from "./DiffPane";
+import { TaskPane } from "./TaskPane";
 import { NEW_TAB_STATE, NewTab, type NewTabState } from "./NewTab";
 import { NewTopic, type NewTopicForm } from "./NewTopic";
 import { isLoopback } from "./pathInput";
@@ -85,6 +90,7 @@ import { WorkspacePage } from "./WorkspacePage";
 
 /** One for every session without draft images, so a pane's images stay the same object. */
 const NO_IMAGES: PromptImage[] = [];
+const NO_OPTIONS: AgentOption[] = [];
 // xterm.js is most of the app's code, so it loads when the first terminal is shown rather than
 // with the app.
 const loadTerminalPane = () => import("./TerminalPane");
@@ -114,8 +120,11 @@ interface Leaving {
   fromSidebar: boolean;
 }
 
+/** Something an agent is waiting on: a permission request or a question. */
 interface RequestItem {
-  approval: Approval;
+  sessionId: string;
+  approval?: Approval;
+  question?: Question;
   machineId: string;
   entry: TopicEntry | undefined;
 }
@@ -191,7 +200,7 @@ export function App() {
       ? pageDevice?.state?.workspaces.find((w) => w.id === view.workspaceId)
       : undefined;
   const sessions = entry?.topic.sessions ?? [];
-  const tabs = entry ? tabsOf(entry.topic) : [];
+  const tabs = entry ? tabsOf(entry.topic, entry.device.state?.session_tasks) : [];
   const tabIds = entry
     ? topicTabs(
         navigation,
@@ -208,6 +217,9 @@ export function App() {
   const session = sessions.find((s) => s.id === shownTabId);
   const shownTerminal = entry?.topic.terminals?.find((t) => t.id === shownTabId);
   const shownDiff = entry?.topic.diffs?.find((d) => d.id === shownTabId);
+  const shownTask = tabs.find((tab) => tab.kind === "task" && tab.id === shownTabId);
+  const taskOwner =
+    shownTask?.kind === "task" ? sessions.find((s) => s.id === shownTask.sessionId) : undefined;
   const onNewTab = entry !== undefined && shownTabId === NEW_TAB;
   const shownKey = JSON.stringify([view, shownTabId]);
 
@@ -261,21 +273,33 @@ export function App() {
   });
 
   // Requests on an offline device can't be answered, so they wait until it's back.
-  const requests: RequestItem[] = devices.filter(isOnline).flatMap((device) =>
-    (device.state?.approvals ?? []).map((approval) => ({
-      approval,
-      machineId: device.state!.machine.id,
-      entry: topics.find(
-        (t) =>
-          t.machineId === device.state!.machine.id &&
-          t.topic.sessions.some((s) => s.id === approval.session_id),
-      ),
-    })),
-  );
+  const requests: RequestItem[] = devices.filter(isOnline).flatMap((device) => {
+    const machineId = device.state!.machine.id;
+    const entryOf = (sessionId: string) =>
+      topics.find(
+        (t) => t.machineId === machineId && t.topic.sessions.some((s) => s.id === sessionId),
+      );
+    return [
+      ...(device.state?.approvals ?? []).map((approval) => ({
+        sessionId: approval.session_id,
+        approval,
+        machineId,
+        entry: entryOf(approval.session_id),
+      })),
+      ...(device.state?.questions ?? []).map((question) => ({
+        sessionId: question.session_id,
+        question,
+        machineId,
+        entry: entryOf(question.session_id),
+      })),
+    ];
+  });
 
-  const approvals = requests
-    .filter((item) => item.machineId === entry?.machineId && item.approval.session_id === session?.id)
-    .map((item) => item.approval);
+  const shownRequests = requests.filter(
+    (item) => item.machineId === entry?.machineId && item.sessionId === session?.id,
+  );
+  const approvals = shownRequests.flatMap((item) => (item.approval ? [item.approval] : []));
+  const questions = shownRequests.flatMap((item) => (item.question ? [item.question] : []));
 
   const reportFailure = (reason: unknown) => setError(errorText(reason));
 
@@ -320,7 +344,7 @@ export function App() {
   const openRequest = (item: RequestItem) => {
     if (!item.entry) return;
     preview({ kind: "topic", machineId: item.machineId, topicId: item.entry.topic.id });
-    selectTab(item.entry.topic.id, item.approval.session_id);
+    selectTab(item.entry.topic.id, item.sessionId);
   };
 
   const addWorkspaceOn = (device: Device) => {
@@ -563,11 +587,15 @@ export function App() {
     if (shown) focusWhenShown.current = focusPane;
     const isDiff = topic.diffs?.some((d) => d.id === id);
     if (isDiff) forgetDiffView(id);
+    const task = tabs.find((tab) => tab.kind === "task" && tab.id === id);
     request(
       machineId,
       closing
         ? { command: "close_session", session_id: id }
-        : isDiff
+        : task?.kind === "task"
+          ? // It stops with its tab, as a terminal's shell does.
+            { command: "close_task", session_id: task.sessionId, task_id: id }
+          : isDiff
           ? { command: "close_diff", diff_id: id }
           : // Its shell ends with it, as closing a terminal window does.
             { command: "close_terminal", terminal_id: id },
@@ -712,7 +740,7 @@ export function App() {
 
   const nextRequest = () => {
     const index = requests.findIndex(
-      (item) => item.approval.session_id === session?.id && item.entry === entry,
+      (item) => item.sessionId === session?.id && item.entry === entry,
     );
     const next = requests[(index + 1) % requests.length];
     if (next) openRequest(next);
@@ -859,7 +887,9 @@ export function App() {
       if (rowTopic && act(event, "sidebar.toggle_unread", () => toggleUnread(rowTopic))) return;
       if (inPane(event)) {
         // Settings decides for itself, because going back there depends on where you are in it.
-        if (view?.kind !== "device_settings" && view?.kind !== "app_settings") {
+        // A question backs out to the transcript first, on its own key.
+        const inQuestion = event.target instanceof Element && event.target.closest(".question");
+        if (view?.kind !== "device_settings" && view?.kind !== "app_settings" && !inQuestion) {
           act(event, "pane.back", focusSidebar);
         }
       }
@@ -1014,6 +1044,9 @@ export function App() {
                           {s && <StatusIcon state={sessionState(s, isOnline(entry.device))} />}
                           {tab?.kind === "terminal" && <Icon name="terminal" />}
                           {tab?.kind === "diff" && <Icon name="diff" />}
+                          {tab?.kind === "task" && (
+                            <StatusIcon state={taskState(tab.task.status, isOnline(entry.device))} />
+                          )}
                           <span className="tab-label">{label}</span>
                         </button>
                         {canCloseTab(id) && (
@@ -1066,10 +1099,13 @@ export function App() {
                   provider={entry.device.state?.providers?.find((p) => p.agent === session.agent)}
                   online={isOnline(entry.device)}
                   approvals={approvals}
+                  questions={questions}
+                  options={entry.device.state?.session_options?.[session.id] ?? NO_OPTIONS}
                   draft={entry.device.state?.drafts?.[session.id] ?? ""}
                   draftImages={entry.device.state?.draft_images?.[session.id] ?? NO_IMAGES}
                   commands={entry.device.state?.commands?.[session.id]}
                   worktree={topicWorktree(entry.topic)}
+                  folder={topicWorktree(entry.topic)?.path ?? entry.workspace.path}
                   onInterrupt={isActive(session) ? interrupt : undefined}
                   onBranched={(id) => selectTab(entry.topic.id, id)}
                 />
@@ -1082,6 +1118,15 @@ export function App() {
                     online={isOnline(entry.device)}
                   />
                 </Suspense>
+              ) : shownTask?.kind === "task" ? (
+                <TaskPane
+                  key={shownTask.id}
+                  machineId={entry.machineId}
+                  sessionId={shownTask.sessionId}
+                  task={shownTask.task}
+                  from={taskOwner ? sessionLabel(taskOwner) : "its agent"}
+                  online={isOnline(entry.device)}
+                />
               ) : shownDiff ? (
                 <DiffPane
                   key={shownDiff.id}

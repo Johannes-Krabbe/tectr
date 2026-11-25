@@ -242,7 +242,8 @@ public enum Wire {
     }
 
     public enum PermissionMode: String, Codable, Sendable {
-        case manual, auto, yolo, unknown
+        case manual, auto, yolo, plan, unknown
+        case acceptEdits = "accept_edits"
 
         public init(from decoder: any Decoder) throws {
             self = Self(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown

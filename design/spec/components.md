@@ -77,7 +77,7 @@ A workspace's own page in the main pane: its topics, and the MCP servers its age
 
 - **Parts:** StatusIcon, name, meta (age or short status).
 - **States:** default, waiting, failed, done, stale, hover (desktop), selected.
-- **Waiting:** background `status.waiting-tint`, or `status.waiting-tint-strong` when selected or hovered. Meta in `status.waiting`. Never use `text.tertiary` on the strong tint, because it fails contrast in dark mode.
+- **Waiting:** the StatusIcon says it, with no words. On desktop that's all, with no tint either. On iOS the background is `status.waiting-tint`, or `status.waiting-tint-strong` when selected. Never use `text.tertiary` on the strong tint, because it fails contrast in dark mode.
 - **Selected:** background `surface.control`. On desktop, when the sidebar owns the keyboard, `accent.tint` with a 1px `accent.ring` border.
 - **Height:** `size.row`.
 - **Right click (desktop):** a Menu of what can be done to the topic, the same one the tab bar has.
@@ -112,9 +112,10 @@ Desktop only. A short list of actions, opened by an icon button or a right click
 
 Something an agent needs from you. In auto mode this should be rare, and in yolo mode it's only ever a question. Whether auto mode still asks is an open question in `architecture.md`.
 
-- **Parts:** StatusIcon and kind, position ("1 of 2 waiting"), the command or question in `text.code-body`, the reason in `text.body` and `text.secondary`, actions.
-- **Surface:** `status.waiting-tint` with a `status.waiting-border` border, on desktop. On iOS the glass the message box sits on.
-- **Actions:** one primary Button, the rest secondary. On desktop each starts with its number in `text.tertiary`, which is also the key that answers with it, so the key is learned from the card rather than a chip. On iOS they're bordered rather than glass, because the card is already on glass, and sit side by side when their names fit.
+- **Parts:** on desktop, the asking subagent's name if it's one, then one head line: for an edit the verb in `text.secondary`, the file name in `text.code-body`, its folder in `text.code-small` and `text.tertiary`, and the lines added and removed at the far end in the diff colors; for a command its description. Then its details as its tool step shows them, as edge-to-edge bands on `surface.panel` between `line.subtle` rules, each line's sign in the options' number column and its code where their labels start, up to 40% of the window before it scrolls. Then the options. On iOS also StatusIcon and kind, position ("1 of 2 waiting") and the reason in `text.body` and `text.secondary`.
+- **Surface:** on desktop the message box's, in its place: `surface.raised` with a `line.strong` border, `accent.text` while it has the keyboard, the same as a question. On iOS the glass the message box sits on.
+- **Actions:** on desktop the options are rows of one list, like a question's, each starting with its number in `text.tertiary`, which is also the key that answers with it, so the key is learned from the card rather than a chip. The highlighted row is `surface.control`, starting on the allow-once option. On iOS one primary Button and the rest secondary, bordered rather than glass because the card is already on glass, side by side when their names fit.
+- **Desktop:** in place of the message box until it's answered, then the next request or question, then the box again. It takes the keyboard when it arrives, unless the message box had it, where the Enter meant to send would answer it instead.
 - **iOS:** in place of the message box until it's answered, then the next request for that agent, then the box again.
 
 ## ActivityLine
@@ -122,7 +123,7 @@ Something an agent needs from you. In auto mode this should be rare, and in yolo
 What an agent does between its messages, as one line in `text.meta`. Messages are never folded, so you can read along between steps.
 
 - **While running:** at the end of the transcript, it names the newest step still going in `text.tertiary`, with a `text.primary` highlight sweeping across it every `motion.sweep`. Each step fades out before the next fades in, and stays up long enough to read.
-- **Waiting:** "Waiting for you" in `status.waiting`, without the sweep.
+- **Waiting:** the last step stays, in `text.tertiary` without the sweep. The request or question in the message box's place already says the agent is waiting.
 - **Finished:** how long it took and how many steps, such as "Worked for 12s, 6 steps", with failures in `status.failed`. Time spent on a permission request doesn't count.
 - **Unfolded:** the steps below it, on a `line.subtle` rule. `conversation.steps`, also in the tab bar's menu, does this for every activity, and pressing or clicking a line does it for one. Clicking the live line does it for the whole turn so far and for activities it starts later, so you can watch an agent work across its messages.
 - **Reduced motion:** no sweep, and messages and scrolling don't animate either.

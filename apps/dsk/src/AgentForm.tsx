@@ -3,8 +3,9 @@ import { type Device, errorText, type PermissionMode, type PromptImage } from ".
 import { ImageComposer, ImageViewer, useImageField } from "./ImageField";
 import { sendImages } from "./images";
 import { textBoxKey, titled } from "./keybinds";
-import { defaultEffort, isOnline, modelLabel, MODES } from "./model";
+import { defaultEffort, defaultMode, isOnline, modelLabel, MODES, settingsLabel } from "./model";
 import { refusedPrompt } from "./slashCommands";
+import { MenuButton, type MenuItem } from "./ui/Menu";
 import { Choice, Picker } from "./ui/Picker";
 import { useVim, VimModeLabel } from "./VimBox";
 
@@ -100,8 +101,52 @@ export function AgentForm({
   const modes = MODES.filter((option) => provider?.modes.includes(option.mode));
   const mode =
     modes.find((option) => option.mode === draft.mode) ??
-    modes.find((option) => option.mode === "auto") ??
-    modes[0];
+    modes.find((option) => option.mode === defaultMode(provider?.modes ?? []));
+
+  const settingItems: MenuItem[] = [];
+  if (provider && providers.length > 1) {
+    settingItems.push({
+      id: "agent",
+      label: "Agent",
+      value: provider.name,
+      run: () => {},
+      items: providers.map((p) => ({
+        id: p.agent,
+        label: p.name,
+        checked: p.agent === provider.agent,
+        run: () => onDraft({ agent: p.agent }),
+      })),
+    });
+  }
+  if (provider && model) {
+    settingItems.push({
+      id: "model",
+      label: "Model",
+      value: model.name,
+      run: () => {},
+      items: provider.models.map((m) => ({
+        id: m.id,
+        label: modelLabel(provider, m),
+        checked: m.id === model.id,
+        run: () => onDraft({ model: m.id }),
+      })),
+    });
+  }
+  if (efforts.length > 0) {
+    settingItems.push({
+      id: "effort",
+      label: "Effort",
+      value: effort?.name,
+      run: () => {},
+      items: efforts.map((e) => ({
+        id: e.id,
+        label: e.name,
+        checked: e.id === effort?.id,
+        run: () => onDraft({ effort: e.id }),
+      })),
+    });
+  }
+
 
   const canStart =
     ready && online && provider !== undefined && mode !== undefined && text.trim() !== "" && !busy;
@@ -186,49 +231,23 @@ export function AgentForm({
           <div className="composer-pickers">
             {provider ? (
               <>
-                <Picker
-                  {...control("provider")}
-                  label="Provider"
-                  title="Provider"
+                <MenuButton
+                  label="Agent settings"
+                  title="Agent, model and effort"
                   className="picker"
-                  value={provider.agent}
-                  onChange={(agent) => onDraft({ agent })}
-                  trigger={provider.name}
+                  align="start"
+                  groups={[settingItems]}
+                  returnFocus={input}
                 >
-                  {providers.map((p) => (
-                    <Choice key={p.agent} value={p.agent} label={p.name} />
-                  ))}
-                </Picker>
-                {model && (
-                  <Picker
-                    {...control("model")}
-                    label="Model"
-                    title="Model"
-                    className="picker"
-                    value={model.id}
-                    onChange={(model) => onDraft({ model })}
-                    trigger={modelLabel(provider, model)}
-                  >
-                    {provider.models.map((m) => (
-                      <Choice key={m.id} value={m.id} label={modelLabel(provider, m)} />
-                    ))}
-                  </Picker>
-                )}
-                {efforts.length > 0 && (
-                  <Picker
-                    {...control("effort")}
-                    label="Effort"
-                    title="Effort"
-                    className="picker"
-                    value={effort?.id ?? null}
-                    onChange={(effort) => onDraft({ effort })}
-                    trigger={`${effort?.name} effort`}
-                  >
-                    {efforts.map((e) => (
-                      <Choice key={e.id} value={e.id} label={e.name} />
-                    ))}
-                  </Picker>
-                )}
+                  {settingsLabel({
+                    // Which agent only needs saying when there's a choice of them.
+                    model: [providers.length > 1 ? provider.name : null, model?.name ?? "Default model"]
+                      .filter(Boolean)
+                      .join(" "),
+                    effort: effort?.name,
+                    changed: [],
+                  })}
+                </MenuButton>
                 {mode && (
                   <Picker
                     {...control("mode")}

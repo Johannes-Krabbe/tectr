@@ -6,7 +6,13 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { trackRequests } from "./requests";
 
-export type PermissionMode = "manual" | "auto" | "yolo" | "unknown";
+export type PermissionMode =
+  | "manual"
+  | "accept_edits"
+  | "auto"
+  | "yolo"
+  | "plan"
+  | "unknown";
 
 export type SessionStatus =
   | "starting"
@@ -221,8 +227,16 @@ export interface ToolCallPatch {
   title?: string;
   kind?: string;
   status?: "pending" | "in_progress" | "completed" | "failed" | "unknown";
+  /** What the agent passed the tool, as the agent shapes it. */
+  input?: unknown;
   locations?: string[];
+  content?: ToolCallContent[];
 }
+
+export type ToolCallContent =
+  | { type: "text"; text: string }
+  | { type: "diff"; path: string; old_text: string | null; new_text: string }
+  | { type: "unknown" };
 
 export interface PermissionOption {
   id: string;
@@ -233,9 +247,88 @@ export interface PermissionOption {
 export interface Approval {
   id: string;
   session_id: string;
+  /** The subagent asking, if it isn't the session's own agent. */
+  subagent?: string;
   tool_call: ToolCallPatch;
   options: PermissionOption[];
 }
+
+/** A form an agent wants filled in, such as Claude's multiple-choice questions. */
+export interface Question {
+  id: string;
+  session_id: string;
+  subagent?: string;
+  message: string;
+  fields?: QuestionField[];
+  /** A page to open, after which the question is answered with accept. */
+  url?: string;
+}
+
+export interface QuestionField {
+  key: string;
+  title?: string;
+  description?: string;
+  required?: boolean;
+  kind: FieldKind;
+}
+
+export type FieldKind =
+  | { type: "choice"; options: FieldOption[]; multiple?: boolean }
+  | { type: "text" }
+  | { type: "number"; integer?: boolean }
+  | { type: "boolean" }
+  | { type: "unknown" };
+
+export interface FieldOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export type QuestionAnswer =
+  /** `note` is anything else to say, which the agent gets right after the answer. */
+  | {
+      action: "accept";
+      values: Record<string, string | number | boolean | string[]>;
+      note?: string;
+    }
+  | { action: "decline" }
+  | { action: "cancel" }
+  | { action: "unknown" };
+
+/** One of an agent's own options, beyond the model, mode and effort. */
+export interface AgentOption {
+  id: string;
+  name: string;
+  description?: string;
+  value: string;
+  choices: { value: string; name: string }[];
+}
+
+export type TaskStatus = "running" | "completed" | "failed" | "stopped" | "unknown";
+
+/** Work an agent runs in the background, such as a command it left running. */
+export interface BackgroundTask {
+  id: string;
+  /** Like `shell`, `monitor` or `workflow`. */
+  kind: string;
+  description: string;
+  command?: string;
+  status: TaskStatus;
+  summary?: string;
+  output_file?: string;
+  can_stop?: boolean;
+  tool_call?: string;
+}
+
+export type PlanEntryStatus = "pending" | "in_progress" | "completed" | "unknown";
+
+export interface PlanEntry {
+  content: string;
+  status: PlanEntryStatus;
+}
+
+export type SubagentStatus = "working" | "waiting_for_you" | "done" | "unknown";
 
 export interface ProviderEffort {
   id: string;
@@ -313,6 +406,8 @@ export interface DaemonState {
   machine: { id: string; name: string };
   workspaces: Workspace[];
   approvals: Approval[];
+  /** Forms agents asked to have filled in, across all sessions. */
+  questions?: Question[];
   providers?: Provider[];
   /** What's typed for each session but not sent yet. */
   drafts?: Record<string, string>;
@@ -320,6 +415,11 @@ export interface DaemonState {
   draft_images?: Record<string, PromptImage[]>;
   /** The slash commands each session's agent last said it has. */
   commands?: Record<string, AgentCommand[]>;
+  /** The options each session's agent offers beyond the model, mode and effort. */
+  session_options?: Record<string, AgentOption[]>;
+  /** Each session's background tasks that have a tab: the running ones, and ones that failed
+   * until their tab is closed. */
+  session_tasks?: Record<string, BackgroundTask[]>;
   /** Left out while every value is its default. */
   settings?: DeviceSettings;
   /** Until when someone asked the machine to stay awake, on the daemon's clock. Left out when
@@ -431,9 +531,52 @@ export type SessionEventKind =
   /** `last_message` is where a branch from this answer starts, when the agent says. */
   | { event: "turn_ended"; stop_reason: string; last_message?: string }
   | { event: "error"; message: string }
+  | { event: "question_asked"; question: Question }
+  | { event: "question_answered"; question_id: string; answer: QuestionAnswer }
+  /** The agent's todo list, replaced whole each time. */
+  | { event: "plan"; entries: PlanEntry[] }
+  /** A plan in Markdown, replacing any earlier one with the same ID. */
+  | { event: "plan_document"; id: string; text: string }
+  | { event: "usage"; used: number; size: number; cost?: { amount: number; currency: string } }
+  | {
+      event: "notice";
+      severity: "info" | "warning" | "error" | "unknown";
+      title: string;
+      description?: string;
+    }
+  /** Later ones with the same ID replace it. */
+  | {
+      event: "compaction";
+      id: string;
+      status: "in_progress" | "completed" | "failed" | "cancelled" | "unknown";
+      summary?: string;
+      error?: string;
+    }
+  /** What the agent expects to be sent next. Missing takes back the last one. */
+  | { event: "suggestion"; text?: string }
+  /** A subagent, or what changed about it. A field left out is unchanged. */
+  | {
+      event: "subagent";
+      id: string;
+      title?: string;
+      description?: string;
+      status?: SubagentStatus;
+    }
+  /** Between the agent and a subagent. `from` and `to` are subagent IDs, missing for the
+   * agent itself. A later one with the same ID replaces it. */
+  | { event: "session_message"; id: string; from?: string; to?: string; text: string }
+  /** Replaces any earlier one with the same task ID. */
+  | { event: "task"; task: BackgroundTask }
+  | { event: "shell"; command: string; output: string; exit_code?: number }
   | { event: "unknown" };
 
-export type SessionEvent = { seq: number; at_ms: number; kind: SessionEventKind };
+export type SessionEvent = {
+  seq: number;
+  at_ms: number;
+  kind: SessionEventKind;
+  /** The subagent it happened in. Missing for the session's own agent. */
+  subagent?: string;
+};
 
 export type Command =
   | { command: "add_workspace"; path: string }
@@ -469,6 +612,18 @@ export type Command =
   | { command: "read_image"; id: string; thumbnail?: boolean }
   | { command: "cancel_turn"; session_id: string }
   | { command: "answer_approval"; approval_id: string; option_id: string }
+  | { command: "answer_question"; question_id: string; answer: QuestionAnswer }
+  | { command: "stop_subagent"; session_id: string; subagent: string }
+  | { command: "stop_task"; session_id: string; task_id: string }
+  /** Answered with `task_output`. */
+  | { command: "read_task_output"; session_id: string; task_id: string }
+  /** Stops it first if it's still running. */
+  | { command: "close_task"; session_id: string; task_id: string }
+  | { command: "set_session_option"; session_id: string; option_id: string; value: string }
+  /** Answered with `files`, best first. */
+  | { command: "list_files"; session_id: string; query: string }
+  /** A command typed with `!`. Its output goes to the agent with the next prompt. */
+  | { command: "run_shell"; session_id: string; line: string }
   | { command: "rename_machine"; name: string }
   | { command: "set_device_settings"; settings: DeviceSettings }
   /** Keeps the machine awake for this long from now, whatever its agents do. Null stops early. */
@@ -573,6 +728,10 @@ export type CommandOutput =
   /** A code that lets machines ask to pair until it expires. */
   | { output: "pairing"; code: string; expires_at_ms: number }
   | { output: "paired"; client: PairedClient }
+  /** The end of what a background task wrote. */
+  | { output: "task_output"; text: string; truncated: boolean }
+  /** Relative to the session's folder. */
+  | { output: "files"; paths: string[] }
   | { output: "done" }
   | { output: "unknown" };
 

@@ -556,8 +556,10 @@ async fn a_provider_reports_what_it_offers_and_is_kept_by_the_daemon() {
         provider.modes,
         [
             PermissionMode::Manual,
+            PermissionMode::AcceptEdits,
             PermissionMode::Auto,
-            PermissionMode::Yolo
+            PermissionMode::Yolo,
+            PermissionMode::Plan
         ]
     );
     // "Default" isn't offered. The model it stands for is marked instead.
@@ -2405,7 +2407,15 @@ async fn an_agent_crash_fails_one_session_and_can_be_resumed() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_second_prompt_during_a_turn_is_refused_and_cancel_stops_it() {
     let fixture = Fixture::new();
-    let daemon = fixture.daemon("d").await;
+    let mut config = fixture.config("d", 0);
+    config.agents.insert(
+        "fake".to_owned(),
+        AgentLauncher::Command {
+            program: env!("CARGO_BIN_EXE_fake-agent").into(),
+            args: vec!["--no-steer".to_owned()],
+        },
+    );
+    let daemon = Daemon::start(config).await.unwrap();
     let engine = connect(&daemon).await;
     let machine = daemon.machine_id().clone();
     let (_, session) =
@@ -4076,5 +4086,895 @@ async fn removing_a_workspace_says_what_it_would_lose_and_forgets_it_when_forced
     let again = add_workspace(&engine, &machine, &fixture.repo).await;
     assert_ne!(again.id, workspace.id);
     assert!(again.topics.is_empty());
+    daemon.shutdown().await;
+}
+
+fn events_of(engine: &Engine, session: &SessionRef) -> Vec<protocol::SessionEvent> {
+    engine.events_after(session, 0)
+}
+
+async fn wait_for_question(engine: &Engine, session: &SessionRef) -> protocol::Question {
+    wait_for("a pending question", || {
+        state_of(engine)
+            .questions
+            .into_iter()
+            .find(|question| question.session_id == session.session_id)
+    })
+    .await
+}
+
+async fn wait_for_said(engine: &Engine, session: &SessionRef, prefix: &str) -> String {
+    wait_for(&format!("the agent saying {prefix}"), || {
+        agent_text(engine, session)
+            .into_iter()
+            .find(|text| text.starts_with(prefix))
+    })
+    .await
+}
+
+async fn request(
+    engine: &Engine,
+    session: &SessionRef,
+    command: Command,
+) -> Result<CommandOutput, EngineError> {
+    engine.request(&session.machine_id, command).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_is_answered_with_values_that_fit_its_fields() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    prompt(&engine, &session, "ask").await.unwrap();
+    let question = wait_for_question(&engine, &session).await;
+    wait_for_status(&engine, &session, SessionStatus::WaitingForYou).await;
+    let keys: Vec<&str> = question.fields.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, ["question_0", "question_0_custom", "question_1"]);
+    assert!(matches!(
+        &question.fields[2].kind,
+        protocol::FieldKind::Choice { multiple: true, options } if options[1].label == "UI"
+    ));
+
+    let values = serde_json::json!({
+        "question_0": "Redis",
+        "question_0_custom": "",
+        "question_1": ["api"],
+    });
+    request(
+        &engine,
+        &session,
+        Command::AnswerQuestion {
+            question_id: question.id.clone(),
+            answer: protocol::QuestionAnswer::Accept {
+                values: values.as_object().unwrap().clone(),
+                note: Some("echo noted".into()),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let said = wait_for_said(&engine, &session, "answer=").await;
+    let said: serde_json::Value = serde_json::from_str(said.trim_start_matches("answer=")).unwrap();
+    assert_eq!(
+        said,
+        serde_json::json!({ "action": "accept", "content": { "question_0": "Redis", "question_1": ["api"] } })
+    );
+    // The note goes to the agent after the answer, here as a turn of its own, because the
+    // turn it was meant for has nothing listening for it.
+    wait_for_said(&engine, &session, "noted").await;
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    assert!(state_of(&engine).questions.is_empty());
+    assert!(events_of(&engine, &session).iter().any(|event| matches!(
+        &event.kind,
+        SessionEventKind::QuestionAnswered { question_id, answer: protocol::QuestionAnswer::Accept { note: Some(note), .. } }
+            if question_id == &question.id && note == "echo noted"
+    )));
+    assert!(events_of(&engine, &session).iter().any(|event| matches!(
+        &event.kind, SessionEventKind::UserPrompt { text, .. } if text == "echo noted")));
+
+    // A second answer finds nothing to answer.
+    let again = request(
+        &engine,
+        &session,
+        Command::AnswerQuestion {
+            question_id: question.id,
+            answer: protocol::QuestionAnswer::Decline,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(again, EngineError::Command(e) if e.code == ErrorCode::NotFound));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_to_visit_is_a_question_and_interrupting_cancels_one() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    prompt(&engine, &session, "login").await.unwrap();
+    let question = wait_for_question(&engine, &session).await;
+    assert_eq!(question.url.as_deref(), Some("https://example.com/login"));
+    assert!(question.fields.is_empty());
+    request(
+        &engine,
+        &session,
+        Command::AnswerQuestion {
+            question_id: question.id,
+            answer: protocol::QuestionAnswer::Decline,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        wait_for_said(&engine, &session, "answer=").await,
+        r#"answer={"action":"decline"}"#
+    );
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+
+    prompt(&engine, &session, "ask").await.unwrap();
+    let question = wait_for_question(&engine, &session).await;
+    request(
+        &engine,
+        &session,
+        Command::CancelTurn {
+            session_id: session.session_id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    wait_for("the question to be cancelled", || {
+        events_of(&engine, &session)
+            .iter()
+            .find_map(|event| match &event.kind {
+                SessionEventKind::QuestionAnswered {
+                    question_id,
+                    answer: protocol::QuestionAnswer::Cancel,
+                } if question_id == &question.id => Some(()),
+                _ => None,
+            })
+    })
+    .await;
+    assert!(state_of(&engine).questions.is_empty());
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plans_usage_notices_compaction_and_suggestions_reach_the_transcript() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    for script in [
+        "plan",
+        "plan-doc",
+        "usage",
+        "usage",
+        "notice",
+        "compact",
+        "suggest add tests",
+    ] {
+        prompt(&engine, &session, script).await.unwrap();
+        wait_for_status(&engine, &session, SessionStatus::Done).await;
+    }
+    let kinds: Vec<SessionEventKind> = events_of(&engine, &session)
+        .into_iter()
+        .map(|event| event.kind)
+        .collect();
+    let plans: Vec<&Vec<protocol::PlanEntry>> = kinds
+        .iter()
+        .filter_map(|kind| match kind {
+            SessionEventKind::Plan { entries } => Some(entries),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(plans.len(), 2);
+    assert_eq!(plans[1][0].status, protocol::PlanEntryStatus::Completed);
+    assert_eq!(plans[1][1].content, "Write the fix");
+    assert!(kinds.contains(&SessionEventKind::PlanDocument {
+        id: "plan-mode".into(),
+        text: "# Plan\n\n1. Fix it".into(),
+    }));
+    // The same usage twice is one event.
+    let usages = kinds
+        .iter()
+        .filter(|kind| {
+            matches!(
+                kind,
+                SessionEventKind::Usage {
+                    used: 1200,
+                    size: 200_000,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(usages, 1);
+    assert!(kinds.contains(&SessionEventKind::Notice {
+        severity: protocol::NoticeSeverity::Warning,
+        title: "Retrying".into(),
+        description: Some("The API is busy".into()),
+    }));
+    assert!(kinds.contains(&SessionEventKind::Compaction {
+        id: "c1".into(),
+        status: protocol::CompactionStatus::Completed,
+        summary: Some("We fixed the bug.".into()),
+        error: None,
+    }));
+    assert!(kinds.contains(&SessionEventKind::Suggestion {
+        text: Some("add tests".into()),
+    }));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plan_mode_ends_when_the_agent_moves_on_by_itself() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Plan).await;
+    assert!(agent_report(&engine, &session).await.contains("mode=plan"));
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+
+    prompt(&engine, &session, "exit-plan").await.unwrap();
+    wait_for("the session to follow the agent's mode", || {
+        (session_state(&engine, &session).mode == PermissionMode::Auto).then_some(())
+    })
+    .await;
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    // And it can go back, which the agent is told.
+    set_settings(&engine, &session, PermissionMode::Plan, None, None)
+        .await
+        .unwrap();
+    assert!(agent_report(&engine, &session).await.contains("mode=plan"));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagents_work_is_marked_as_its_own() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    prompt(&engine, &session, "team").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let events = events_of(&engine, &session);
+    let child = Some("fake-child".to_owned());
+    let announced = events.iter().find_map(|event| match &event.kind {
+        SessionEventKind::Subagent {
+            id,
+            title,
+            description,
+            status,
+        } if event.subagent.is_none() => {
+            Some((id.clone(), title.clone(), description.clone(), *status))
+        }
+        _ => None,
+    });
+    assert_eq!(
+        announced,
+        Some((
+            "fake-child".into(),
+            Some("Explore".into()),
+            Some("Find the bug".into()),
+            Some(protocol::SubagentStatus::Working)
+        ))
+    );
+    assert!(events.iter().any(|event| event.subagent == child
+        && matches!(&event.kind, SessionEventKind::SessionMessage { text, from: None, to, .. }
+            if text == "Look for the bug" && to.as_deref() == Some("fake-child"))));
+    assert!(events.iter().any(|event| event.subagent == child
+        && event.kind
+            == SessionEventKind::AgentMessage {
+                text: "found it".into()
+            }));
+    assert!(events.iter().any(|event| event.subagent == child
+        && matches!(&event.kind, SessionEventKind::ToolCall { id, .. } if id == "child-tool")));
+    assert!(events.iter().any(|event| matches!(
+        &event.kind,
+        SessionEventKind::Subagent {
+            status: Some(protocol::SubagentStatus::Done),
+            ..
+        }
+    )));
+    // The agent's own words are its own, and its answer ends where it said.
+    let own: Vec<String> = events
+        .iter()
+        .filter(|event| event.subagent.is_none())
+        .filter_map(|event| match &event.kind {
+            SessionEventKind::AgentMessage { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(own, ["main"]);
+    let ended = events.iter().rev().find_map(|event| match &event.kind {
+        SessionEventKind::TurnEnded { last_message, .. } => last_message.clone(),
+        _ => None,
+    });
+    assert_eq!(ended.as_deref(), Some("msg:team"));
+
+    // Stopping a subagent leaves its parent alone.
+    request(
+        &engine,
+        &session,
+        Command::StopSubagent {
+            session_id: session.session_id.clone(),
+            subagent: "fake-child".into(),
+        },
+    )
+    .await
+    .unwrap();
+    wait_for("the subagent to be told to stop", || {
+        let done = events_of(&engine, &session)
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    SessionEventKind::Subagent {
+                        status: Some(protocol::SubagentStatus::Done),
+                        ..
+                    }
+                )
+            })
+            .count();
+        (done == 2).then_some(())
+    })
+    .await;
+    assert_eq!(status(&engine, &session), Some(SessionStatus::Done));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn background_tasks_are_followed_and_their_output_read() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    prompt(&engine, &session, "task").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let tasks: Vec<protocol::BackgroundTask> = events_of(&engine, &session)
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            SessionEventKind::Task { task } => Some(task),
+            _ => None,
+        })
+        .collect();
+    let task = tasks.last().expect("a task");
+    assert_eq!(tasks.len(), 1, "the live set adds nothing new: {tasks:?}");
+    assert_eq!(task.kind, "shell");
+    assert_eq!(task.command.as_deref(), Some("npm run dev"));
+    assert_eq!(task.status, protocol::TaskStatus::Running);
+    assert!(task.can_stop);
+    assert!(
+        task.output_file
+            .as_deref()
+            .is_some_and(|p| p.ends_with("/tasks/b1.output"))
+    );
+
+    match request(
+        &engine,
+        &session,
+        Command::ReadTaskOutput {
+            session_id: session.session_id.clone(),
+            task_id: "b1".into(),
+        },
+    )
+    .await
+    .unwrap()
+    {
+        CommandOutput::TaskOutput { text, truncated } => {
+            assert_eq!(text, "server started\n");
+            assert!(!truncated);
+        }
+        other => panic!("unexpected output {other:?}"),
+    }
+    // Nothing writes the file, so there's nothing to stop.
+    let error = request(
+        &engine,
+        &session,
+        Command::StopTask {
+            session_id: session.session_id.clone(),
+            task_id: "b1".into(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.message.contains("nothing is running")));
+    // A running task has a tab.
+    let tabs = |engine: &Engine| {
+        state_of(engine)
+            .session_tasks
+            .get(&session.session_id)
+            .map(|tasks| tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    assert_eq!(tabs(&engine), ["b1"]);
+
+    prompt(&engine, &session, "task-done").await.unwrap();
+    wait_for("the task to end", || {
+        events_of(&engine, &session)
+            .iter()
+            .find_map(|event| match &event.kind {
+                SessionEventKind::Task { task }
+                    if task.status == protocol::TaskStatus::Completed =>
+                {
+                    task.summary.clone()
+                }
+                _ => None,
+            })
+    })
+    .await;
+    // One that finished closes its tab, since the agent says how it went.
+    wait_for("the task's tab to close", || {
+        tabs(&engine).is_empty().then_some(())
+    })
+    .await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agent_is_told_when_the_person_stops_a_task() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    prompt(&engine, &session, "task").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let output = state_of(&engine).session_tasks[&session.session_id][0]
+        .output_file
+        .clone()
+        .unwrap();
+    // A command writing the task's output, as the real one would be. It's left to run on its
+    // own, since a child of this test is a child of the daemon, which looks like its agent.
+    std::process::Command::new("sh")
+        .args(["-c", &format!("(sleep 30 >> '{output}' &)")])
+        .status()
+        .unwrap();
+    let writing = || {
+        std::process::Command::new("lsof")
+            .args(["-t", "--", &output])
+            .output()
+            .is_ok_and(|out| !out.stdout.is_empty())
+    };
+    wait_for("the command to open its output", || writing().then_some(())).await;
+
+    request(
+        &engine,
+        &session,
+        Command::CloseTask {
+            session_id: session.session_id.clone(),
+            task_id: "b1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    wait_for("the command to stop", || (!writing()).then_some(())).await;
+    let told = wait_for("the agent to hear it", || {
+        events_of(&engine, &session)
+            .into_iter()
+            .find_map(|event| match event.kind {
+                SessionEventKind::AgentMessage { text } if text.contains("I stopped") => Some(text),
+                _ => None,
+            })
+    })
+    .await;
+    assert!(
+        told.contains("\"Start the dev server\" (`npm run dev`)"),
+        "{told}"
+    );
+    assert!(told.contains("isn't a failure"), "{told}");
+    assert!(events_of(&engine, &session).iter().any(|event| matches!(
+        &event.kind,
+        SessionEventKind::Notice { title, .. } if title == "You stopped Start the dev server"
+    )));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_background_tasks_tab_keeps_it_closed() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    let has_tab = |engine: &Engine| {
+        state_of(engine)
+            .session_tasks
+            .get(&session.session_id)
+            .is_some_and(|tasks| tasks.iter().any(|t| t.id == "b1"))
+    };
+
+    prompt(&engine, &session, "task").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    assert!(has_tab(&engine));
+    // Nothing writes its file, so it has already ended, and closing goes ahead anyway.
+    request(
+        &engine,
+        &session,
+        Command::CloseTask {
+            session_id: session.session_id.clone(),
+            task_id: "b1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    wait_for("the tab to close", || (!has_tab(&engine)).then_some(())).await;
+    // Later reports about it don't open it again.
+    prompt(&engine, &session, "task").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    assert!(!has_tab(&engine));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_the_agent_starts_itself_shows_as_working() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    prompt(&engine, &session, "later").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    wait_for("the agent's own turn to start", || {
+        events_of(&engine, &session)
+            .iter()
+            .skip_while(|event| !matches!(event.kind, SessionEventKind::TurnEnded { .. }))
+            .find(|event| {
+                event.kind
+                    == SessionEventKind::StatusChanged {
+                        status: SessionStatus::Working,
+                    }
+            })
+            .map(|_| ())
+    })
+    .await;
+    wait_for_said(&engine, &session, "on my own").await;
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let ends: Vec<Option<String>> = events_of(&engine, &session)
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            SessionEventKind::TurnEnded { last_message, .. } => Some(last_message),
+            _ => None,
+        })
+        .collect();
+    // The prompted turn said nothing, and the agent's own one is where a branch can start.
+    assert_eq!(ends, [None, Some("msg:later".to_owned())]);
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn what_the_agent_writes_after_its_turn_while_still_running_is_a_turn_of_its_own() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    prompt(&engine, &session, "carry-on").await.unwrap();
+    wait_for_said(&engine, &session, "carried on").await;
+    wait_for("its own turn to end", || {
+        let ends = events_of(&engine, &session)
+            .iter()
+            .filter(|event| matches!(event.kind, SessionEventKind::TurnEnded { .. }))
+            .count();
+        (ends == 2).then_some(())
+    })
+    .await;
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let events = events_of(&engine, &session);
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            SessionEventKind::AgentMessage { text } => Some(text.as_str()),
+            SessionEventKind::TurnEnded { .. } => Some("end"),
+            SessionEventKind::StatusChanged {
+                status: SessionStatus::Working,
+            } => Some("working"),
+            _ => None,
+        })
+        .collect();
+    // Its answer ends where it was asked to, and what it wrote after is a turn of its own,
+    // working while it lasts and ending where a branch can start.
+    assert_eq!(
+        kinds,
+        ["working", "asked", "end", "working", "carried on", "end"]
+    );
+    let last = events.iter().rev().find_map(|event| match &event.kind {
+        SessionEventKind::TurnEnded { last_message, .. } => Some(last_message.clone()),
+        _ => None,
+    });
+    assert_eq!(last, Some(Some("msg:carried".to_owned())));
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_sent_while_the_agent_works_goes_into_its_turn() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    prompt(&engine, &session, "wait").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Working).await;
+    // Give the turn a moment to start listening.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    prompt(&engine, &session, "more please").await.unwrap();
+    assert_eq!(
+        wait_for_said(&engine, &session, "steered").await,
+        "steered: more please"
+    );
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let prompts: Vec<String> = events_of(&engine, &session)
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            SessionEventKind::UserPrompt { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prompts, ["wait", "more please"]);
+
+    // With no turn to go into, it starts one of its own.
+    let ends_before = events_of(&engine, &session)
+        .iter()
+        .filter(|event| matches!(event.kind, SessionEventKind::TurnEnded { .. }))
+        .count();
+    prompt(&engine, &session, "echo again").await.unwrap();
+    wait_for_said(&engine, &session, "again").await;
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let ends_after = events_of(&engine, &session)
+        .iter()
+        .filter(|event| matches!(event.kind, SessionEventKind::TurnEnded { .. }))
+        .count();
+    assert_eq!(ends_after, ends_before + 1);
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_sent_while_the_agent_compacts_waits_for_it() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    prompt(&engine, &session, "compact slow").await.unwrap();
+    wait_for("the compaction to start", || {
+        events_of(&engine, &session)
+            .iter()
+            .find(|event| matches!(event.kind, SessionEventKind::Compaction { .. }))
+            .map(|_| ())
+    })
+    .await;
+    // Steered in now, it would abort the compaction.
+    prompt(&engine, &session, "echo after").await.unwrap();
+    wait_for_said(&engine, &session, "after").await;
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let events = events_of(&engine, &session);
+    let compactions: Vec<protocol::CompactionStatus> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            SessionEventKind::Compaction { status, .. } => Some(*status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        compactions.last(),
+        Some(&protocol::CompactionStatus::Completed)
+    );
+    assert!(!compactions.contains(&protocol::CompactionStatus::Failed));
+    let prompts: Vec<String> = events
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            SessionEventKind::UserPrompt { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prompts, ["compact slow", "echo after"]);
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_own_options_can_be_set_and_last_across_restarts() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let port = daemon.addr().port();
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    let options = wait_for("the agent's options", || {
+        state_of(&engine)
+            .session_options
+            .get(&session.session_id)
+            .cloned()
+    })
+    .await;
+    assert_eq!(options.len(), 1, "{options:?}");
+    assert_eq!(options[0].id, "ultracode");
+    assert_eq!(options[0].value, "off");
+
+    let set = |value: &str| Command::SetSessionOption {
+        session_id: session.session_id.clone(),
+        option_id: "ultracode".into(),
+        value: value.into(),
+    };
+    let error = request(&engine, &session, set("maybe")).await.unwrap_err();
+    assert!(matches!(error, EngineError::Command(e) if e.code == ErrorCode::InvalidInput));
+    request(&engine, &session, set("on")).await.unwrap();
+    assert_eq!(
+        state_of(&engine).session_options[&session.session_id][0].value,
+        "on"
+    );
+    assert!(
+        agent_report(&engine, &session)
+            .await
+            .contains("ultracode=on")
+    );
+    daemon.shutdown().await;
+
+    let daemon = Daemon::start(fixture.config("d", port)).await.unwrap();
+    let engine = connect(&daemon).await;
+    engine.open_session(&session);
+    let report = agent_report(&engine, &session).await;
+    assert!(report.contains("ultracode=on"), "{report}");
+    assert_eq!(word_after(&report, "resumed="), "true");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mentioned_files_go_with_the_prompt_and_can_be_found() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (topic, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+    let folder = PathBuf::from(&topic.worktrees[0].path);
+    std::fs::create_dir_all(folder.join("docs")).unwrap();
+    std::fs::write(folder.join("docs/notes.md"), "remember").unwrap();
+
+    match request(
+        &engine,
+        &session,
+        Command::ListFiles {
+            session_id: session.session_id.clone(),
+            query: "notes".into(),
+        },
+    )
+    .await
+    .unwrap()
+    {
+        CommandOutput::Files { paths } => assert_eq!(paths, ["docs/notes.md"]),
+        other => panic!("unexpected output {other:?}"),
+    }
+
+    prompt(&engine, &session, "files see @docs/notes.md")
+        .await
+        .unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let said = agent_text(&engine, &session).concat();
+    assert!(said.starts_with("file://"), "{said}");
+    assert!(said.ends_with("docs/notes.md remember"), "{said}");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_run_with_a_bang_goes_to_the_agent_with_the_next_prompt() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    request(
+        &engine,
+        &session,
+        Command::RunShell {
+            session_id: session.session_id.clone(),
+            line: "echo hi; exit 3".into(),
+        },
+    )
+    .await
+    .unwrap();
+    wait_for("the command's output", || {
+        events_of(&engine, &session)
+            .into_iter()
+            .find_map(|event| match event.kind {
+                SessionEventKind::Shell {
+                    output,
+                    exit_code: Some(3),
+                    ..
+                } if output == "hi\n" => Some(()),
+                _ => None,
+            })
+    })
+    .await;
+
+    prompt(&engine, &session, "echo done").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    let said = agent_text(&engine, &session);
+    assert!(
+        said[0].starts_with("[tectr] I ran these commands"),
+        "{said:?}"
+    );
+    assert!(
+        said[0].contains("$ echo hi; exit 3\nhi\n(exit code 3)"),
+        "{said:?}"
+    );
+    assert_eq!(said.last().map(String::as_str), Some("done"));
+
+    // It goes once.
+    prompt(&engine, &session, "echo again").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
+    assert_eq!(
+        agent_text(&engine, &session).last().map(String::as_str),
+        Some("again")
+    );
+    assert_eq!(
+        agent_text(&engine, &session)
+            .iter()
+            .filter(|text| text.starts_with("[tectr]"))
+            .count(),
+        1
+    );
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_for_a_turn_that_cant_take_it_goes_after_the_turn() {
+    let fixture = Fixture::new();
+    let daemon = fixture.daemon("d").await;
+    let engine = connect(&daemon).await;
+    let machine = daemon.machine_id().clone();
+    let (_, session) =
+        start_ready_session(&engine, &machine, &fixture.repo, PermissionMode::Auto).await;
+
+    // `hang` doesn't listen, so the agent says the message needs a turn of its own.
+    prompt(&engine, &session, "hang").await.unwrap();
+    wait_for_status(&engine, &session, SessionStatus::Working).await;
+    prompt(&engine, &session, "echo after").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(agent_text(&engine, &session).is_empty());
+    request(
+        &engine,
+        &session,
+        Command::CancelTurn {
+            session_id: session.session_id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    wait_for_said(&engine, &session, "after").await;
+    wait_for_status(&engine, &session, SessionStatus::Done).await;
     daemon.shutdown().await;
 }

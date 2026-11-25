@@ -114,14 +114,31 @@ impl AgentLauncher {
             (Self::CodexAdapter, PermissionMode::Manual) => Some("read-only"),
             (Self::CodexAdapter, PermissionMode::Auto) => Some("auto"),
             (Self::CodexAdapter, PermissionMode::Yolo) => Some("full-access"),
+            (Self::CodexAdapter, _) => None,
             // OpenCode's modes are build and plan, with no permission levels. In
             // build, its own config decides what needs asking, which is auto.
             (Self::OpenCode, PermissionMode::Auto) => Some("build"),
+            (Self::OpenCode, PermissionMode::Plan) => Some("plan"),
             (Self::OpenCode, _) => None,
             (_, PermissionMode::Manual) => Some("default"),
+            (_, PermissionMode::AcceptEdits) => Some("acceptEdits"),
             (_, PermissionMode::Auto) => Some("auto"),
             (_, PermissionMode::Yolo) => Some("bypassPermissions"),
+            (_, PermissionMode::Plan) => Some("plan"),
         }
+    }
+
+    /// The mode an agent's own mode ID stands for, if it's one tectr offers.
+    pub fn mode_for_id(&self, id: &str) -> Option<PermissionMode> {
+        PermissionMode::ALL
+            .into_iter()
+            .find(|mode| self.mode_id(*mode) == Some(id))
+    }
+
+    /// Claude's adapter, which passes on Claude Code's own messages when asked. A command
+    /// could be Claude's adapter too, which tests use, and asking costs nothing elsewhere.
+    pub fn is_claude(&self) -> bool {
+        matches!(self, Self::ClaudeAdapter | Self::Command { .. })
     }
 }
 

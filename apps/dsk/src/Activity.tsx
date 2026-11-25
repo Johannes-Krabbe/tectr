@@ -3,8 +3,22 @@
 
 import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { Markdown } from "./markdown";
-import { activitySummary, type Activity, type ActivityStep } from "./model";
+import {
+  activitySummary,
+  type Activity,
+  type ActivityStep,
+  formatWorked,
+  type SubagentInfo,
+  subagentLabel,
+  subagentRunning,
+  subagentState,
+} from "./model";
 import { nextTyped, typedText } from "./motion";
+import { ToolDetails } from "./ToolDetails";
+import { hasDetails } from "./toolView";
+import { Icon } from "./ui/Icon";
+import { StatusIcon } from "./ui/StatusIcon";
+import { useNow } from "./ui/useNow";
 
 /** The least time a step stays up, so that a run of quick tools can be read. */
 const STEP_DWELL_MS = 320;
@@ -59,7 +73,6 @@ export function LiveLine({
         "activity-text",
         "fades-in",
         step.leaving && "leaving",
-        waiting && "waiting",
         animate && !waiting && "sweeps",
       ]
         .filter(Boolean)
@@ -104,24 +117,121 @@ const TOOL_META: Record<string, string> = {
   failed: "Failed",
 };
 
-function Step({ step, live }: { step: ActivityStep; live: boolean }) {
+/** What a step needs from around it: the subagents it can name, and opening and stopping
+ * one. */
+export interface StepContext {
+  subagents: Map<string, SubagentInfo>;
+  /** The session's folder, which paths read from. */
+  folder: string | undefined;
+  online: boolean;
+  onOpenSubagent: (id: string) => void;
+  onStopSubagent: (id: string) => void;
+}
+
+/** A subagent where it was started, which stays in sight while it runs, folded or not. It
+ * counts how long it's been going, and its Stop shows on the row in use. */
+function SubagentStep({ id, context }: { id: string; context: StepContext }) {
+  const subagent = context.subagents.get(id);
+  const running = subagentRunning(subagent);
+  const now = useNow(running && context.online, 1000);
+  return (
+    <div className="subagent-step">
+      <button
+        type="button"
+        className="tool tool-button"
+        title="Show what the subagent did"
+        onClick={() => context.onOpenSubagent(id)}
+      >
+        <StatusIcon state={subagentState(subagent?.status, context.online)} />
+        <span className="tool-title">{subagentLabel(subagent)}</span>
+        {subagent?.description && subagent.title && (
+          <span className="meta tool-description">{subagent.description}</span>
+        )}
+      </button>
+      {running && subagent && context.online && (
+        <span className="meta step-time">{formatWorked(now - subagent.startedMs)}</span>
+      )}
+      {subagent?.status === "working" && (
+        <span className="step-quiet">
+          <button
+            type="button"
+            className="icon-button"
+            title="Stop the subagent"
+            aria-label="Stop the subagent"
+            disabled={!context.online}
+            onClick={() => context.onStopSubagent(id)}
+          >
+            <Icon name="remove" />
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function Step({ step, live, context }: { step: ActivityStep; live: boolean; context: StepContext }) {
+  const [open, setOpen] = useState(false);
   switch (step.kind) {
     case "thought":
       return <div className="thought">{step.text}</div>;
     case "note":
       return <div className="note">{step.text}</div>;
+    case "subagent":
+      return <SubagentStep id={step.id} context={context} />;
     case "tool": {
       const { status, title } = step.tool;
       // An interrupted turn can leave a tool saying it's running, and it no longer is.
       const meta = status && (live || status === "failed") ? TOOL_META[status] : undefined;
-      return (
-        <div className="tool">
+      const row = (
+        <>
           <span className="tool-title">{title ?? "Tool call"}</span>
           {meta && <span className={status === "failed" ? "meta bad" : "meta"}>{meta}</span>}
+        </>
+      );
+      if (!hasDetails(step.tool)) return <div className="tool">{row}</div>;
+      return (
+        <div className="tool-step">
+          <button
+            type="button"
+            className="tool tool-button"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+          >
+            {row}
+          </button>
+          {open && <ToolDetails tool={step.tool} folder={context.folder} />}
         </div>
       );
     }
   }
+}
+
+/** Subagents that came back between the agent's messages, a line each, where they came back.
+ * Pressing one shows what it did. */
+export function SubagentsBack({
+  back,
+  context,
+}: {
+  back: { id: string; tookMs: number }[];
+  context: StepContext;
+}) {
+  return (
+    <div className="subagents-back">
+      {back.map(({ id, tookMs }) => (
+        <button
+          key={id}
+          type="button"
+          className="subagent-back"
+          title="Show what the subagent did"
+          onClick={() => context.onOpenSubagent(id)}
+        >
+          <StatusIcon state="read" />
+          <span className="subagent-back-name">{subagentLabel(context.subagents.get(id))}</span>
+          <span className="subagent-back-time">finished after {formatWorked(tookMs)}</span>
+        </button>
+      ))}
+    </div>
+  );
 }
 
 /** An activity's steps, and when it's over, the line it folded into. While it's running
@@ -132,6 +242,7 @@ export function ActivityItem({
   fresh,
   open,
   onToggle,
+  context,
 }: {
   activity: Activity;
   live: boolean;
@@ -139,8 +250,16 @@ export function ActivityItem({
   fresh: boolean;
   open: boolean;
   onToggle: () => void;
+  context: StepContext;
 }) {
   const summary = live ? null : activitySummary(activity);
+  // Folded, it still shows the subagents that are going, including ones left running after
+  // the turn ended.
+  const steps = open
+    ? activity.steps
+    : activity.steps.filter(
+        (step) => step.kind === "subagent" && subagentRunning(context.subagents.get(step.id)),
+      );
   return (
     <div className="activity">
       {summary && (
@@ -151,10 +270,10 @@ export function ActivityItem({
           </span>
         </FoldButton>
       )}
-      {open && activity.steps.length > 0 && (
+      {steps.length > 0 && (
         <div className="activity-steps">
-          {activity.steps.map((step) => (
-            <Step key={step.key} step={step} live={live} />
+          {steps.map((step) => (
+            <Step key={step.key} step={step} live={live} context={context} />
           ))}
         </div>
       )}

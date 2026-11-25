@@ -11,6 +11,10 @@ export interface MenuItem {
   label: string;
   /** The key that does the same, so a menu also teaches it. */
   keys?: string;
+  /** What it's set to now, beside an item that opens a submenu of choices. */
+  value?: string;
+  /** The choice that's in use, among a submenu's choices. */
+  checked?: boolean;
   /** What's chosen next, for an item like "Move to" with a few places to go. It opens beside
    * the menu rather than running, and `run` is never called. */
   items?: MenuItem[];
@@ -33,6 +37,7 @@ function Items({ group, ran }: { group: MenuItem[]; ran: RefObject<boolean> }) {
       <Menu.SubmenuRoot key={item.id}>
         <Menu.SubmenuTrigger className="list-choice" disabled={item.items.length === 0}>
           <span className="name">{item.label}</span>
+          {item.value && <span className="meta">{item.value}</span>}
           <Icon name="unfold" />
         </Menu.SubmenuTrigger>
         <Menu.Portal>
@@ -52,19 +57,30 @@ function Items({ group, ran }: { group: MenuItem[]; ran: RefObject<boolean> }) {
       >
         <span className="name">{item.label}</span>
         {item.keys && <Kbd>{item.keys}</Kbd>}
+        {item.checked && <Icon name="check" />}
       </Menu.Item>
     ),
   );
 }
 
-function List({ groups, ran }: { groups: MenuGroups; ran: RefObject<boolean> }) {
+function List({
+  groups,
+  ran,
+  note,
+  returnFocus,
+}: {
+  groups: MenuGroups;
+  ran: RefObject<boolean>;
+  note?: string;
+  returnFocus?: RefObject<HTMLElement | null>;
+}) {
   return (
     <Menu.Popup
       // A dropdown like any other, to `overlayOpen` in keys.ts as well as to the eye.
       className="select-popup"
       // Dismissing it puts focus back. An item decides where focus goes itself, and putting
       // it back would take it from the sheet that item just opened.
-      finalFocus={() => !ran.current}
+      finalFocus={returnFocus ?? (() => !ran.current)}
       onKeyDownCapture={(event) => remapNative(event, MENU_KEYS)}
     >
       {groups.map((group, index) => (
@@ -73,6 +89,12 @@ function List({ groups, ran }: { groups: MenuGroups; ran: RefObject<boolean> }) 
           <Items group={group} ran={ran} />
         </Fragment>
       ))}
+      {note && (
+        <>
+          <Menu.Separator className="menu-separator" />
+          <div className="menu-note">{note}</div>
+        </>
+      )}
     </Menu.Popup>
   );
 }
@@ -86,6 +108,9 @@ export function MenuButton({
   disabled,
   title = label,
   tabIndex,
+  align = "end",
+  note,
+  returnFocus,
   children,
 }: {
   label: string;
@@ -93,6 +118,12 @@ export function MenuButton({
   groups: MenuGroups;
   disabled?: boolean;
   title?: string;
+  align?: "start" | "end";
+  /** A quiet line under the items, saying something that isn't chosen. */
+  note?: string;
+  /** Where the keyboard goes once it closes, however it closes, rather than back to the
+   * button or wherever an item put it. */
+  returnFocus?: RefObject<HTMLElement | null>;
   /** For a menu on each row of a list, where only the row in use's is a Tab stop. */
   tabIndex?: number;
   children: ReactNode;
@@ -114,8 +145,8 @@ export function MenuButton({
         {children}
       </Menu.Trigger>
       <Menu.Portal>
-        <Menu.Positioner align="end" sideOffset={4}>
-          <List groups={groups} ran={ran} />
+        <Menu.Positioner align={align} sideOffset={4}>
+          <List groups={groups} ran={ran} note={note} returnFocus={returnFocus} />
         </Menu.Positioner>
       </Menu.Portal>
     </Menu.Root>

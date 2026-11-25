@@ -116,6 +116,7 @@ impl Core {
                 seq,
                 at_ms,
                 kind,
+                subagent: None,
             })
             .collect();
         // Stored before anyone hears of the tab, so following it reads the whole history.

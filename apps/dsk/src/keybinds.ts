@@ -27,6 +27,7 @@ import {
   isSequence,
   type KeyPress,
   sequenceState,
+  typesText,
   usesCommand,
 } from "./keymatch";
 
@@ -105,6 +106,13 @@ export type ActionId =
   | "composer.command_up"
   | "composer.command_down"
   | "composer.complete_command"
+  | "composer.cycle_mode"
+  | "question.up"
+  | "question.down"
+  | "question.prev"
+  | "question.next"
+  | "question.choose"
+  | "question.leave"
   | "permission.option_1"
   | "permission.option_2"
   | "permission.option_3"
@@ -369,7 +377,11 @@ function worksWhileTyping(key: string, id: ActionId): boolean {
   return !isSequence(key) && TEXT_CONTEXTS.has(id.split(".")[0]);
 }
 
-function bindingFor(event: KeyEventLike, id: ActionId): Match | undefined {
+/** How a text box in a list takes the list's keys: all of them, or, while it's typing, only
+ * those that don't type, like the arrows. */
+type InBox = { typing: boolean };
+
+function bindingFor(event: KeyEventLike, id: ActionId, inBox?: InBox): Match | undefined {
   // A focused button already answers to these, and that has to keep working for
   // people moving through buttons with the keyboard.
   const onButton =
@@ -383,7 +395,9 @@ function bindingFor(event: KeyEventLike, id: ActionId): Match | undefined {
   const terminal = inTerminal(event.target);
   let waiting: Match | undefined;
   for (const binding of actions.get(id)?.bindings ?? []) {
-    if (typing && !worksWhileTyping(binding.key, id)) continue;
+    if (inBox) {
+      if (inBox.typing && typesText(binding.key)) continue;
+    } else if (typing && !worksWhileTyping(binding.key, id)) continue;
     // Shells and editors use every other key, Ctrl and Esc included.
     if (terminal && !usesCommand(binding.key)) continue;
     const state = stateOf(binding.key, event);
@@ -440,9 +454,14 @@ const nativeOf = (event: KeyEventLike) =>
  * that only starts a sequence is held back and returns false, so that other actions still
  * get to see it: the second G of gg also starts gt, and has to reach gg regardless.
  * Keys sent by `remapNative` aren't people pressing them, so they pass straight through. */
-export function act(event: KeyEventLike, id: ActionId, run: () => void): boolean {
+export function act(
+  event: KeyEventLike,
+  id: ActionId,
+  run: () => void,
+  inBox?: InBox,
+): boolean {
   if (recording || !event.isTrusted || claimed === nativeOf(event)) return false;
-  const match = bindingFor(event, id);
+  const match = bindingFor(event, id, inBox);
   if (!match) return false;
   event.preventDefault();
   if (match.state === "prefix") return false;

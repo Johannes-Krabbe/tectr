@@ -6,33 +6,109 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion};
+use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    AvailableCommandInput, CancelNotification, ContentBlock, ContentChunk, EnvVariable,
-    ForkSessionRequest, ImageContent, InitializeRequest, InitializeResponse, McpServer,
-    McpServerHttp, McpServerStdio, Meta, NewSessionRequest, PermissionOption, PermissionOptionKind,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelect,
-    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionModeState,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    StopReason, SystemPrompt, TextContent, ToolCall, ToolCallContent, ToolCallLocation,
-    ToolCallStatus, ToolCallUpdateFields, ToolKind,
+    CancelNotification, ClientCapabilities, ClientSessionCapabilities, CompactionCapabilities,
+    ContentBlock, ElicitationCapabilities, ElicitationFormCapabilities, ElicitationUrlCapabilities,
+    EmbeddedResource, EmbeddedResourceResource, EnvVariable, ForkSessionRequest, ImageContent,
+    InitializeRequest, InitializeResponse, McpServer, McpServerHttp, McpServerStdio, Meta,
+    NewSessionRequest, NoticeCapabilities, PermissionOption, PermissionOptionKind,
+    PlanCapabilities, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
+    SessionConfigSelect, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
+    SessionModeState, SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason,
+    SubagentCapabilities, SystemPrompt, TextContent, TextResourceContents,
 };
-use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
+use agent_client_protocol::{
+    AcpAgent, AcpAgentConfig, Agent, Client, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+};
 use anyhow::{Result, anyhow, bail};
 use protocol as tp;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::agent_context::AgentContext;
 use crate::agents::AgentLauncher;
-use crate::core::{Core, Prompt, SessionCommand, SessionSettings};
+use crate::core::{Core, Prompt, QuestionResponder, SessionCommand, SessionSettings};
 use crate::mcp::{self, AgentConnector, AgentMcp, Isolation};
+use crate::updates::{Shared, Updates, patch_from_update};
 
 /// An agent mid-turn can be slow to answer, but nothing else reaches it until it does, and
 /// that includes cancelling. So one that takes this long is treated as having failed.
 const SETTINGS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A `session/update` taken as it comes, so that one of a kind this daemon doesn't know is
+/// skipped instead of failing to parse, which would end the connection.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
+#[notification(method = "session/update")]
+#[serde(rename_all = "camelCase")]
+struct RawUpdate {
+    session_id: String,
+    update: Value,
+}
+
+/// One of Claude Code's own messages, which Claude's adapter passes on when the session's
+/// `_meta` asks for them.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
+#[notification(method = "_claude/sdkMessage")]
+#[serde(rename_all = "camelCase")]
+struct ClaudeMessage {
+    session_id: String,
+    message: Value,
+}
+
+/// An agent asking for a form, taken as it comes, because the schemas agents send vary more
+/// than ACP's types allow and a request that fails to parse can't be answered at all.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+#[request(method = "elicitation/create", response = Value)]
+#[serde(transparent)]
+struct RawElicitation(Value);
+
+/// Puts a message into the turn that's running, as typing while Claude Code works does.
+/// Claude's adapter offers it and says so in its `initialize` answer.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+#[request(method = "_session/steering", response = SteerResponse)]
+#[serde(rename_all = "camelCase")]
+struct SteerRequest {
+    session_id: String,
+    prompt: Vec<ContentBlock>,
+    #[serde(rename = "_meta")]
+    meta: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
+struct SteerResponse {
+    outcome: String,
+}
+
+/// What tectr can show, so agents send it. A form question needs a client that can lay one
+/// out, and Claude's adapter only offers its questions tool to one that can.
+fn client_capabilities() -> ClientCapabilities {
+    ClientCapabilities::new()
+        .session(
+            ClientSessionCapabilities::new()
+                .notices(NoticeCapabilities::new())
+                .compaction(CompactionCapabilities::new()),
+        )
+        .elicitation(
+            ElicitationCapabilities::new()
+                .form(ElicitationFormCapabilities::new())
+                .url(ElicitationUrlCapabilities::new()),
+        )
+        .subagents(SubagentCapabilities::new())
+        .plan(PlanCapabilities::new())
+}
+
+/// Whether the agent takes messages into a running turn.
+fn steers(init: &InitializeResponse) -> bool {
+    init.meta
+        .as_ref()
+        .and_then(|meta| meta.get("steering")?.get("supported")?.as_bool())
+        .unwrap_or(false)
+}
 
 pub struct AgentSpawn {
     pub session_id: tp::SessionId,
@@ -181,38 +257,48 @@ async fn drive(
             format!("developer_instructions={}", toml_string(text)),
         ]);
     }
+    if spawn.launcher.is_claude() {
+        isolation.meta = Some(with_claude_messages(isolation.meta.take()));
+    }
     let agent = launch(core, &spawn.launcher, &isolation).await?;
 
     let id = spawn.session_id.clone();
-    let on_update_core = core.clone();
-    let on_update_id = id.clone();
-    let on_permission_core = core.clone();
-    let on_permission_id = id.clone();
-    // The last thing the agent said this turn, which goes on the turn's end.
-    let last_message: Arc<Mutex<Option<String>>> = Arc::default();
-    let on_update_last = last_message.clone();
+    let updates = Arc::new(Updates::new(
+        core.clone(),
+        id.clone(),
+        spawn.launcher.clone(),
+    ));
+    let shared = updates.shared.clone();
+    let on_update = updates.clone();
+    let on_message = updates.clone();
+    let on_permission = (core.clone(), updates.clone());
+    let on_question = (core.clone(), updates.clone());
 
     // These callbacks run in the connection's dispatch loop, which keeps events
-    // in order. They must not wait for anything, so a permission request stores
-    // its responder and returns straight away.
+    // in order. They must not wait for anything, so a request stores its
+    // responder and returns straight away.
     Client
         .v1()
         .on_receive_notification(
-            async move |notification: SessionNotification, _connection| {
-                handle_update(
-                    &on_update_core,
-                    &on_update_id,
-                    &on_update_last,
-                    notification.update,
-                );
+            async move |notification: RawUpdate, _connection| {
+                on_update.session_update(&notification.session_id, notification.update);
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_notification(
+            async move |notification: ClaudeMessage, _connection| {
+                on_message.claude_message(&notification.message);
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
         )
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _connection| {
-                on_permission_core.permission_requested(
-                    &on_permission_id,
+                let (core, updates) = &on_permission;
+                core.permission_requested(
+                    &updates_id(updates),
+                    updates.subagent_of(&request.session_id.to_string()),
                     patch_from_update(request.tool_call.fields),
                     request.options.iter().map(option_from_acp).collect(),
                     Box::new(move |answer| {
@@ -230,20 +316,65 @@ async fn drive(
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            async move |request: RawElicitation, responder, _connection| {
+                let (core, updates) = &on_question;
+                let request = request.0;
+                let subagent = request
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .and_then(|session| updates.subagent_of(session));
+                let message = request
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                let (fields, url) = match request.get("mode").and_then(Value::as_str) {
+                    Some("url") => (
+                        vec![],
+                        request.get("url").and_then(Value::as_str).map(str::to_owned),
+                    ),
+                    _ => (
+                        crate::questions::fields(
+                            request.get("requestedSchema").unwrap_or(&Value::Null),
+                        ),
+                        None,
+                    ),
+                };
+                let answer: QuestionResponder = Box::new(move |answer| {
+                    let response = match answer {
+                        Some((tp::QuestionAnswer::Accept { .. }, content)) => {
+                            json!({ "action": "accept", "content": content })
+                        }
+                        Some((tp::QuestionAnswer::Decline, _)) => json!({ "action": "decline" }),
+                        _ => json!({ "action": "cancel" }),
+                    };
+                    // This only fails if the agent has already gone away.
+                    let _ = responder.respond(response);
+                });
+                core.question_asked(&updates_id(updates), subagent, message, fields, url, answer);
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .connect_with(agent, async |connection: ConnectionTo<Agent>| {
             let init = connection
-                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(
+                    InitializeRequest::new(ProtocolVersion::V1)
+                        .client_capabilities(client_capabilities()),
+                )
                 .block_task()
                 .await?;
             let servers = acp_servers(core, &id, &spawn.mcp, &init);
             let meta = isolation.meta.clone();
             let prompt = system_prompt(&spawn, &init);
             let mut agent_session =
-                open_session(core, &spawn, &connection, &init, servers, meta, prompt)
+                open_session(core, &spawn, &connection, &init, Opening { servers, meta, prompt }, &updates)
                 .await
                 .map_err(|error| acp_error(&format!("{error:#}")))?;
 
-            core.agent_ready(&id, ready_event(&init, &agent_session));
+            core.agent_ready(&id, ready_event(&init, &agent_session), steers(&init));
+            updates.options_changed();
 
             loop {
                 tokio::select! {
@@ -261,16 +392,14 @@ async fn drive(
                             }
                             let core = core.clone();
                             let id = id.clone();
-                            let last_message = last_message.clone();
-                            *last_message.lock().unwrap() = None;
+                            let shared = shared.clone();
+                            shared.lock().unwrap().last_message = None;
+                            let blocks = prompt_blocks(prompt, &spawn.cwd, &init).await;
                             connection
-                                .send_request(PromptRequest::new(
-                                    agent_session.id.clone(),
-                                    prompt_blocks(prompt),
-                                ))
+                                .send_request(PromptRequest::new(agent_session.id.clone(), blocks))
                                 .on_receiving_result(async move |result| {
                                     // Every update of the turn comes before its result.
-                                    let message = last_message.lock().unwrap().take();
+                                    let message = shared.lock().unwrap().last_message.take();
                                     core.turn_ended(
                                         &id,
                                         result
@@ -284,10 +413,53 @@ async fn drive(
                                     Ok(())
                                 })?;
                         }
+                        Some(SessionCommand::Steer(prompt)) => {
+                            let core = core.clone();
+                            let id = id.clone();
+                            let retry = prompt.clone();
+                            let blocks = prompt_blocks(prompt, &spawn.cwd, &init).await;
+                            connection
+                                .send_request(SteerRequest {
+                                    session_id: agent_session.id.to_string(),
+                                    prompt: blocks,
+                                    meta: json!({ "steering": { "idleBehavior": "promptRequired" } }),
+                                })
+                                .on_receiving_result(async move |result| {
+                                    // The turn ended on its way, so it starts a turn of its own.
+                                    let missed = match result {
+                                        Ok(response) => response.outcome == "promptRequired",
+                                        Err(_) => true,
+                                    };
+                                    if missed {
+                                        core.steer_missed(&id, retry);
+                                    }
+                                    Ok(())
+                                })?;
+                        }
                         Some(SessionCommand::Cancel) => {
                             connection.send_notification(CancelNotification::new(
                                 agent_session.id.clone(),
                             ))?;
+                        }
+                        Some(SessionCommand::CancelSubagent(subagent)) => {
+                            connection.send_notification(CancelNotification::new(subagent))?;
+                        }
+                        Some(SessionCommand::SetOption { option_id, value, reply }) => {
+                            let result = tokio::time::timeout(
+                                SETTINGS_TIMEOUT,
+                                set_option(&connection, &agent_session.id, option_id, value),
+                            )
+                            .await;
+                            let result = match result {
+                                Ok(Ok(changed)) => {
+                                    agent_session.note_options(changed);
+                                    updates.options_changed();
+                                    Ok(())
+                                }
+                                Ok(Err(error)) => Err(error.to_string()),
+                                Err(_) => Err("the agent didn't answer in time".to_owned()),
+                            };
+                            let _ = reply.send(result);
                         }
                         Some(SessionCommand::Configure { settings, reply }) => {
                             let applied = tokio::time::timeout(
@@ -295,6 +467,7 @@ async fn drive(
                                 agent_session.apply(&connection, &spawn.launcher, &settings),
                             )
                             .await;
+                            updates.options_changed();
                             let (result, unsure) = match applied {
                                 Ok(Ok(())) => (Ok(()), false),
                                 Ok(Err(error)) => (Err(format!("{error:#}")), agent_session.diverged),
@@ -325,6 +498,27 @@ async fn drive(
         .map_err(|error| anyhow!("{error}"))
 }
 
+fn updates_id(updates: &Updates) -> tp::SessionId {
+    updates.session_id().clone()
+}
+
+/// Asks Claude's adapter to pass on Claude Code's own messages about background tasks and
+/// whether it's working, which ACP has no updates for.
+fn with_claude_messages(meta: Option<Meta>) -> Meta {
+    let mut meta = meta.unwrap_or_default();
+    let filters: Vec<Value> = crate::tasks::CLAUDE_MESSAGES
+        .iter()
+        .map(|subtype| json!({ "type": "system", "subtype": subtype }))
+        .collect();
+    let claude = meta
+        .entry("claudeCode".to_owned())
+        .or_insert_with(|| json!({}));
+    if let Some(claude) = claude.as_object_mut() {
+        claude.insert("emitRawSDKMessages".to_owned(), Value::Array(filters));
+    }
+    meta
+}
+
 fn acp_error(message: &str) -> agent_client_protocol::Error {
     agent_client_protocol::Error::internal_error().data(message)
 }
@@ -337,12 +531,11 @@ struct OpenedSession {
     id: SessionId,
     /// What the agent reported when it opened. Agents don't all use both of these.
     reported_modes: Option<SessionModeState>,
-    options: Vec<SessionConfigOption>,
     /// The mode IDs the agent offers.
     modes: Vec<String>,
-    /// As of the last thing the agent said or was told. Neither report above follows a mode
-    /// set through the other, so they can't be asked.
-    current_mode: Option<String>,
+    /// The options and the mode as of the last thing the agent said or was told. Neither
+    /// report above follows a mode set through the other, so they can't be asked.
+    shared: Arc<Mutex<Shared>>,
     /// What was last applied in full, which is nothing until the session has opened.
     settings: Option<SessionSettings>,
     /// The last call to `apply` changed something in the agent before it failed.
@@ -350,6 +543,14 @@ struct OpenedSession {
 }
 
 impl OpenedSession {
+    fn options(&self) -> Vec<SessionConfigOption> {
+        self.shared.lock().unwrap().options.clone()
+    }
+
+    fn current_mode(&self) -> Option<String> {
+        self.shared.lock().unwrap().current_mode.clone()
+    }
+
     /// Moves the agent to these settings, sending only what's needed. The model goes first,
     /// because changing it can change the others: Claude moves from auto to acceptEdits when
     /// switched to Haiku 4.5. A mode the agent can't honor is a failure, because running with
@@ -364,7 +565,7 @@ impl OpenedSession {
         let previous = self.settings.clone();
         let model_changed = previous.as_ref().is_none_or(|p| p.model != wanted.model);
         if model_changed && let Some(model) = &wanted.model {
-            let option = select_in(&self.options, &SessionConfigOptionCategory::Model)
+            let option = select_in(&self.options(), &SessionConfigOptionCategory::Model)
                 .map_or_else(|| "model".to_owned(), |(option, _)| option.id.to_string());
             let changed = set_option(connection, &self.id, option, model.clone())
                 .await
@@ -376,16 +577,16 @@ impl OpenedSession {
         let mode = launcher
             .mode_id(wanted.mode)
             .ok_or_else(|| anyhow!("this agent has no permission mode matching that choice"))?;
-        self.modes = mode_ids(self.reported_modes.as_ref(), &self.options);
+        self.modes = mode_ids(self.reported_modes.as_ref(), &self.options());
         if self.modes.is_empty() {
             bail!("this agent doesn't report permission modes, so {mode} can't be applied");
         }
         if !self.modes.iter().any(|offered| offered == mode) {
             bail!("this agent doesn't offer the permission mode {mode}");
         }
-        if self.current_mode.as_deref() != Some(mode) {
+        if self.current_mode().as_deref() != Some(mode) {
             let failed = |error| anyhow!("failed to set the permission mode to {mode}: {error}");
-            let mode_option = select_in(&self.options, &SessionConfigOptionCategory::Mode)
+            let mode_option = select_in(&self.options(), &SessionConfigOptionCategory::Mode)
                 .map(|(option, _)| option.id.to_string());
             match (&self.reported_modes, mode_option) {
                 (None, Some(option)) => {
@@ -403,22 +604,38 @@ impl OpenedSession {
                 }
             }
             self.diverged = true;
-            self.current_mode = Some(mode.to_owned());
+            self.shared.lock().unwrap().current_mode = Some(mode.to_owned());
         }
 
         let effort_changed =
             model_changed || previous.as_ref().is_none_or(|p| p.effort != wanted.effort);
         if effort_changed && let Some(effort) = &wanted.effort {
             let Some((option, _)) =
-                select_in(&self.options, &SessionConfigOptionCategory::ThoughtLevel)
+                select_in(&self.options(), &SessionConfigOptionCategory::ThoughtLevel)
+                    .map(|(option, select)| (option.id.to_string(), select.clone()))
             else {
                 bail!("this agent has no effort setting for that model");
             };
-            let option = option.id.to_string();
             let changed = set_option(connection, &self.id, option, effort.clone())
                 .await
                 .map_err(|error| anyhow!("failed to set the effort to {effort}: {error}"))?;
             self.note_options(changed);
+        }
+
+        // The person's choices for the agent's own options, where it still offers them.
+        for (option_id, value) in &wanted.options {
+            let current = self.options().into_iter().find_map(|option| {
+                let SessionConfigKind::Select(select) = &option.kind else {
+                    return None;
+                };
+                (option.id.to_string() == *option_id).then(|| select.current_value.to_string())
+            });
+            if current.is_some_and(|current| current != *value) {
+                let changed = set_option(connection, &self.id, option_id.clone(), value.clone())
+                    .await
+                    .map_err(|error| anyhow!("failed to set {option_id} to {value}: {error}"))?;
+                self.note_options(changed);
+            }
         }
 
         self.settings = Some(wanted.clone());
@@ -431,9 +648,12 @@ impl OpenedSession {
         if changed.is_empty() {
             return;
         }
-        self.options = changed;
-        if let Some((_, select)) = select_in(&self.options, &SessionConfigOptionCategory::Mode) {
-            self.current_mode = Some(select.current_value.to_string());
+        let mode = select_in(&changed, &SessionConfigOptionCategory::Mode)
+            .map(|(_, select)| select.current_value.to_string());
+        let mut shared = self.shared.lock().unwrap();
+        shared.options = changed;
+        if let Some(mode) = mode {
+            shared.current_mode = Some(mode);
         }
     }
 }
@@ -497,14 +717,24 @@ async fn set_option(
 }
 
 /// Creates or resumes the agent's session, then applies this session's settings.
+/// What a session opens with, besides where and as what.
+struct Opening {
+    servers: Vec<McpServer>,
+    meta: Option<Meta>,
+    prompt: Option<SystemPrompt>,
+}
+
 async fn open_session(
     core: &Core,
     spawn: &AgentSpawn,
     connection: &ConnectionTo<Agent>,
     init: &InitializeResponse,
-    servers: Vec<McpServer>,
-    meta: Option<Meta>,
-    prompt: Option<SystemPrompt>,
+    Opening {
+        servers,
+        meta,
+        prompt,
+    }: Opening,
+    updates: &Updates,
 ) -> Result<OpenedSession> {
     let (id, modes, options): (SessionId, _, _) = match (&spawn.resume, &spawn.fork) {
         (Some(agent_id), _) => {
@@ -577,12 +807,17 @@ async fn open_session(
     let current_mode = select_in(&options, &SessionConfigOptionCategory::Mode)
         .map(|(_, select)| select.current_value.to_string())
         .or_else(|| modes.as_ref().map(|m| m.current_mode_id.to_string()));
+    {
+        let mut shared = updates.shared.lock().unwrap();
+        shared.root = Some(id.to_string());
+        shared.options = options;
+        shared.current_mode = current_mode;
+    }
     let mut session = OpenedSession {
         id,
         reported_modes: modes,
-        options,
         modes: vec![],
-        current_mode,
+        shared: updates.shared.clone(),
         settings: None,
         diverged: false,
     };
@@ -623,12 +858,28 @@ fn fork_meta(meta: Option<Meta>, message_id: &str) -> Meta {
 }
 
 /// The text as typed, then each image after the name the text calls it by, so the agent can
-/// tell which one `[Image #2]` means.
-fn prompt_blocks(prompt: Prompt) -> Vec<ContentBlock> {
+/// tell which one `[Image #2]` means, then each file the text mentions as `@path`, for an
+/// agent that takes files in prompts.
+async fn prompt_blocks(
+    prompt: Prompt,
+    cwd: &std::path::Path,
+    init: &InitializeResponse,
+) -> Vec<ContentBlock> {
+    let files = if init.agent_capabilities.prompt_capabilities.embedded_context {
+        crate::mentions::attachments(cwd, &prompt.text).await
+    } else {
+        vec![]
+    };
     let mut blocks = vec![ContentBlock::Text(TextContent::new(prompt.text))];
     for (image, data) in prompt.images {
         blocks.push(ContentBlock::Text(TextContent::new(image.token())));
         blocks.push(ContentBlock::Image(ImageContent::new(data, image.mime)));
+    }
+    for (path, text) in files {
+        let uri = format!("file://{}", path.display());
+        blocks.push(ContentBlock::Resource(EmbeddedResource::new(
+            EmbeddedResourceResource::TextResourceContents(TextResourceContents::new(text, uri)),
+        )));
     }
     blocks
 }
@@ -648,7 +899,10 @@ pub async fn probe(
         .v1()
         .connect_with(agent, async |connection: ConnectionTo<Agent>| {
             let init = connection
-                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(
+                    InitializeRequest::new(ProtocolVersion::V1)
+                        .client_capabilities(client_capabilities()),
+                )
                 .block_task()
                 .await?;
             let session = connection
@@ -658,18 +912,14 @@ pub async fn probe(
             let options = session.config_options.unwrap_or_default();
 
             let available = mode_ids(session.modes.as_ref(), &options);
-            let modes: Vec<_> = [
-                tp::PermissionMode::Manual,
-                tp::PermissionMode::Auto,
-                tp::PermissionMode::Yolo,
-            ]
-            .into_iter()
-            .filter(|mode| {
-                launcher
-                    .mode_id(*mode)
-                    .is_some_and(|id| available.iter().any(|mode| mode == id))
-            })
-            .collect();
+            let modes: Vec<_> = tp::PermissionMode::ALL
+                .into_iter()
+                .filter(|mode| {
+                    launcher
+                        .mode_id(*mode)
+                        .is_some_and(|id| available.iter().any(|mode| mode == id))
+                })
+                .collect();
             if modes.is_empty() {
                 return Err(acp_error(
                     "this agent offers no permission mode tectr can use",
@@ -761,142 +1011,7 @@ fn ready_event(init: &InitializeResponse, session: &OpenedSession) -> tp::Sessio
         name: info.map_or_else(|| "unknown".to_owned(), |info| info.name.clone()),
         version: info.map(|info| info.version.clone()),
         modes: session.modes.clone(),
-        current_mode: session.current_mode.clone(),
-    }
-}
-
-/// Keeps the ID of a message the agent is saying, unless a subagent says it. Claude's adapter
-/// marks those, and their messages live in another transcript, so no branch can start there.
-fn note_message(last_message: &Mutex<Option<String>>, chunk: &ContentChunk) {
-    let subagent = chunk
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.get("claudeCode")?.get("parentToolUseId"))
-        .is_some();
-    if let (Some(message_id), false) = (&chunk.message_id, subagent) {
-        *last_message.lock().unwrap() = Some(message_id.0.to_string());
-    }
-}
-
-fn handle_update(
-    core: &Core,
-    id: &tp::SessionId,
-    last_message: &Mutex<Option<String>>,
-    update: SessionUpdate,
-) {
-    match update {
-        SessionUpdate::AgentMessageChunk(chunk) => {
-            note_message(last_message, &chunk);
-            if let ContentBlock::Text(text) = chunk.content {
-                core.agent_event(id, tp::SessionEventKind::AgentMessage { text: text.text });
-            }
-        }
-        SessionUpdate::AgentThoughtChunk(chunk) => {
-            note_message(last_message, &chunk);
-            if let ContentBlock::Text(text) = chunk.content {
-                core.agent_event(id, tp::SessionEventKind::AgentThought { text: text.text });
-            }
-        }
-        SessionUpdate::ToolCall(call) => core.agent_event(
-            id,
-            tp::SessionEventKind::ToolCall {
-                id: call.tool_call_id.to_string(),
-                tool: patch_from_call(call),
-            },
-        ),
-        SessionUpdate::ToolCallUpdate(update) => core.agent_event(
-            id,
-            tp::SessionEventKind::ToolCallUpdate {
-                id: update.tool_call_id.to_string(),
-                tool: patch_from_update(update.fields),
-            },
-        ),
-        // A missing title means "unchanged", and only an explicit null clears it.
-        SessionUpdate::AvailableCommandsUpdate(update) => core.commands_changed(
-            id,
-            update
-                .available_commands
-                .into_iter()
-                .map(|command| tp::AgentCommand {
-                    hint: match command.input {
-                        Some(AvailableCommandInput::Unstructured(input)) => Some(input.hint),
-                        _ => None,
-                    },
-                    name: command.name,
-                    description: command.description,
-                })
-                .collect(),
-        ),
-        SessionUpdate::SessionInfoUpdate(info) => match info.title {
-            MaybeUndefined::Value(title) => core.title_changed(id, Some(title)),
-            MaybeUndefined::Null => core.title_changed(id, None),
-            MaybeUndefined::Undefined => {}
-        },
-        // Plans, usage, slash commands, and config changes aren't part of the
-        // protocol yet. Storing them would add noise that no client can show.
-        _ => {}
-    }
-}
-
-fn patch_from_call(call: ToolCall) -> tp::ToolCallPatch {
-    tp::ToolCallPatch {
-        title: Some(call.title),
-        kind: Some(kind_name(call.kind)),
-        status: Some(status_from_acp(call.status)),
-        input: call.raw_input,
-        locations: Some(call.locations.iter().map(location_path).collect()),
-        content: Some(call.content.into_iter().map(content_from_acp).collect()),
-    }
-}
-
-fn patch_from_update(fields: ToolCallUpdateFields) -> tp::ToolCallPatch {
-    tp::ToolCallPatch {
-        title: fields.title,
-        kind: fields.kind.map(kind_name),
-        status: fields.status.map(status_from_acp),
-        input: fields.raw_input,
-        locations: fields
-            .locations
-            .map(|locations| locations.iter().map(location_path).collect()),
-        content: fields
-            .content
-            .map(|content| content.into_iter().map(content_from_acp).collect()),
-    }
-}
-
-fn kind_name(kind: ToolKind) -> String {
-    serde_json::to_value(kind)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "other".to_owned())
-}
-
-fn location_path(location: &ToolCallLocation) -> String {
-    location.path.display().to_string()
-}
-
-fn status_from_acp(status: ToolCallStatus) -> tp::ToolCallStatus {
-    match status {
-        ToolCallStatus::Pending => tp::ToolCallStatus::Pending,
-        ToolCallStatus::InProgress => tp::ToolCallStatus::InProgress,
-        ToolCallStatus::Completed => tp::ToolCallStatus::Completed,
-        ToolCallStatus::Failed => tp::ToolCallStatus::Failed,
-        _ => tp::ToolCallStatus::Unknown,
-    }
-}
-
-fn content_from_acp(content: ToolCallContent) -> tp::ToolCallContent {
-    match content {
-        ToolCallContent::Content(content) => match content.content {
-            ContentBlock::Text(text) => tp::ToolCallContent::Text { text: text.text },
-            _ => tp::ToolCallContent::Unknown,
-        },
-        ToolCallContent::Diff(diff) => tp::ToolCallContent::Diff {
-            path: diff.path.display().to_string(),
-            old_text: diff.old_text,
-            new_text: diff.new_text,
-        },
-        _ => tp::ToolCallContent::Unknown,
+        current_mode: session.current_mode(),
     }
 }
 

@@ -19,9 +19,11 @@ export function keepButtonsInTabOrder(root: HTMLElement) {
 }
 
 /** A sheet, dropdown or full-size image is open, and takes the keyboard from everything
- * behind it. */
+ * behind it. Only an open dropdown counts: once its button has had focus, Base UI keeps the
+ * list in the page, hidden, until the dropdown itself goes, and that one would take every key
+ * from the screen it's on. */
 export function overlayOpen(): boolean {
-  return document.querySelector(".sheet, .select-popup, .viewer") !== null;
+  return document.querySelector(".sheet, .select-popup[data-open], .viewer") !== null;
 }
 
 /** Where the keyboard was last, outside dropdowns, menus and sheets, which go away. */
@@ -104,11 +106,12 @@ export function subscribeFocus(notify: () => void) {
 /** Gives the main pane the keyboard once the current update has rendered. It lands on
  * the transcript rather than the composer, so single keys work straight away. Starting an
  * agent has no transcript, and exists to be typed into. A new tab lands on its first choice,
- * a terminal on its shell, a diff on its files and a workspace on its page. */
+ * a terminal on its shell, a diff on its files, a background task on its output and a
+ * workspace on its page. */
 export function focusPane() {
   requestAnimationFrame(() => {
     const target = document.querySelector<HTMLElement>(
-      ".create textarea, .import-search, .new-tab-kind:not(:disabled), .log, .terminal-host, .diff-body, .workspace-page",
+      ".create textarea, .import-search, .new-tab-kind:not(:disabled), .log, .terminal-host, .diff-body, .task-body, .workspace-page",
     );
     if (target) target.focus();
     else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();

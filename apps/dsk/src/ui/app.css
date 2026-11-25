@@ -32,7 +32,7 @@ button:disabled {
 /* The font shorthand resets ligatures, so everything set in code says this after it. */
 .code,
 .tool-title,
-.request-what,
+.request-head .code,
 .sheet-name.code,
 .agent-message :is(code, pre) {
   font-variant-ligatures: var(--font-code-ligatures);
@@ -210,9 +210,6 @@ button.row:hover { background: var(--color-surface-raised); }
 .row.topic { padding-left: var(--space-xl); color: var(--color-text-primary); font: var(--text-body); }
 .row.topic.read .name,
 .row.topic.stale .name { color: var(--color-text-tertiary); }
-.row.topic.waiting { background: var(--color-status-waiting-tint); }
-.row.topic.waiting:hover,
-.row.topic.waiting.current { background: var(--color-status-waiting-tint-strong); }
 .row.empty { padding-left: var(--space-xl); color: var(--color-text-tertiary); font: var(--text-meta); }
 
 /* The list has the keyboard. */
@@ -1142,7 +1139,6 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 }
 
 .activity-text.leaving { opacity: 0; }
-.activity-text.waiting { color: var(--color-status-waiting); }
 .activity-text.fades-in { animation: activity-in var(--motion-normal) ease-out; }
 
 /* A highlight runs across the text, from just before it to just past it. The gradient is
@@ -1197,6 +1193,295 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   font: var(--text-meta);
 }
 
+
+/* A tool with details is a button that unfolds them. */
+.tool-button {
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+
+.tool-button:hover .tool-title { color: var(--color-text-primary); }
+.tool-button .status-icon { flex: none; align-self: center; }
+.tool-description { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* Subagents that came back between messages, quiet like an activity's line. */
+.subagents-back {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.subagent-back {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+  text-align: left;
+}
+
+.subagent-back .status-icon { flex: none; }
+
+.subagent-back-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subagent-back:hover .subagent-back-name { color: var(--color-text-primary); }
+.subagent-back-time { flex: none; }
+
+/* A subagent's step: the button that opens it, how long it's been going, and its Stop, which
+   shows on the row in use. Opacity rather than visibility, so Tab still reaches it. */
+.subagent-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.subagent-step > .tool-button { flex: 1; width: auto; }
+
+.step-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.step-quiet {
+  display: inline-flex;
+  flex: none;
+  opacity: 0;
+}
+
+.subagent-step:hover .step-quiet,
+.subagent-step:focus-within .step-quiet { opacity: 1; }
+
+.tool-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.tool-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.tool-input {
+  color: var(--color-text-secondary);
+  font: var(--text-code-small);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* What a tool was given or gave back, as a band of code: a command, an edit or an output. A
+   band rather than a box, so a request never shows a box inside its card. */
+.tool-band,
+.shell-output {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding-block: var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+  font: var(--text-code-small);
+  font-variant-ligatures: var(--font-code-ligatures);
+}
+
+.tool-text,
+.shell-output {
+  padding-inline: var(--space-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-markdown { padding-inline: var(--space-sm); font: var(--text-body); }
+
+/* A line with its sign in a column of its own, so wrapped code stays clear of it. */
+.tool-line {
+  display: grid;
+  grid-template-columns: calc(14 * var(--unit)) minmax(0, 1fr);
+  column-gap: var(--space-xs);
+  padding-inline: var(--space-xs) var(--space-sm);
+}
+
+.tool-sign {
+  color: var(--color-text-tertiary);
+  text-align: center;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tool-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Until its colors arrive, a line takes its side's color, as in the diff tab. */
+.tool-line.added .tool-sign,
+.tool-line.added .tool-code { color: var(--color-diff-add-text); }
+.tool-line.removed .tool-sign,
+.tool-line.removed .tool-code { color: var(--color-diff-del-text); }
+
+.tool-gap {
+  padding: var(--space-2xs) var(--space-sm) var(--space-2xs)
+    calc(var(--space-xs) * 2 + 14 * var(--unit));
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.link-button {
+  align-self: flex-start;
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+}
+
+.link-button:hover { color: var(--color-text-secondary); }
+
+/* A plan, or what a compaction kept, folded under one line. */
+.plan-document > summary {
+  cursor: default;
+  list-style: none;
+}
+
+.plan-document > summary::-webkit-details-marker { display: none; }
+.plan-document > .agent-message { margin-top: var(--space-xs); }
+
+.shell-run {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+/* Above a subagent's transcript, with the way back. */
+.subagent-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom: 1px solid var(--color-line-subtle);
+}
+
+.subagent-title {
+  flex: none;
+  color: var(--color-text-primary);
+  font: var(--text-label);
+}
+
+.subagent-description {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The agent's unfinished todo list, above the message box. */
+.work { margin-bottom: var(--space-sm); }
+
+.work-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.work-line .icon {
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+}
+
+.work-in {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-height: min(320px, 40vh);
+  overflow-y: auto;
+  margin: var(--space-xs) 0 0;
+  padding: 0 0 0 var(--space-md);
+  border-left: 1px solid var(--color-line-subtle);
+  list-style: none;
+}
+
+.work-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font: var(--text-meta);
+}
+
+.work-row.done .work-name { color: var(--color-text-tertiary); text-decoration: line-through; }
+.work-row .status-icon { flex: none; }
+
+.work-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* A background task's tab: a bar saying what it runs, then what it writes, filling the pane. */
+.task-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom: 1px solid var(--color-line-subtle);
+}
+
+.task-head .status-icon { flex: none; }
+
+.task-name {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font: var(--text-label);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.task-command {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font: var(--text-code-small);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.task-meta {
+  flex: none;
+  margin-left: auto;
+}
+
+.task-summary { padding: var(--space-sm) var(--space-lg) 0; }
+
+.task-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-md) var(--space-lg);
+  color: var(--color-text-secondary);
+  font: var(--text-code-small);
+  font-variant-ligatures: var(--font-code-ligatures);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* It takes focus so keys scroll it. */
+.task-body:focus-visible { outline: 0; }
+
 .note.bad,
 .error {
   color: var(--color-status-failed);
@@ -1229,7 +1514,6 @@ button.activity-line:hover { color: var(--color-text-secondary); }
 }
 
 .dock .error { margin-top: var(--space-xs); }
-.dock .request { margin-bottom: var(--space-sm); }
 
 /* In the flow above the message box, so the transcript makes room rather than hiding behind it. */
 .command-list {
@@ -1483,44 +1767,232 @@ button.activity-line:hover { color: var(--color-text-secondary); }
   opacity: 1;
 }
 
-.request {
-  padding: var(--space-md);
-  border: 1px solid var(--color-status-waiting-border);
+/* A question in the message box's place, looking like it. */
+.question {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-line-strong);
   border-radius: var(--radius-md);
-  background: var(--color-status-waiting-tint);
+  background: var(--color-surface-raised);
+  outline: 0;
 }
 
-.request-top {
+.question:focus-within { border-color: var(--color-accent-text); }
+
+.question-top {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
-  color: var(--color-status-waiting);
-  font: var(--text-label);
+  gap: var(--space-xs);
+  margin-inline: calc(-1 * var(--space-xs));
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
 }
 
-.request-what {
-  margin-top: var(--space-sm);
-  font: var(--text-code-body);
-  white-space: pre-wrap;
+/* Back and on, at the ends of the heading. */
+.question-arrow {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(20 * var(--unit));
+  height: calc(20 * var(--unit));
+  border-radius: var(--radius-xs);
+  color: var(--color-text-tertiary);
+}
+
+.question-arrow:hover:not(:disabled) {
+  background: var(--color-surface-control-hover);
+  color: var(--color-text-primary);
+}
+
+.question-arrow:disabled { opacity: 0.4; }
+
+.question-arrow .icon {
+  width: calc(14 * var(--unit));
+  height: calc(14 * var(--unit));
+}
+
+.question-heading { flex: 1; min-width: 0; padding-inline: var(--space-xs); }
+.question-count { font-variant-numeric: tabular-nums; }
+
+.question-text {
+  margin-top: var(--space-xs);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+}
+
+.question-text p { margin: 0; }
+
+/* What a request would change, read like a file in the diff tab: the name, then its folder
+   quieter, then how much changes at the far end. */
+.request-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  min-width: 0;
+  color: var(--color-text-primary);
+  font: var(--text-body);
+}
+
+.request-verb { flex: none; color: var(--color-text-secondary); }
+.request-file { flex: none; max-width: 60%; overflow: hidden; font: var(--text-code-body); text-overflow: ellipsis; white-space: nowrap; }
+
+.request-folder {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font: var(--text-code-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-counts {
+  flex: none;
+  display: flex;
+  gap: var(--space-xs);
+  margin-left: auto;
+  font: var(--text-code-small);
+}
+
+.request-counts .added { color: var(--color-diff-add-text); }
+.request-counts .removed { color: var(--color-diff-del-text); }
+
+/* In the card, code runs edge to edge as a darker band, its signs in the column the options'
+   numbers use below and its code where their labels start. */
+.question-details { margin: var(--space-sm) calc(-1 * var(--space-md)) 0; }
+.question-details .tool-details { gap: 0; }
+.question-details .tool-input,
+.question-details .link-button { padding: var(--space-xs) var(--space-md); }
+
+.question-details :is(.tool-band, .shell-output) {
+  max-height: min(40vh, 360px);
+  border-block: 1px solid var(--color-line-subtle);
+  border-radius: 0;
+  background: var(--color-surface-panel);
+}
+
+.question-details .tool-band + .tool-band { border-top: 0; }
+.question-details .tool-line { column-gap: var(--space-sm); padding-inline: var(--space-md); }
+.question-details :is(.tool-text, .tool-markdown) { padding-inline: var(--space-md); }
+
+.question-details .tool-gap {
+  padding-left: calc(var(--space-md) + var(--space-sm) + 14 * var(--unit));
+}
+
+.question-url {
+  margin-top: var(--space-xs);
+  color: var(--color-text-secondary);
+  font: var(--text-code-small);
   overflow-wrap: anywhere;
 }
 
-.actions {
+/* The options line up with the text above, their numbers hanging in the margin's padding. */
+.question-options {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-xs);
-  margin-top: var(--space-md);
+  flex-direction: column;
+  margin: var(--space-sm) calc(-1 * var(--space-sm)) 0;
 }
 
-/* An option's place in the list, which is also the key that picks it. Quiet, so it reads as
-   numbering rather than a key chip. */
-.request-number {
+.question-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  min-height: var(--size-control);
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  text-align: left;
+}
+
+.question-option[data-highlighted] { background: var(--color-surface-control); }
+.question:not(:focus-within) .question-option[data-highlighted]:not(:hover) { background: none; }
+
+.question-number {
+  flex: none;
+  display: inline-flex;
+  justify-content: center;
+  width: calc(14 * var(--unit));
   color: var(--color-text-tertiary);
   font: var(--text-meta);
   font-variant-numeric: tabular-nums;
 }
 
-.button.primary .request-number { color: var(--color-text-on-accent); }
+.question-option[aria-checked="true"] .question-label,
+.question-option > .icon { color: var(--color-accent-text); }
+
+.question-option > .icon {
+  flex: none;
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+}
+.question-label { flex: none; }
+
+.question-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.question-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+}
+
+.question-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  outline: 0;
+  resize: none;
+  field-sizing: content;
+}
+
+/* Normal mode draws the character under the cursor as a block, as in the message box. */
+.question-input[data-vim="normal"]::selection {
+  background: var(--color-text-primary);
+  color: var(--color-surface-raised);
+}
+
+.question-input[data-vim="normal"] { caret-color: var(--color-text-primary); }
+
+.question-number-input {
+  height: var(--size-control);
+  padding: 0 var(--space-sm);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  outline: 0;
+}
+
+
+.question-input::placeholder { color: var(--color-text-tertiary); opacity: 1; }
+
+/* Send is the list's last row, a bar like the options. */
+.question-send .question-label { color: var(--color-accent-text); }
+
+.question-send .question-number .icon {
+  width: calc(12 * var(--unit));
+  height: calc(12 * var(--unit));
+  color: var(--color-accent-text);
+}
 
 .button {
   display: inline-flex;
@@ -1968,6 +2440,14 @@ button.setting-line .name {
 
 .composer-context .composer-mode { margin-left: 0; }
 
+/* How full the agent's context is. */
+.composer-usage {
+  flex: none;
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
 .composer-branch {
   min-width: 0;
   overflow: hidden;
@@ -2334,6 +2814,13 @@ textarea.sheet-input {
 }
 
 .list-choice > .icon:last-child { color: var(--color-text-tertiary); }
+
+.menu-note {
+  padding: var(--space-xs) var(--space-sm) var(--space-2xs);
+  color: var(--color-text-tertiary);
+  font: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
 
 .list-choice[data-highlighted] .kbd { background: var(--color-surface-control-hover); }
 

@@ -224,6 +224,8 @@ id_type!(
     /// Unique within a machine. Use [`SessionRef`] when merging many daemons.
     SessionId,
     ApprovalId,
+    /// A form an agent asked to have filled in, unique within a machine.
+    QuestionId,
     McpServerId,
     /// Unique within a machine, so it names a profile without its server.
     McpProfileId,
@@ -476,6 +478,52 @@ pub enum Command {
     AnswerApproval {
         approval_id: ApprovalId,
         option_id: String,
+    },
+    /// Answer a pending question. Only the first answer counts, like
+    /// [`Command::AnswerApproval`].
+    AnswerQuestion {
+        question_id: QuestionId,
+        answer: QuestionAnswer,
+    },
+    /// Stop a subagent's work, leaving its parent running.
+    StopSubagent {
+        session_id: SessionId,
+        subagent: String,
+    },
+    /// Stop a background task of a session's agent, such as a command it left running.
+    StopTask {
+        session_id: SessionId,
+        task_id: String,
+    },
+    /// What a background task has written, answered with [`CommandOutput::TaskOutput`].
+    ReadTaskOutput {
+        session_id: SessionId,
+        task_id: String,
+    },
+    /// Close a background task's tab from [`DaemonState::session_tasks`], stopping the task
+    /// if it's still running, as closing a terminal ends its shell.
+    CloseTask {
+        session_id: SessionId,
+        task_id: String,
+    },
+    /// Set one of the agent's own options from [`DaemonState::session_options`]. The
+    /// session keeps the choice and its agent gets it again whenever it starts.
+    SetSessionOption {
+        session_id: SessionId,
+        option_id: String,
+        value: String,
+    },
+    /// Files in the session's folder whose path matches `query`, best first, answered with
+    /// [`CommandOutput::Files`]. Mentioning one as `@path` in a prompt sends its contents.
+    ListFiles {
+        session_id: SessionId,
+        query: String,
+    },
+    /// Run a shell command in the session's folder. Its output shows in the transcript and
+    /// goes to the agent with the next prompt, as `!command` does in Claude Code.
+    RunShell {
+        session_id: SessionId,
+        line: String,
     },
     /// Give this device the name clients show. Empty goes back to its hostname.
     RenameMachine {
@@ -817,6 +865,16 @@ pub enum CommandOutput {
     Paired {
         client: PairedClient,
     },
+    /// The end of what a background task wrote, at most [`MAX_TASK_OUTPUT_BYTES`].
+    TaskOutput {
+        text: String,
+        /// Whether there was more before it.
+        truncated: bool,
+    },
+    /// Paths relative to the session's folder.
+    Files {
+        paths: Vec<String>,
+    },
     Done,
     #[serde(other)]
     Unknown,
@@ -985,6 +1043,9 @@ pub struct DaemonState {
     pub workspaces: Vec<Workspace>,
     /// Permission requests waiting for an answer, across all sessions.
     pub approvals: Vec<Approval>,
+    /// Forms agents asked to have filled in, across all sessions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<Question>,
     /// The agents added to this device, part of its settings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<Provider>,
@@ -1006,6 +1067,15 @@ pub struct DaemonState {
     /// because a long list would otherwise travel with every status change.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub commands: BTreeMap<SessionId, Vec<AgentCommand>>,
+    /// The options each running session's agent offers beyond the model, mode and effort,
+    /// like Claude's ultracode, with what each is set to.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub session_options: BTreeMap<SessionId, Vec<AgentOption>>,
+    /// Each session's background tasks that have a tab of their own: the ones running, and
+    /// ones that failed until their tab is closed, so the reason can be read. Empty once its
+    /// agent stops, since its tasks end with it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub session_tasks: BTreeMap<SessionId, Vec<BackgroundTask>>,
     /// The device's library of MCP servers. A workspace's agents get the ones it adds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<McpServer>,
@@ -1047,6 +1117,8 @@ impl DaemonState {
                         .collect();
                     for session_id in gone {
                         self.commands.remove(&session_id);
+                        self.session_options.remove(&session_id);
+                        self.session_tasks.remove(&session_id);
                     }
                 }
                 self.workspaces.retain(|w| &w.id != workspace_id);
@@ -1071,6 +1143,8 @@ impl DaemonState {
                         topic.sessions.iter().map(|s| s.id.clone()).collect();
                     for session_id in gone {
                         self.commands.remove(&session_id);
+                        self.session_options.remove(&session_id);
+                        self.session_tasks.remove(&session_id);
                     }
                 }
                 for workspace in &mut self.workspaces {
@@ -1102,6 +1176,30 @@ impl DaemonState {
             }
             StateChange::ApprovalResolved { approval_id } => {
                 self.approvals.retain(|a| &a.id != approval_id);
+            }
+            StateChange::QuestionAdded { question } => {
+                upsert(&mut self.questions, question.clone(), |q| &q.id);
+            }
+            StateChange::QuestionResolved { question_id } => {
+                self.questions.retain(|q| &q.id != question_id);
+            }
+            StateChange::SessionOptionsChanged {
+                session_id,
+                options,
+            } => {
+                if options.is_empty() {
+                    self.session_options.remove(session_id);
+                } else {
+                    self.session_options
+                        .insert(session_id.clone(), options.clone());
+                }
+            }
+            StateChange::SessionTasksChanged { session_id, tasks } => {
+                if tasks.is_empty() {
+                    self.session_tasks.remove(session_id);
+                } else {
+                    self.session_tasks.insert(session_id.clone(), tasks.clone());
+                }
             }
             StateChange::ProviderChanged { provider } => {
                 upsert(&mut self.providers, provider.clone(), |p| &p.agent);
@@ -1153,6 +1251,8 @@ impl DaemonState {
             }
             StateChange::SessionRemoved { session_id } => {
                 self.commands.remove(session_id);
+                self.session_options.remove(session_id);
+                self.session_tasks.remove(session_id);
                 for topic in self.workspaces.iter_mut().flat_map(|w| &mut w.topics) {
                     topic.sessions.retain(|s| &s.id != session_id);
                 }
@@ -1747,12 +1847,28 @@ pub struct ProviderEffort {
 pub enum PermissionMode {
     /// Always ask before making changes.
     Manual,
+    /// Edits go ahead, and anything else asks.
+    AcceptEdits,
     /// The agent decides what needs asking. This is tectr's default.
     Auto,
     /// Never ask.
     Yolo,
+    /// Read and plan only, then ask before carrying out the plan. The agent leaves this mode
+    /// itself once its plan is approved.
+    Plan,
     #[serde(other)]
     Unknown,
+}
+
+impl PermissionMode {
+    /// Every mode an agent might offer, in the order they're shown.
+    pub const ALL: [PermissionMode; 5] = [
+        PermissionMode::Manual,
+        PermissionMode::AcceptEdits,
+        PermissionMode::Auto,
+        PermissionMode::Yolo,
+        PermissionMode::Plan,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1821,6 +1937,22 @@ pub enum StateChange {
     },
     ApprovalResolved {
         approval_id: ApprovalId,
+    },
+    QuestionAdded {
+        question: Question,
+    },
+    QuestionResolved {
+        question_id: QuestionId,
+    },
+    /// Replaces a session's [`DaemonState::session_options`]. Empty once its agent stops.
+    SessionOptionsChanged {
+        session_id: SessionId,
+        options: Vec<AgentOption>,
+    },
+    /// Replaces a session's [`DaemonState::session_tasks`].
+    SessionTasksChanged {
+        session_id: SessionId,
+        tasks: Vec<BackgroundTask>,
     },
     ProviderChanged {
         provider: Provider,
@@ -1909,6 +2041,9 @@ pub enum StateChange {
 pub struct Approval {
     pub id: ApprovalId,
     pub session_id: SessionId,
+    /// The subagent asking, if it isn't the session's own agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<String>,
     pub tool_call: ToolCallPatch,
     pub options: Vec<PermissionOption>,
 }
@@ -1918,6 +2053,194 @@ pub struct PermissionOption {
     pub id: String,
     pub name: String,
     pub kind: PermissionOptionKind,
+}
+
+/// A form an agent wants filled in, such as Claude's multiple-choice questions. The daemon
+/// turns the agent's JSON schema into fields, so clients only lay them out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Question {
+    pub id: QuestionId,
+    pub session_id: SessionId,
+    /// The subagent asking, if it isn't the session's own agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<String>,
+    pub message: String,
+    /// Empty for a question that only asks to visit `url`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<QuestionField>,
+    /// A page to open, such as a login, after which the question is answered with accept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionField {
+    /// What the answer's values are keyed by.
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+    pub kind: FieldKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FieldKind {
+    /// Its value is an option's `value`, or a list of them when `multiple`.
+    Choice {
+        options: Vec<FieldOption>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        multiple: bool,
+    },
+    Text,
+    Number {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        integer: bool,
+    },
+    Boolean,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldOption {
+    pub value: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum QuestionAnswer {
+    /// The values by field key: a string, a number, a boolean or a list of strings. A field
+    /// left out is unanswered. `note` is anything else the person wanted to say, which the
+    /// agent gets as a message right after the answer, as in Claude Code.
+    Accept {
+        values: serde_json::Map<String, Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// Answered, with nothing: the agent carries on without it.
+    Decline,
+    /// Not answered at all. The agent treats it like an interrupted tool.
+    Cancel,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One of an agent's own options, beyond the model, mode and effort tectr sets itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentOption {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub value: String,
+    pub choices: Vec<OptionChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptionChoice {
+    pub value: String,
+    pub name: String,
+}
+
+/// The most of a background task's output [`Command::ReadTaskOutput`] returns, from its end.
+pub const MAX_TASK_OUTPUT_BYTES: usize = 64 * 1024;
+
+/// Work an agent runs in the background, such as a command it left running.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundTask {
+    pub id: String,
+    /// Like `shell`, `monitor` or `workflow`. A string so that a new kind needs no change.
+    pub kind: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub status: TaskStatus,
+    /// What it came to, once it's over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Where its output is written on the daemon's machine, which
+    /// [`Command::ReadTaskOutput`] reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_file: Option<String>,
+    /// Whether [`Command::StopTask`] can stop it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_stop: bool,
+    /// The tool call that started it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Running,
+    Completed,
+    Failed,
+    Stopped,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanEntry {
+    pub content: String,
+    pub status: PlanEntryStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanEntryStatus {
+    Pending,
+    InProgress,
+    Completed,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeSeverity {
+    Info,
+    Warning,
+    Error,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionStatus {
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a subagent is doing. It can go back to working when its parent sends it more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentStatus {
+    Working,
+    WaitingForYou,
+    Done,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Cost {
+    pub amount: f64,
+    /// A currency code like `USD`, or another unit.
+    pub currency: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1971,6 +2294,10 @@ pub struct SessionEvent {
     /// Milliseconds since the Unix epoch.
     pub at_ms: i64,
     pub kind: SessionEventKind,
+    /// The subagent it happened in, as named by [`SessionEventKind::Subagent`]. Missing for
+    /// the session's own agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2022,6 +2349,87 @@ pub enum SessionEventKind {
     },
     Error {
         message: String,
+    },
+    /// The question was asked. Its answer comes as [`SessionEventKind::QuestionAnswered`].
+    QuestionAsked {
+        question: Question,
+    },
+    QuestionAnswered {
+        question_id: QuestionId,
+        answer: QuestionAnswer,
+    },
+    /// The agent's todo list, replaced whole each time.
+    Plan {
+        entries: Vec<PlanEntry>,
+    },
+    /// A plan in Markdown, like the one approved on leaving plan mode. It replaces any
+    /// earlier one with the same `id`.
+    PlanDocument {
+        id: String,
+        text: String,
+    },
+    /// How full the agent's context window is.
+    Usage {
+        used: u64,
+        size: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost: Option<Cost>,
+    },
+    /// Something the agent wants known that isn't part of the conversation, like a retry.
+    Notice {
+        severity: NoticeSeverity,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    /// The agent shortening its context. Later events with the same `id` replace it.
+    Compaction {
+        id: String,
+        status: CompactionStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// What the agent expects to be sent next. `None` takes back the last one.
+    Suggestion {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
+    /// A subagent the agent started, or what changed about it. A field left out is
+    /// unchanged. Its own events carry its `id` in [`SessionEvent::subagent`].
+    Subagent {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<SubagentStatus>,
+    },
+    /// A message between the agent and a subagent, like a subagent's task or its report.
+    /// `from` and `to` are subagent IDs, or `None` for the session's own agent. A later one
+    /// with the same `id` replaces it.
+    SessionMessage {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+        text: String,
+    },
+    /// Background work the agent started, or what changed about it. It replaces any earlier
+    /// one with the same ID.
+    Task {
+        task: BackgroundTask,
+    },
+    /// A command run with [`Command::RunShell`].
+    Shell {
+        command: String,
+        output: String,
+        /// Missing when it couldn't run, or was stopped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
     },
     #[serde(other)]
     Unknown,
@@ -2216,6 +2624,9 @@ mod tests {
             },
             workspaces: vec![],
             approvals: vec![],
+            questions: vec![],
+            session_options: BTreeMap::new(),
+            session_tasks: BTreeMap::new(),
             providers: vec![],
             drafts: BTreeMap::new(),
             draft_images: BTreeMap::new(),
@@ -2256,6 +2667,9 @@ mod tests {
             },
             workspaces: vec![],
             approvals: vec![],
+            questions: vec![],
+            session_options: BTreeMap::new(),
+            session_tasks: BTreeMap::new(),
             providers: vec![],
             drafts: BTreeMap::new(),
             draft_images: BTreeMap::new(),
@@ -2376,6 +2790,9 @@ mod tests {
                 mcp: BTreeMap::new(),
             }],
             approvals: vec![],
+            questions: vec![],
+            session_options: BTreeMap::new(),
+            session_tasks: BTreeMap::new(),
             providers: vec![],
             drafts: BTreeMap::new(),
             draft_images: BTreeMap::new(),

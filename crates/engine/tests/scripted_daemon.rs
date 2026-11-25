@@ -1,6 +1,7 @@
 //! Tests the engine against a scripted daemon, to check exactly what it sends
 //! and how it treats responses a real daemon wouldn't normally produce.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use engine::{Connection, Engine, EngineError, Liveness};
@@ -37,6 +38,7 @@ fn event(seq: u64, text: &str) -> ServerMessage {
             kind: SessionEventKind::AgentMessage {
                 text: text.to_owned(),
             },
+            subagent: None,
         },
     }
 }
@@ -84,6 +86,9 @@ async fn accept(listener: &TcpListener) -> Socket {
                 machine: machine(),
                 workspaces: vec![],
                 approvals: vec![],
+                questions: vec![],
+                session_options: BTreeMap::new(),
+                session_tasks: BTreeMap::new(),
                 providers: vec![],
                 drafts: Default::default(),
                 draft_images: Default::default(),

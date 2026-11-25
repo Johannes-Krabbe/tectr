@@ -108,14 +108,15 @@ impl Core {
                     SessionEventKind::StatusChanged { .. } | SessionEventKind::AgentReady { .. }
                 )
             })
-            .map(|event| (event.at_ms, event.kind))
-            .chain([(now_ms(), starting)])
+            .map(|event| (event.at_ms, event.kind, event.subagent))
+            .chain([(now_ms(), starting, None)])
             .zip(1..)
-            .map(|((at_ms, kind), seq)| SessionEvent {
+            .map(|((at_ms, kind, subagent), seq)| SessionEvent {
                 session: reference.clone(),
                 seq,
                 at_ms,
                 kind,
+                subagent,
             })
             .collect();
         let fork = ForkPoint {

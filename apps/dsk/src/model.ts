@@ -1,7 +1,9 @@
 // Pure helpers that turn engine state into what the UI shows.
 
 import type {
+  AgentOption,
   ArchiveRisk,
+  BackgroundTask,
   Conversation,
   DaemonState,
   Device,
@@ -9,13 +11,18 @@ import type {
   Diff,
   MoveTarget,
   PermissionMode,
+  PlanEntry,
   Provider,
   ProviderEffort,
   ProviderModel,
   PromptImage,
+  Question,
+  QuestionAnswer,
   RepoClone,
   Session,
   SessionEvent,
+  SubagentStatus,
+  TaskStatus,
   Terminal,
   ToolCallPatch,
   Topic,
@@ -39,8 +46,54 @@ export const STATE_LABEL: Record<StatusState, string> = {
 export const MODES: { mode: PermissionMode; label: string }[] = [
   { mode: "auto", label: "Auto" },
   { mode: "manual", label: "Manual" },
+  { mode: "accept_edits", label: "Accept Edits" },
   { mode: "yolo", label: "Yolo" },
+  { mode: "plan", label: "Plan" },
 ];
+
+/** The mode after `current` among those an agent offers, going round. */
+export function nextMode(offered: PermissionMode[], current: PermissionMode): PermissionMode | null {
+  const modes = MODES.map((m) => m.mode).filter((mode) => offered.includes(mode));
+  if (modes.length === 0) return null;
+  return modes[(modes.indexOf(current) + 1) % modes.length];
+}
+
+/** The mode a new agent starts in unless another is chosen: Auto where the agent has it. */
+export function defaultMode(offered: PermissionMode[]): PermissionMode | undefined {
+  return offered.includes("auto") ? "auto" : MODES.find((m) => offered.includes(m.mode))?.mode;
+}
+
+/** An agent option's choice once it's turned on or away from its default, or null while it's
+ * Off or Default. An on and off option reads as its own name, like "Ultracode", and any other
+ * as the choice. Agents list choices in any order, so it goes by their names. */
+export function changedOption(option: AgentOption): string | null {
+  const resting = (name: string) => ["off", "default", "none"].includes(name.trim().toLowerCase());
+  const current = option.choices.find((choice) => choice.value === option.value);
+  const name = current?.name ?? option.value;
+  if (resting(name)) return null;
+  const toggle = option.choices.some((choice) => choice.name.trim().toLowerCase() === "off");
+  return toggle ? option.name : name;
+}
+
+/** What a session runs on in one short line, like "Opus 5.5 high, Ultracode": the model and
+ * effort always, and the agent's options only once they're on. */
+export function settingsLabel(parts: {
+  model: string;
+  effort?: string;
+  changed: (string | null)[];
+}): string {
+  const head = parts.effort ? `${parts.model} ${parts.effort.toLowerCase()}` : parts.model;
+  return [head, ...parts.changed.filter((part) => part !== null)].join(", ");
+}
+
+/** How full the agent's context is and what it's cost, for the settings menu. */
+export function usageNote(usage: { percent: number; used: number; size: number; cost?: string }) {
+  const tokens = `${usage.percent}% of context, ${shortCount(usage.used)} of ${shortCount(usage.size)} tokens`;
+  return usage.cost ? `${tokens}, ${usage.cost} so far` : tokens;
+}
+
+/** From here on the message box shows how full the context is, since a compaction is near. */
+export const USAGE_SHOWN_FROM = 80;
 
 /** Whether commands can be sent, which a device that's slow to answer still takes. */
 export function isOnline(device: Device): boolean {
@@ -292,11 +345,13 @@ export function terminalLabel(terminal: Terminal): string {
 export type Tab =
   | { kind: "session"; id: string; session: Session }
   | { kind: "terminal"; id: string; terminal: Terminal }
-  | { kind: "diff"; id: string; diff: Diff };
+  | { kind: "diff"; id: string; diff: Diff }
+  | { kind: "task"; id: string; sessionId: string; task: BackgroundTask };
 
 /** A topic's tabs in the order they were opened, whatever their kind. Tabs opened at the same
- * moment keep the order the daemon lists them in. */
-export function tabsOf(topic: Topic): Tab[] {
+ * moment keep the order the daemon lists them in. A session's background tasks come right
+ * after it, since its agent opened them. */
+export function tabsOf(topic: Topic, tasks: Record<string, BackgroundTask[]> = {}): Tab[] {
   const tabs = [
     ...topic.sessions.map((session): { tab: Tab; at: number } => ({
       tab: { kind: "session", id: session.id, session },
@@ -311,7 +366,14 @@ export function tabsOf(topic: Topic): Tab[] {
       at: diff.opened_at_ms,
     })),
   ];
-  return tabs.sort((a, b) => a.at - b.at).map(({ tab }) => tab);
+  return tabs
+    .sort((a, b) => a.at - b.at)
+    .flatMap(({ tab }): Tab[] => [
+      tab,
+      ...(tab.kind === "session" ? (tasks[tab.id] ?? []) : []).map(
+        (task): Tab => ({ kind: "task", id: task.id, sessionId: tab.id, task }),
+      ),
+    ]);
 }
 
 export function tabLabel(tab: Tab): string {
@@ -322,6 +384,8 @@ export function tabLabel(tab: Tab): string {
       return terminalLabel(tab.terminal);
     case "diff":
       return "Diff";
+    case "task":
+      return taskName(tab.task);
   }
 }
 
@@ -407,7 +471,9 @@ export function folderName(path: string): string {
 export type ActivityStep =
   | { kind: "thought"; key: number; text: string }
   | { kind: "tool"; key: number; tool: ToolCallPatch }
-  | { kind: "note"; key: number; text: string };
+  | { kind: "note"; key: number; text: string }
+  /** A subagent the agent started, which has a transcript of its own. */
+  | { kind: "subagent"; key: number; id: string };
 
 /** What an agent did between two things it said: its tool calls and thinking, as one line. */
 export interface Activity {
@@ -425,7 +491,20 @@ export type TranscriptItem =
   | { kind: "message"; key: number; text: string }
   | Activity
   | { kind: "note"; key: number; text: string; failed?: boolean }
-  | AnswerEnd;
+  | AnswerEnd
+  /** A plan in Markdown, like the one approved on leaving plan mode. */
+  | { kind: "plan"; key: number; text: string }
+  | {
+      kind: "compaction";
+      key: number;
+      status: string;
+      summary?: string;
+      error?: string;
+    }
+  /** A command run with `!`. */
+  | { kind: "shell"; key: number; command: string; output: string; exitCode?: number }
+  /** Subagents that came back between the agent's messages, with how long each took. */
+  | { kind: "subagents_back"; key: number; back: { id: string; tookMs: number }[] };
 
 /** Where an answer finished, which can be branched from when the agent said where. `note` says
  * how it stopped, if that wasn't the usual way. */
@@ -443,12 +522,40 @@ const STOP_NOTES: Record<string, string> = {
   refusal: "The agent refused",
 };
 
+/** In a few words, what an answer to a question was, for the transcript. */
+export function answerSummary(question: Question | undefined, answer: QuestionAnswer): string {
+  switch (answer.action) {
+    case "accept": {
+      const parts = Object.entries(answer.values).map(([key, value]) => {
+        const field = question?.fields?.find((f) => f.key === key);
+        const shown = (one: string | number | boolean) => {
+          if (field?.kind.type !== "choice") return String(one);
+          return field.kind.options.find((o) => o.value === String(one))?.label ?? String(one);
+        };
+        return Array.isArray(value) ? value.map(shown).join(", ") : shown(value);
+      });
+      if (answer.note) parts.push(answer.note);
+      return parts.length > 0 ? parts.join("; ") : "Answered";
+    }
+    case "decline":
+      return "Skipped";
+    case "cancel":
+      return "Cancelled";
+    default:
+      return "Answered";
+  }
+}
+
 /** Folds a session's events into what a person reads: streamed chunks become one message,
- * and everything an agent does between messages becomes one activity. */
-export function foldTranscript(events: SessionEvent[]): TranscriptItem[] {
+ * and everything an agent does between messages becomes one activity. `view` is a subagent's
+ * ID to read its transcript instead of the agent's own. */
+export function foldTranscript(events: SessionEvent[], view: string | null = null): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   const tools = new Map<string, Extract<ActivityStep, { kind: "tool" }>>();
   const requests = new Map<string, { title: string; options: Map<string, string> }>();
+  const questions = new Map<string, Question>();
+  const replaced = new Map<string, TranscriptItem>();
+  const subagents = new Map<string, { startedMs: number; status?: SubagentStatus }>();
   let open: Activity | null = null;
   let previousAt: number | null = null;
   let requestsOpen = 0;
@@ -480,7 +587,30 @@ export function foldTranscript(events: SessionEvent[]): TranscriptItem[] {
     open = null;
   };
 
-  for (const { seq, at_ms: at, kind } of events) {
+  /** An item that a later event with the same ID updates in place, where it first was. */
+  const upsert = (id: string, item: TranscriptItem) => {
+    const earlier = replaced.get(id);
+    if (earlier) {
+      Object.assign(earlier, { ...item, key: earlier.key });
+    } else {
+      replaced.set(id, item);
+      items.push(item);
+    }
+  };
+
+  const asked = (seq: number, at: number) => {
+    activity(seq, at);
+    if (requestsOpen++ === 0) waitingSince = at;
+  };
+
+  const answered = (seq: number, at: number, text: string) => {
+    const current = activity(seq, at);
+    if (--requestsOpen === 0) current.waitedMs += at - waitingSince;
+    current.steps.push({ kind: "note", key: seq, text });
+  };
+
+  for (const { seq, at_ms: at, kind, subagent } of events) {
+    if ((subagent ?? null) !== view) continue;
     switch (kind.event) {
       case "user_prompt":
         close(at);
@@ -514,13 +644,44 @@ export function foldTranscript(events: SessionEvent[]): TranscriptItem[] {
         }
         break;
       }
+      case "subagent": {
+        const known = subagents.get(kind.id);
+        if (!known) {
+          subagents.set(kind.id, { startedMs: at, status: kind.status });
+          activity(seq, at).steps.push({ kind: "subagent", key: seq, id: kind.id });
+          break;
+        }
+        touch(at);
+        const finished = kind.status === "done" && known.status !== "done";
+        if (kind.status !== undefined) known.status = kind.status;
+        // Inside an activity its step says so. Between messages, which is where one left
+        // running in the background comes back, a line says so, and keeps the message
+        // before it from running into the one after.
+        if (!finished || open) break;
+        const back = { id: kind.id, tookMs: at - known.startedMs };
+        const last = items[items.length - 1];
+        if (last?.kind === "subagents_back") last.back.push(back);
+        else items.push({ kind: "subagents_back", key: seq, back: [back] });
+        break;
+      }
+      case "session_message": {
+        // A subagent's task opens its transcript, and its report back closes it. The agent's
+        // own side of either shows as the subagent's step.
+        if (view === null) break;
+        close(at);
+        if (kind.to === view) {
+          upsert(`message:${kind.id}`, { kind: "prompt", key: seq, text: kind.text, images: [] });
+        } else if (kind.from === view) {
+          upsert(`message:${kind.id}`, { kind: "message", key: seq, text: kind.text });
+        }
+        break;
+      }
       case "permission_requested":
         requests.set(kind.approval.id, {
           title: kind.approval.tool_call.title ?? "Untitled tool call",
           options: new Map(kind.approval.options.map((option) => [option.id, option.name])),
         });
-        activity(seq, at);
-        if (requestsOpen++ === 0) waitingSince = at;
+        asked(seq, at);
         break;
       case "permission_resolved": {
         const request = requests.get(kind.approval_id);
@@ -528,15 +689,55 @@ export function foldTranscript(events: SessionEvent[]): TranscriptItem[] {
           kind.outcome.outcome === "selected"
             ? (request?.options.get(kind.outcome.option_id) ?? "Answered")
             : "Cancelled";
-        const current = activity(seq, at);
-        if (--requestsOpen === 0) current.waitedMs += at - waitingSince;
-        current.steps.push({
-          kind: "note",
-          key: seq,
-          text: `Request: ${request?.title ?? "tool call"}. ${answer}`,
-        });
+        answered(seq, at, `Request: ${request?.title ?? "tool call"}. ${answer}`);
         break;
       }
+      case "question_asked":
+        questions.set(kind.question.id, kind.question);
+        asked(seq, at);
+        break;
+      case "question_answered": {
+        const question = questions.get(kind.question_id);
+        answered(
+          seq,
+          at,
+          `Question: ${question?.message ?? "a question"} ${answerSummary(question, kind.answer)}`,
+        );
+        break;
+      }
+      case "plan_document":
+        close(at);
+        upsert(`plan:${kind.id}`, { kind: "plan", key: seq, text: kind.text });
+        break;
+      case "compaction":
+        close(at);
+        upsert(`compaction:${kind.id}`, {
+          kind: "compaction",
+          key: seq,
+          status: kind.status,
+          summary: kind.summary,
+          error: kind.error,
+        });
+        break;
+      case "notice":
+        close(at);
+        items.push({
+          kind: "note",
+          key: seq,
+          text: kind.description ? `${kind.title}. ${kind.description}` : kind.title,
+          failed: kind.severity === "error",
+        });
+        break;
+      case "shell":
+        close(at);
+        items.push({
+          kind: "shell",
+          key: seq,
+          command: kind.command,
+          output: kind.output,
+          exitCode: kind.exit_code,
+        });
+        break;
       case "agent_ready":
         close(at);
         break;
@@ -560,6 +761,131 @@ export function foldTranscript(events: SessionEvent[]): TranscriptItem[] {
     previousAt = at;
   }
   return items;
+}
+
+export interface SubagentInfo {
+  id: string;
+  title?: string;
+  description?: string;
+  status?: SubagentStatus;
+  /** When it was first heard of, which is when it started. */
+  startedMs: number;
+}
+
+/** Every subagent a session's agent started, as their latest reports describe them, in the
+ * order they started. */
+export function subagentsOf(events: SessionEvent[]): Map<string, SubagentInfo> {
+  const subagents = new Map<string, SubagentInfo>();
+  for (const { kind, at_ms } of events) {
+    if (kind.event !== "subagent") continue;
+    const known = subagents.get(kind.id) ?? { id: kind.id, startedMs: at_ms };
+    subagents.set(kind.id, {
+      ...known,
+      ...(kind.title !== undefined && { title: kind.title }),
+      ...(kind.description !== undefined && { description: kind.description }),
+      ...(kind.status !== undefined && { status: kind.status }),
+    });
+  }
+  return subagents;
+}
+
+export const subagentLabel = (subagent: SubagentInfo | undefined) =>
+  subagent?.title ?? subagent?.description ?? "Subagent";
+
+/** Whether a subagent is still going, so its step stays in sight. */
+export const subagentRunning = (subagent: SubagentInfo | undefined) =>
+  subagent?.status === "working" || subagent?.status === "waiting_for_you";
+
+/** How a subagent's status reads as one of the app's states. */
+export function subagentState(status: SubagentStatus | undefined, online: boolean): StatusState {
+  if (!online) return "stale";
+  switch (status) {
+    case "working":
+      return "working";
+    case "waiting_for_you":
+      return "waiting";
+    case "done":
+      return "read";
+    default:
+      return "idle";
+  }
+}
+
+/** The agent's own todo list as it last reported it, or null if it never did. */
+export function planOf(events: SessionEvent[]): PlanEntry[] | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const { kind, subagent } = events[i];
+    if (kind.event === "plan" && subagent === undefined) return kind.entries;
+  }
+  return null;
+}
+
+/** How full the agent's context is, as a whole percentage, with what it's made of. */
+export function usageOf(
+  events: SessionEvent[],
+): { percent: number; used: number; size: number; cost?: string } | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const { kind } = events[i];
+    if (kind.event !== "usage" || kind.size <= 0) continue;
+    const cost = kind.cost ? `${kind.cost.amount.toFixed(2)} ${kind.cost.currency}` : undefined;
+    return {
+      percent: Math.min(100, Math.round((kind.used / kind.size) * 100)),
+      used: kind.used,
+      size: kind.size,
+      cost,
+    };
+  }
+  return null;
+}
+
+/** What the agent expects to be sent next, until something is. */
+export function suggestionOf(events: SessionEvent[]): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const { kind } = events[i];
+    if (kind.event === "suggestion") return kind.text?.trim() || null;
+    if (kind.event === "user_prompt" || kind.event === "shell") return null;
+  }
+  return null;
+}
+
+const plural = (count: number, one: string, many = `${one}s`) =>
+  `${count} ${count === 1 ? one : many}`;
+
+/** The line the todo list folds to, or null when it's all done and the list goes away,
+ * since the transcript has what was done. */
+export function todoSummary(plan: PlanEntry[] | null): string | null {
+  const todo = plan ?? [];
+  const done = todo.filter((entry) => entry.status === "completed").length;
+  return done < todo.length ? `${done} of ${plural(todo.length, "todo")} done` : null;
+}
+
+/** How a background task's status reads as one of the app's states. */
+export function taskState(status: TaskStatus, online: boolean): StatusState {
+  if (!online) return "stale";
+  switch (status) {
+    case "running":
+      return "working";
+    case "failed":
+      return "failed";
+    case "completed":
+      return "read";
+    default:
+      return "idle";
+  }
+}
+
+export const taskName = (task: BackgroundTask) => task.description || task.command || task.kind;
+
+/** A large count in the app's short form, like 12k. */
+export function shortCount(count: number): string {
+  if (count < 1000) return String(count);
+  if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
+  return `${(count / 1_000_000).toFixed(1)}M`;
+}
+
+/** The agent's own options a session can set, which only a running agent reports. */
+export function sessionOptions(state: DaemonState | null, sessionId: string): AgentOption[] {
+  return state?.session_options?.[sessionId] ?? [];
 }
 
 /** Why an answer can't be branched from, or `undefined` when it can. */
@@ -659,7 +985,6 @@ export function foldState(items: TranscriptItem[], folds: Folds, stepsShown: boo
  * Parallel tools show the newest one still running, and a step stays until the next one
  * replaces it, so a run of quick tools never flickers back to a generic word. */
 export function liveStepLabel(session: Session, activity: Activity | null): string {
-  if (session.status === "waiting_for_you") return "Waiting for you";
   if (session.status === "starting") return "Starting";
   const steps = (activity?.steps ?? []).filter((step) => step.kind !== "note");
   const running = steps.filter(
@@ -668,6 +993,7 @@ export function liveStepLabel(session: Session, activity: Activity | null): stri
   );
   const step = running[running.length - 1] ?? steps[steps.length - 1];
   if (!step) return "Working";
+  if (step.kind === "subagent") return "Working with a subagent";
   return step.kind === "tool" ? (step.tool.title ?? "Tool call") : "Thinking";
 }
 

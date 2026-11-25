@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  typesText,
   chordMatches,
   chordOf,
   formatChord,
@@ -150,4 +151,14 @@ test("only keys that start with Cmd reach the app from a terminal", () => {
   assert.equal(usesCommand("escape"), false);
   assert.equal(usesCommand("g t"), false);
   assert.equal(usesCommand("ctrl+w mod+q"), false);
+});
+
+test("only keys that would type count as typing", () => {
+  assert.equal(typesText("k"), true);
+  assert.equal(typesText("shift+k"), true);
+  assert.equal(typesText("space"), true);
+  assert.equal(typesText("g g"), true);
+  assert.equal(typesText("up"), false);
+  assert.equal(typesText("enter"), false);
+  assert.equal(typesText("ctrl+n"), false);
 });

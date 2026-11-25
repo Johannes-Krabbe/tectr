@@ -7,9 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-agent-client-protocol = { workspace = true, features = ["stdio", "unstable_session_fork", "unstable_session_system_prompt"] }
+agent-client-protocol = { workspace = true, features = ["stdio", "unstable_plan_operations", "unstable_session_fork", "unstable_session_system_prompt", "unstable_subagents"] }
 # Plain HTTP is enough: it only ever calls the daemon's loopback proxy.
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
+serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 

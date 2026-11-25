@@ -108,15 +108,19 @@ enum SessionStatus: Hashable {
 }
 
 enum PermissionMode: String, CaseIterable, Identifiable, Hashable {
-    case manual, auto, yolo
+    case manual
+    case acceptEdits = "accept_edits"
+    case auto, yolo, plan
 
     var id: Self { self }
 
     var label: String {
         switch self {
         case .manual: "Manual"
+        case .acceptEdits: "Accept Edits"
         case .auto: "Auto"
         case .yolo: "Yolo"
+        case .plan: "Plan"
         }
     }
 }

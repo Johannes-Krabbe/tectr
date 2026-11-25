@@ -15,13 +15,17 @@ mod http;
 mod images;
 mod import;
 mod mcp;
+mod mentions;
 mod oauth;
+mod questions;
 mod remote;
 mod server;
 #[cfg(unix)]
 pub mod shell_env;
 mod store;
+mod tasks;
 mod terminal;
+mod updates;
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;

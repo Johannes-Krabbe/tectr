@@ -5,7 +5,7 @@
 //! which also gives each session's events a single order. Events are stored
 //! before they're broadcast, so a client that reads history can't miss one.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -16,9 +16,9 @@ use protocol::{
     AgentCommand, Approval, ApprovalId, ArchiveRisk, Command, CommandError, CommandOutput,
     DaemonState, DeviceSettings, ErrorCode, MAX_KEEP_AWAKE_SECS, Machine, MachineId, MoveTarget,
     PermissionMode, PermissionOption, PermissionOutcome, PromptImage, Provider, ProviderCandidate,
-    Session, SessionEvent, SessionEventKind, SessionId, SessionRef, SessionStatus, StateChange,
-    StopReason, Terminal, TerminalColors, TerminalId, TerminalStatus, ToolCallPatch, Topic,
-    TopicId, Workspace, WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
+    QuestionAnswer, QuestionId, Session, SessionEvent, SessionEventKind, SessionId, SessionRef,
+    SessionStatus, StateChange, StopReason, Terminal, TerminalColors, TerminalId, TerminalStatus,
+    ToolCallPatch, Topic, TopicId, Workspace, WorkspaceId, Worktree, WorktreeId, WorktreeRisk,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -33,6 +33,7 @@ use crate::store::Store;
 use crate::terminal::{self, Shell, Subscriber};
 use crate::{acp, folders, git};
 
+mod agent_work;
 mod diff;
 mod fork;
 
@@ -65,9 +66,12 @@ pub struct SessionSettings {
     pub mode: PermissionMode,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The person's choices for the agent's own options, by option ID.
+    pub options: BTreeMap<String, String>,
 }
 
 /// What an agent is sent for a prompt.
+#[derive(Clone)]
 pub struct Prompt {
     pub text: String,
     /// Each with its bytes in base64.
@@ -77,7 +81,17 @@ pub struct Prompt {
 /// What the rest of the daemon can ask a running agent to do.
 pub enum SessionCommand {
     Prompt(Prompt),
+    /// Into the turn that's running, for an agent that takes that.
+    Steer(Prompt),
     Cancel,
+    /// Stops a subagent, by its own session ID.
+    CancelSubagent(String),
+    /// Sets one of the agent's own options. Answered with why it couldn't, if it couldn't.
+    SetOption {
+        option_id: String,
+        value: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Answered with why the agent couldn't change, if it couldn't.
     Configure {
         settings: SessionSettings,
@@ -89,6 +103,11 @@ pub enum SessionCommand {
 /// Delivers an answer to the agent. `None` means the request was cancelled.
 pub type PermissionAnswer = Box<dyn FnOnce(Option<String>) + Send>;
 
+/// Delivers an answer to a question, with the values fitted to its fields. `None` means it
+/// was cancelled.
+pub type QuestionResponder =
+    Box<dyn FnOnce(Option<(QuestionAnswer, serde_json::Map<String, serde_json::Value>)>) + Send>;
+
 /// A session whose agent process is running or starting.
 struct LiveSession {
     commands: mpsc::UnboundedSender<SessionCommand>,
@@ -96,6 +115,12 @@ struct LiveSession {
     /// in while the first is still on its way to the agent.
     turn_active: bool,
     pending: HashMap<ApprovalId, PermissionAnswer>,
+    questions: HashMap<QuestionId, QuestionResponder>,
+    /// The agent takes messages into a running turn.
+    steering: bool,
+    /// The agent is working on a turn it started itself, such as after a background task
+    /// finished.
+    autonomous: bool,
     task: Option<JoinHandle<()>>,
     /// Lets the agent's requests through the MCP proxy. It dies with the agent.
     proxy_secret: String,
@@ -105,6 +130,30 @@ struct LiveSession {
     mcp_fingerprint: String,
     /// Its servers changed while it was busy, so it stops once it's done.
     mcp_stale: bool,
+    /// A message steered into a turn the agent had already finished, which goes once this
+    /// daemon hears the turn end, or one sent while the agent compacted.
+    queued: Option<Prompt>,
+    /// The agent is compacting its context. A message steered in now would abort that, as
+    /// Claude does, so messages wait in `queued` until it's done.
+    compacting: bool,
+    /// Claude Code last said it's running, whether or not in a turn of tectr's.
+    agent_running: bool,
+    /// Background tasks whose tabs were closed, which later reports about them don't open
+    /// again, such as the one saying the task was stopped.
+    closed_tasks: HashSet<String>,
+}
+
+impl LiveSession {
+    /// Adds a message to what goes once the agent can take it.
+    fn queue(&mut self, prompt: Prompt) {
+        self.queued = Some(match self.queued.take() {
+            Some(earlier) => Prompt {
+                text: format!("{}\n\n{}", earlier.text, prompt.text),
+                images: [earlier.images, prompt.images].concat(),
+            },
+            None => prompt,
+        });
+    }
 }
 
 /// A terminal whose thread is running. `run` tells its events apart from an earlier one's.
@@ -123,6 +172,8 @@ struct Inner {
     /// Agents told to stop because their tab closed, which shutdown still has to wait for.
     closing: Vec<JoinHandle<()>>,
     last_seq: HashMap<SessionId, u64>,
+    /// What `!` commands printed since the last prompt, which goes to the agent with the next.
+    shell_context: HashMap<SessionId, Vec<String>>,
     signals: broadcast::Sender<Signal>,
     awake: KeepAwake,
     diffs: diff::DiffWatch,
@@ -223,6 +274,7 @@ impl Core {
             stopping_terminals: Vec::new(),
             closing: Vec::new(),
             last_seq,
+            shell_context: HashMap::new(),
             signals: signals.clone(),
             awake: KeepAwake::new(keep_awake),
             diffs: diff::DiffWatch::new(),
@@ -373,6 +425,33 @@ impl Core {
                 approval_id,
                 option_id,
             } => self.answer_approval(&approval_id, &option_id),
+            Command::AnswerQuestion {
+                question_id,
+                answer,
+            } => self.answer_question(&question_id, answer),
+            Command::StopSubagent {
+                session_id,
+                subagent,
+            } => self.stop_subagent(&session_id, subagent),
+            Command::StopTask {
+                session_id,
+                task_id,
+            } => self.stop_task(&session_id, &task_id).await,
+            Command::ReadTaskOutput {
+                session_id,
+                task_id,
+            } => self.read_task_output(&session_id, &task_id).await,
+            Command::CloseTask {
+                session_id,
+                task_id,
+            } => self.close_task(&session_id, &task_id).await,
+            Command::SetSessionOption {
+                session_id,
+                option_id,
+                value,
+            } => self.set_session_option(&session_id, option_id, value).await,
+            Command::ListFiles { session_id, query } => self.list_files(&session_id, &query).await,
+            Command::RunShell { session_id, line } => self.run_shell(&session_id, line).await,
             Command::RenameMachine { name } => self.rename_machine(&name),
             Command::DetectProviders => Ok(self.detect_providers().await),
             Command::AddProvider { agent } => self.add_provider(&agent).await,
@@ -390,10 +469,16 @@ impl Core {
                 model,
                 effort,
             } => {
+                let options = self
+                    .lock()
+                    .store
+                    .session_options(&session_id)
+                    .map_err(internal)?;
                 let settings = SessionSettings {
                     mode,
                     model,
                     effort,
+                    options,
                 };
                 self.set_session_settings(&session_id, settings).await
             }
@@ -1283,6 +1368,7 @@ impl Core {
                 mode: session.mode,
                 model: session.model.clone(),
                 effort: session.effort.clone(),
+                options: inner.store.session_options(&session.id)?,
             },
             resume,
             fork,
@@ -1295,6 +1381,13 @@ impl Core {
                 commands,
                 turn_active,
                 pending: HashMap::new(),
+                questions: HashMap::new(),
+                steering: false,
+                autonomous: false,
+                queued: None,
+                compacting: false,
+                closed_tasks: HashSet::new(),
+                agent_running: false,
                 task: Some(task),
                 proxy_secret,
                 mcp: mcp_ids,
@@ -1335,38 +1428,65 @@ impl Core {
             .ok_or_else(|| not_found("session", session_id))?
             .clone();
 
-        match inner.live.get_mut(session_id) {
+        // `None` waits until the agent can take it.
+        let steer = match inner.live.get_mut(session_id) {
+            Some(live) if live.turn_active && live.steering && live.compacting => None,
+            Some(live) if live.turn_active && live.steering => Some(true),
             Some(live) if live.turn_active => {
                 return Err(CommandError {
                     code: ErrorCode::Busy,
                     message: "this session is already working on a turn".to_owned(),
                 });
             }
-            Some(live) => live.turn_active = true,
-            None => self
-                .spawn_agent(&mut inner, &session, true)
-                .map_err(internal)?,
-        }
+            Some(live) => {
+                live.turn_active = true;
+                live.autonomous = false;
+                Some(false)
+            }
+            None => {
+                self.spawn_agent(&mut inner, &session, true)
+                    .map_err(internal)?;
+                Some(false)
+            }
+        };
 
         let folder = inner
             .folder_of(session_id)
             .ok_or_else(|| internal(anyhow::anyhow!("the session's topic has no folder")))?
             .clone();
         let told = inner.store.agent_cwd(session_id).map_err(internal)?;
-        let sent = match &told {
-            Some(old) if old != &folder.path => moved_note(old, &folder) + &text,
-            _ => text.clone(),
+        let mut sent = match &told {
+            Some(old) if old != &folder.path => moved_note(old, &folder),
+            _ => String::new(),
         };
+        if let Some(ran) = inner.shell_context.remove(session_id) {
+            sent += &shell_note(&ran);
+        }
+        sent += &text;
 
         inner.append(session_id, SessionEventKind::UserPrompt { text, images });
         inner.set_status(session_id, SessionStatus::Working);
-        let live = inner.live.get(session_id).expect("made live just above");
-        live.commands
-            .send(SessionCommand::Prompt(Prompt {
-                text: sent,
-                images: attached,
-            }))
-            .map_err(|_| internal(anyhow::anyhow!("the agent has just exited")))?;
+        let live = inner
+            .live
+            .get_mut(session_id)
+            .expect("made live just above");
+        let prompt = Prompt {
+            text: sent,
+            images: attached,
+        };
+        let command = match steer {
+            None => {
+                live.queue(prompt);
+                None
+            }
+            Some(true) => Some(SessionCommand::Steer(prompt)),
+            Some(false) => Some(SessionCommand::Prompt(prompt)),
+        };
+        if let Some(command) = command {
+            live.commands
+                .send(command)
+                .map_err(|_| internal(anyhow::anyhow!("the agent has just exited")))?;
+        }
         if told.as_ref() != Some(&folder.path)
             && let Err(error) = inner.store.set_agent_cwd(session_id, &folder.path)
         {
@@ -1388,10 +1508,15 @@ impl Core {
             .ok_or_else(|| invalid("this session isn't working on a turn"))?;
         // ACP requires answering open permission requests when cancelling.
         let pending: Vec<_> = live.pending.drain().collect();
+        let questions: Vec<_> = live.questions.drain().collect();
         let _ = live.commands.send(SessionCommand::Cancel);
         for (approval_id, answer) in pending {
             answer(None);
             inner.resolve_approval(session_id, &approval_id, PermissionOutcome::Cancelled);
+        }
+        for (question_id, answer) in questions {
+            answer(None);
+            inner.resolve_question(session_id, &question_id, QuestionAnswer::Cancel);
         }
         inner.set_status(session_id, SessionStatus::Working);
         Ok(CommandOutput::Done)
@@ -1424,8 +1549,8 @@ impl Core {
             .pending
             .remove(approval_id)
             .ok_or_else(|| not_found("pending approval", approval_id))?;
-        let others_waiting = !live.pending.is_empty();
-        let turn_active = live.turn_active;
+        let others_waiting = !live.pending.is_empty() || !live.questions.is_empty();
+        let turn_active = live.turn_active || live.autonomous;
         answer(Some(option_id.to_owned()));
 
         inner.resolve_approval(
@@ -1905,8 +2030,11 @@ impl Core {
 
     /// The agent has finished starting. A prompt that arrived meanwhile has
     /// already set the session to working, and that stays.
-    pub fn agent_ready(&self, id: &SessionId, ready: SessionEventKind) {
+    pub fn agent_ready(&self, id: &SessionId, ready: SessionEventKind, steering: bool) {
         let mut inner = self.lock();
+        if let Some(live) = inner.live.get_mut(id) {
+            live.steering = steering;
+        }
         inner.append(id, ready);
         let turn_active = inner.live.get(id).is_some_and(|live| live.turn_active);
         let starting = inner
@@ -1920,6 +2048,42 @@ impl Core {
 
     pub fn agent_event(&self, id: &SessionId, kind: SessionEventKind) {
         self.lock().append(id, kind);
+    }
+
+    /// Something that happened in a subagent, or in the agent itself for `None`.
+    pub fn subagent_event(&self, id: &SessionId, subagent: Option<String>, kind: SessionEventKind) {
+        let compacting = match (&subagent, &kind) {
+            (None, SessionEventKind::Compaction { status, .. }) => {
+                Some(*status == protocol::CompactionStatus::InProgress)
+            }
+            _ => None,
+        };
+        // Claude Code can carry on past the end of the turn it was asked for, as when a
+        // background subagent reports back while it's still writing, without ever saying it
+        // went idle in between. What it writes then is a turn of its own, which its idle ends.
+        let speaks = subagent.is_none()
+            && matches!(
+                kind,
+                SessionEventKind::AgentMessage { .. }
+                    | SessionEventKind::AgentThought { .. }
+                    | SessionEventKind::ToolCall { .. }
+            );
+        let mut inner = self.lock();
+        let carried_on = speaks
+            && inner.live.get_mut(id).is_some_and(|live| {
+                let carried_on = live.agent_running && !live.turn_active && !live.autonomous;
+                if carried_on {
+                    live.autonomous = true;
+                }
+                carried_on
+            });
+        if carried_on {
+            inner.set_status(id, SessionStatus::Working);
+        }
+        inner.append_from(id, subagent, kind);
+        if let Some(compacting) = compacting {
+            inner.compaction_changed(id, compacting);
+        }
     }
 
     pub fn title_changed(&self, id: &SessionId, title: Option<String>) {
@@ -1960,6 +2124,7 @@ impl Core {
     pub fn permission_requested(
         &self,
         id: &SessionId,
+        subagent: Option<String>,
         tool_call: ToolCallPatch,
         options: Vec<PermissionOption>,
         answer: PermissionAnswer,
@@ -1968,6 +2133,7 @@ impl Core {
         let approval = Approval {
             id: ApprovalId(crate::new_id()),
             session_id: id.clone(),
+            subagent,
             tool_call,
             options,
         };
@@ -2000,7 +2166,8 @@ impl Core {
         // The session then keeps waiting until that's answered.
         let still_waiting = inner.live.get_mut(id).is_some_and(|live| {
             live.turn_active = false;
-            !live.pending.is_empty()
+            live.autonomous = false;
+            !live.pending.is_empty() || !live.questions.is_empty()
         });
         match result {
             Ok(stop_reason) => {
@@ -2023,6 +2190,17 @@ impl Core {
                 inner.set_status(id, SessionStatus::Failed);
             }
         }
+        // A compaction never heard to end can't outlive its turn, or every message after it
+        // would wait.
+        let queued = inner.live.get_mut(id).and_then(|live| {
+            live.compacting = false;
+            live.queued.take()
+        });
+        if let Some(prompt) = queued {
+            drop(inner);
+            self.steer_missed(id, prompt);
+            return;
+        }
         if !still_waiting && inner.live.get(id).is_some_and(|live| live.mcp_stale) {
             inner.stop_for_mcp(id);
         }
@@ -2042,9 +2220,14 @@ impl Core {
         let Some(mut live) = inner.live.remove(id) else {
             return;
         };
+        inner.clear_tasks(id);
         for (approval_id, answer) in live.pending.drain() {
             answer(None);
             inner.resolve_approval(id, &approval_id, PermissionOutcome::Cancelled);
+        }
+        for (question_id, answer) in live.questions.drain() {
+            answer(None);
+            inner.resolve_question(id, &question_id, QuestionAnswer::Cancel);
         }
         let failure = match result {
             Err(error) => Some(format!("{error:#}")),
@@ -2110,6 +2293,13 @@ impl Inner {
                 &approval.session_id.clone(),
                 &approval.id,
                 PermissionOutcome::Cancelled,
+            );
+        }
+        for question in self.store.pending_questions()? {
+            self.resolve_question(
+                &question.session_id.clone(),
+                &question.id,
+                QuestionAnswer::Cancel,
             );
         }
         let interrupted: Vec<SessionId> = self
@@ -2179,6 +2369,7 @@ impl Inner {
     fn stop_agent(&mut self, session_id: &SessionId) -> Option<JoinHandle<()>> {
         let mut live = self.live.remove(session_id)?;
         let _ = live.commands.send(SessionCommand::Shutdown);
+        self.clear_tasks(session_id);
         // ACP requires answering open permission requests.
         for (approval_id, answer) in live.pending.drain() {
             answer(None);
@@ -2275,6 +2466,16 @@ impl Inner {
         Ok(())
     }
 
+    /// A session's agent stopped, and its background tasks ended with it.
+    fn clear_tasks(&mut self, session_id: &SessionId) {
+        if self.state.session_tasks.contains_key(session_id) {
+            self.emit(StateChange::SessionTasksChanged {
+                session_id: session_id.clone(),
+                tasks: Vec::new(),
+            });
+        }
+    }
+
     fn emit(&mut self, change: StateChange) {
         self.state.apply(&change);
         let _ = self.signals.send(Signal::State(Arc::new(change)));
@@ -2302,6 +2503,10 @@ impl Inner {
     }
 
     fn append(&mut self, id: &SessionId, kind: SessionEventKind) {
+        self.append_from(id, None, kind);
+    }
+
+    fn append_from(&mut self, id: &SessionId, subagent: Option<String>, kind: SessionEventKind) {
         let seq = self.last_seq.get(id).copied().unwrap_or(0) + 1;
         let event = SessionEvent {
             session: SessionRef {
@@ -2311,6 +2516,7 @@ impl Inner {
             seq,
             at_ms: now_ms(),
             kind,
+            subagent,
         };
         // Skip a failed write entirely, so sequence numbers stay gapless and
         // match what's stored.
@@ -2415,6 +2621,14 @@ fn moved_note(old: &str, folder: &Worktree) -> String {
          no longer in {old}. Use paths in the new folder from here on and change nothing in the \
          old one.\n\n",
         folder.path, folder.branch
+    )
+}
+
+/// Goes before the next prompt after `!` commands, so the agent knows what the person saw.
+fn shell_note(ran: &[String]) -> String {
+    format!(
+        "[tectr] I ran these commands myself in the session's folder:\n\n{}\n\n",
+        ran.join("\n\n")
     )
 }
 
@@ -3273,6 +3487,7 @@ mod tests {
         let approval = Approval {
             id: "a1".into(),
             session_id: "waiting".into(),
+            subagent: None,
             tool_call: ToolCallPatch::default(),
             options: vec![],
         };

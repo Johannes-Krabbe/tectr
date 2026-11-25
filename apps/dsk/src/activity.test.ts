@@ -197,9 +197,9 @@ test("the live line shows the newest running step", () => {
   assert.equal(liveStepLabel(working, live(tool("a", "Read"), finished("a"))), "Read");
 });
 
-test("the live line says when it isn't the agent's turn", () => {
+test("the live line keeps the last step while the agent waits, and says when it's starting", () => {
   const activity = activities(foldTranscript(events(tool("a", "Read"))))[0];
-  assert.equal(liveStepLabel(session("waiting_for_you"), activity), "Waiting for you");
+  assert.equal(liveStepLabel(session("waiting_for_you"), activity), "Read");
   assert.equal(liveStepLabel(session("starting"), null), "Starting");
 });
 

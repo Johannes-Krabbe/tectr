@@ -2,16 +2,22 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type {
   ArchiveRisk,
+  BackgroundTask,
   Conversation,
   DaemonState,
   Device,
   Provider,
   ProviderModel,
   Session,
+  SessionEvent,
   Topic,
   Workspace,
 } from "./engine";
 import {
+  changedOption,
+  defaultMode,
+  settingsLabel,
+  usageNote,
   cloneProgress,
   awakeUntil,
   parseDuration,
@@ -33,6 +39,16 @@ import {
   workspaceState,
   tabsOf,
   tabLabel,
+  foldTranscript,
+  planOf,
+  subagentsOf,
+  suggestionOf,
+  usageOf,
+  todoSummary,
+  taskName,
+  taskState,
+  subagentRunning,
+  nextMode,
 } from "./model.ts";
 
 const smart: ProviderModel = {
@@ -217,6 +233,15 @@ test("agents and terminals share one row of tabs, in the order they were opened"
     ["old", "shell", "agent", "vim"],
   );
   assert.deepEqual(tabs.map(tabLabel), ["claude", "Terminal", "claude", "vim"]);
+  // A session's background tasks follow its tab, since its agent opened them.
+  const dev: BackgroundTask = { id: "b1", kind: "shell", description: "Dev server", status: "running" };
+  const withTasks = tabsOf(topic, { old: [dev] });
+  assert.deepEqual(
+    withTasks.map((tab) => tab.id),
+    ["old", "b1", "shell", "agent", "vim"],
+  );
+  assert.equal(tabLabel(withTasks[1]), "Dev server");
+  assert.deepEqual(withTasks[1].kind === "task" && withTasks[1].sessionId, "old");
 });
 
 test("conversations from the topic's workspace and folders come first, each part newest first", () => {
@@ -331,4 +356,163 @@ test("a clone says what git is doing and how far along, or that it failed", () =
     text: "Failed",
     failed: true,
   });
+});
+
+test("subagents get their own transcripts, and the agent's own leaves them out", () => {
+  const at = (seq: number, kind: SessionEvent["kind"], subagent?: string): SessionEvent => ({
+    seq,
+    at_ms: seq,
+    kind,
+    ...(subagent !== undefined && { subagent }),
+  });
+  const events: SessionEvent[] = [
+    at(1, { event: "user_prompt", text: "go" }),
+    at(2, { event: "subagent", id: "c", title: "Explore", status: "working" }),
+    at(3, { event: "session_message", id: "m", to: "c", text: "look" }, "c"),
+    at(4, { event: "agent_message", text: "found" }, "c"),
+    at(5, { event: "subagent", id: "c", status: "done" }),
+    at(6, { event: "agent_message", text: "done" }),
+  ];
+  const own = foldTranscript(events);
+  assert.deepEqual(
+    own.map((item) => item.kind),
+    ["prompt", "activity", "message"],
+  );
+  const activity = own[1];
+  assert.ok(activity.kind === "activity");
+  assert.deepEqual(activity.steps, [{ kind: "subagent", key: 2, id: "c" }]);
+  const child = foldTranscript(events, "c");
+  assert.deepEqual(
+    child.map((item) => (item.kind === "prompt" || item.kind === "message" ? item.text : item.kind)),
+    ["look", "found"],
+  );
+  assert.deepEqual(subagentsOf(events).get("c"), { id: "c", title: "Explore", status: "done", startedMs: 2 });
+  assert.equal(subagentRunning(subagentsOf(events.slice(0, 3)).get("c")), true);
+  assert.equal(subagentRunning(subagentsOf(events).get("c")), false);
+});
+
+test("subagents that come back between messages get a line, which keeps the messages apart", () => {
+  const at = (seq: number, kind: SessionEvent["kind"]): SessionEvent => ({ seq, at_ms: seq * 1000, kind });
+  const events: SessionEvent[] = [
+    at(1, { event: "user_prompt", text: "go" }),
+    at(2, { event: "subagent", id: "a", title: "One", status: "working" }),
+    at(3, { event: "subagent", id: "b", title: "Two", status: "working" }),
+    at(4, { event: "agent_message", text: "started." }),
+    at(6, { event: "subagent", id: "a", status: "done" }),
+    at(7, { event: "subagent", id: "b", status: "done" }),
+    // A repeated report isn't another return.
+    at(8, { event: "subagent", id: "b", status: "done" }),
+    at(9, { event: "agent_message", text: "Both are back." }),
+  ];
+  const items = foldTranscript(events);
+  assert.deepEqual(
+    items.map((item) => item.kind),
+    ["prompt", "activity", "message", "subagents_back", "message"],
+  );
+  assert.deepEqual(items[3].kind === "subagents_back" && items[3].back, [
+    { id: "a", tookMs: 4000 },
+    { id: "b", tookMs: 4000 },
+  ]);
+  assert.equal(items[4].kind === "message" && items[4].text, "Both are back.");
+});
+
+test("questions, plans, compaction, notices and commands fold into the transcript", () => {
+  const events: SessionEvent[] = [
+    { seq: 1, at_ms: 1, kind: { event: "question_asked", question: {
+      id: "q", session_id: "s", message: "Cache?",
+      fields: [{ key: "a", kind: { type: "choice", options: [{ value: "r", label: "Redis" }] } }],
+    } } },
+    { seq: 2, at_ms: 5, kind: { event: "question_answered", question_id: "q", answer: { action: "accept", values: { a: "r" } } } },
+    { seq: 3, at_ms: 6, kind: { event: "plan_document", id: "p", text: "one" } },
+    { seq: 4, at_ms: 7, kind: { event: "compaction", id: "c", status: "in_progress" } },
+    { seq: 5, at_ms: 8, kind: { event: "plan_document", id: "p", text: "two" } },
+    { seq: 6, at_ms: 9, kind: { event: "compaction", id: "c", status: "completed", summary: "sum" } },
+    { seq: 7, at_ms: 10, kind: { event: "notice", severity: "warning", title: "Retrying", description: "Busy" } },
+    { seq: 8, at_ms: 11, kind: { event: "shell", command: "ls", output: "a\n", exit_code: 0 } },
+  ];
+  const items = foldTranscript(events);
+  assert.equal(items.length, 5);
+  const [activity, plan, compaction, notice, shell] = items;
+  assert.ok(activity.kind === "activity");
+  assert.deepEqual(activity.steps, [{ kind: "note", key: 2, text: "Question: Cache? Redis" }]);
+  assert.equal(activity.waitedMs, 4);
+  assert.deepEqual(plan, { kind: "plan", key: 3, text: "two" });
+  assert.deepEqual(compaction, { kind: "compaction", key: 4, status: "completed", summary: "sum", error: undefined });
+  assert.deepEqual(notice, { kind: "note", key: 7, text: "Retrying. Busy", failed: false });
+  assert.deepEqual(shell, { kind: "shell", key: 8, command: "ls", output: "a\n", exitCode: 0 });
+});
+
+test("the latest plan, usage and suggestion are read from the events", () => {
+  const events: SessionEvent[] = [
+    { seq: 1, at_ms: 0, kind: { event: "plan", entries: [{ content: "a", status: "pending" }] } },
+    { seq: 2, at_ms: 0, kind: { event: "plan", entries: [{ content: "b", status: "pending" }] }, subagent: "c" },
+    { seq: 3, at_ms: 0, kind: { event: "usage", used: 50_000, size: 200_000 } },
+    { seq: 6, at_ms: 0, kind: { event: "suggestion", text: "run tests" } },
+  ];
+  assert.deepEqual(planOf(events), [{ content: "a", status: "pending" }]);
+  assert.deepEqual(usageOf(events), { percent: 25, used: 50_000, size: 200_000, cost: undefined });
+  assert.equal(suggestionOf(events), "run tests");
+  assert.equal(
+    suggestionOf([...events, { seq: 7, at_ms: 0, kind: { event: "user_prompt", text: "x" } }]),
+    null,
+  );
+  // Done todos are in the transcript, so only an unfinished list keeps the panel.
+  assert.equal(todoSummary(planOf(events)), "0 of 1 todo done");
+  assert.equal(todoSummary([{ content: "a", status: "completed" }]), null);
+  assert.equal(todoSummary(null), null);
+});
+
+test("a background task reads by what it's for, or else what it runs", () => {
+  const task: BackgroundTask = { id: "t", kind: "shell", description: "", status: "running" };
+  assert.equal(taskName({ ...task, command: "sleep 10" }), "sleep 10");
+  assert.equal(taskName({ ...task, description: "Dev server", command: "pnpm dev" }), "Dev server");
+  assert.equal(taskName(task), "shell");
+  assert.equal(taskState("running", true), "working");
+  assert.equal(taskState("failed", true), "failed");
+  assert.equal(taskState("running", false), "stale");
+});
+
+test("the mode key goes round the modes an agent offers", () => {
+  assert.equal(nextMode(["manual", "auto", "plan"], "auto"), "manual");
+  assert.equal(nextMode(["manual", "auto", "plan"], "plan"), "auto");
+  assert.equal(nextMode(["auto"], "unknown"), "auto");
+  assert.equal(nextMode([], "auto"), null);
+});
+
+test("a new agent starts in Auto where it has it, and in its first mode where it doesn't", () => {
+  assert.equal(defaultMode(["manual", "auto", "yolo"]), "auto");
+  assert.equal(defaultMode(["plan", "manual"]), "manual");
+  assert.equal(defaultMode([]), undefined);
+});
+
+test("an agent option only reads out once it's on or away from its default", () => {
+  const option = (name: string, value: string, names: string[]) => ({
+    id: "x",
+    name,
+    value,
+    choices: names.map((choice) => ({ value: choice.toLowerCase(), name: choice })),
+  });
+  // Claude lists On before Off.
+  assert.equal(changedOption(option("Ultracode", "off", ["On", "Off"])), null);
+  assert.equal(changedOption(option("Ultracode", "on", ["On", "Off"])), "Ultracode");
+  assert.equal(changedOption(option("Agent", "default", ["Default", "reviewer"])), null);
+  assert.equal(changedOption(option("Agent", "reviewer", ["Default", "reviewer", "writer"])), "reviewer");
+  assert.equal(changedOption(option("Agent", "reviewer", ["Default", "reviewer"])), "reviewer");
+});
+
+test("the settings label is the model and effort, then only what changed", () => {
+  assert.equal(settingsLabel({ model: "Haiku 5.5", effort: "Low", changed: [null, null] }), "Haiku 5.5 low");
+  assert.equal(
+    settingsLabel({ model: "Opus 5.5", effort: "High", changed: ["Ultracode", null] }),
+    "Opus 5.5 high, Ultracode",
+  );
+  assert.equal(settingsLabel({ model: "Default model", changed: [] }), "Default model");
+});
+
+test("the usage note says how full the context is and what it cost", () => {
+  assert.equal(usageNote({ percent: 4, used: 8200, size: 200000 }), "4% of context, 8k of 200k tokens");
+  assert.equal(
+    usageNote({ percent: 4, used: 8200, size: 200000, cost: "0.12 USD" }),
+    "4% of context, 8k of 200k tokens, 0.12 USD so far",
+  );
 });

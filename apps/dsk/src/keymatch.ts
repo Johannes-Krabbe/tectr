@@ -111,6 +111,14 @@ export function sequenceState(
 }
 
 /** Types a character into a text field when pressed there, unless it has a modifier. */
+/** Whether a key typed in a text box would type something, like `k` or space, rather than move
+ * or edit, like the arrows. A sequence counts by its first key. */
+export function typesText(binding: string): boolean {
+  const first = binding.split(" ")[0];
+  const { key } = parts(first);
+  return isBareChord(first) && (key.length === 1 || key === "space");
+}
+
 export function isBareChord(chord: string): boolean {
   const { key, modifiers } = parts(chord);
   return (

@@ -8,7 +8,6 @@ import {
   deviceName,
   deviceStatus,
   isOnline,
-  STATE_LABEL,
   topicState,
 } from "./model";
 import { Icon } from "./ui/Icon";
@@ -240,11 +239,6 @@ export function Sidebar({
                       >
                         <StatusIcon state={state} />
                         <span className="name">{topic.name}</span>
-                        {(state === "waiting" || state === "failed") && (
-                          <span className={`meta ${state === "waiting" ? "alert" : "bad"}`}>
-                            {STATE_LABEL[state]}
-                          </span>
-                        )}
                       </button>
                     );
                   })}
